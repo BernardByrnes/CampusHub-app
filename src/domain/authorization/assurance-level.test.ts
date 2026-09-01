@@ -26,7 +26,18 @@ describe("assuranceAtLeast", () => {
     expect(assuranceAtLeast(actual, required)).toBe(expected);
   });
 
-  it.each([undefined, null, "", "l2", "L4", 2, {}, []])(
+  it.each([
+    undefined,
+    null,
+    "",
+    "l2",
+    "L4",
+    "toString",
+    "constructor",
+    2,
+    {},
+    [],
+  ])(
     "fails closed for malformed value %j",
     (value) => {
       expect(assuranceAtLeast(value, "L0")).toBe(false);

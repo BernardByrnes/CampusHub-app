@@ -30,7 +30,8 @@ export const ASSURANCE_LABEL_TEXT: Readonly<Record<AssuranceLevel, string>> = {
 };
 
 export function parseAssuranceLevel(value: unknown): AssuranceLevel | null {
-  return typeof value === "string" && value in ASSURANCE_RANK
+  return typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(ASSURANCE_RANK, value)
     ? (value as AssuranceLevel)
     : null;
 }
