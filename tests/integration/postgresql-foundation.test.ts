@@ -2572,6 +2572,83 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(malformedRelation).toBeNull();
   });
 
+  it("isolates the active context when one identity has Memberships in two Tenants", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("a4-context-a") });
+    const tenantB = await createTenant({ slug: nextSlug("a4-context-b") });
+    const identitySubjectId = nextIdentity("a4-dual-membership");
+    const membershipA = await createMembership(tenantA.id, {
+      identitySubjectId,
+      assuranceLevel: "L1",
+      lifecycle: "verified",
+    });
+    const membershipB = await createMembership(tenantB.id, {
+      identitySubjectId,
+      assuranceLevel: "L3",
+      lifecycle: "on_leave",
+    });
+
+    const contextA = await getContextService().resolveRequestContext(
+      { identitySubjectId },
+      { tenantId: tenantA.id },
+    );
+    const contextB = await getContextService().resolveRequestContext(
+      { identitySubjectId },
+      { tenantId: tenantB.id },
+    );
+
+    expect(contextA).toEqual({
+      resolved: true,
+      context: {
+        identitySubjectId,
+        tenantId: tenantA.id,
+        tenantStatus: tenantA.status,
+        membershipId: membershipA.id,
+        assuranceLevel: "L1",
+        membershipStatus: "verified",
+      },
+    });
+    expect(contextB).toEqual({
+      resolved: true,
+      context: {
+        identitySubjectId,
+        tenantId: tenantB.id,
+        tenantStatus: tenantB.status,
+        membershipId: membershipB.id,
+        assuranceLevel: "L3",
+        membershipStatus: "on_leave",
+      },
+    });
+
+    expect(JSON.stringify(contextA)).not.toContain(tenantB.id);
+    expect(JSON.stringify(contextA)).not.toContain(membershipB.id);
+    expect(JSON.stringify(contextB)).not.toContain(tenantA.id);
+    expect(JSON.stringify(contextB)).not.toContain(membershipA.id);
+    await expect(
+      getContextService().resolveRequestContext({ identitySubjectId }),
+    ).resolves.toEqual({ resolved: false, code: "TENANT_REQUIRED" });
+
+    const membershipAUnderB =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantB.id,
+        membershipA.id,
+      );
+    const membershipBUnderA =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantA.id,
+        membershipB.id,
+      );
+    const nonexistent =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantA.id,
+        randomUUID(),
+      );
+
+    expect(membershipAUnderB).toBeNull();
+    expect(membershipBUnderA).toBeNull();
+    expect(membershipAUnderB).toEqual(nonexistent);
+    expect(membershipBUnderA).toEqual(nonexistent);
+  });
+
   it("resolves trusted context through real repositories and application policy", async () => {
     const tenant = await createTenant({ slug: nextSlug("context-tenant") });
     const membership = await createMembership(tenant.id, {

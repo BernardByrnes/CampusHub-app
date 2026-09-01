@@ -193,6 +193,7 @@ are all declared by the registry. The reserved categories `jobs`, `exports`,
 ## Review boundary and recommendation
 
 This proposal is ready to be handed to independent security review after the
-reported quality gates pass. It remains explicitly unapproved. A2 is not
-closed, and A4 plus B.2.4 must not begin until the required independent review
-and any resulting remediation are complete.
+reported quality gates pass. It remains explicitly unapproved. A2 may remain
+ready for independent security review while A4 is prepared in parallel or
+sequentially. B.2.4 must not begin until A2 and A4 receive independent
+approval.
