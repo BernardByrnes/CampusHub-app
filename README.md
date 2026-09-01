@@ -84,6 +84,19 @@ this bootstrap phase.
 npm run dev
 ```
 
+The real PostgreSQL integration suite is opt-in and requires a real
+PostgreSQL `DATABASE_URL` in the ignored `.env.local` file. On PowerShell, run
+it with:
+
+```powershell
+$env:CAMPUSHUB_DB_INTEGRATION = "1"
+npm run test:integration
+Remove-Item Env:CAMPUSHUB_DB_INTEGRATION
+```
+
+The suite uses synthetic records with targeted cleanup and never resets a
+schema or database. Normal `npm test` runs unit tests only.
+
 The liveness endpoint is `GET /api/health` and returns exactly:
 
 ```json
