@@ -13,6 +13,7 @@ const serverOnlyModules = [
   "src/application/context/resolve-request-context.ts",
   "src/domain/authorization/context-policy.ts",
   "src/domain/authorization/trusted-request-context.ts",
+  "src/domain/authorization/resource-read-policy.ts",
   "src/domain/membership/institutional-email-policy.ts",
 ] as const;
 
