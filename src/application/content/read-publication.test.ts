@@ -8,6 +8,10 @@ import {
   ReadPublicationService,
   type ReadPublicationInput,
 } from "./read-publication";
+import type {
+  PublicationAudienceResolver,
+  PublicationExposureResolver,
+} from "./publication-read-resolvers";
 
 const now = new Date("2026-01-15T12:00:00.000Z");
 const tenantAlphaId = "00000000-0000-4000-8000-000000000001";
@@ -58,7 +62,6 @@ function input(overrides: Partial<ReadPublicationInput> = {}): ReadPublicationIn
     publicationId: publication.id,
     viewer,
     tenantFacts,
-    contentExposure: "READABLE",
     now,
     ...overrides,
   };
@@ -67,7 +70,22 @@ function input(overrides: Partial<ReadPublicationInput> = {}): ReadPublicationIn
 function createService(
   found: Publication | null = publication,
   calls: Array<readonly [string, string]> = [],
+  dependencyOverrides: Partial<{
+    exposureResolver: PublicationExposureResolver | undefined;
+    audienceResolver: PublicationAudienceResolver | undefined;
+  }> = {},
 ) {
+  const exposureResolver: PublicationExposureResolver = {
+    resolveExposure: vi.fn(async (candidates: readonly Publication[]) =>
+      new Map<string, "READABLE" | "SUPPRESSED">(
+        candidates.map((candidate) => [candidate.id, "READABLE"] as const),
+      ),
+    ),
+  };
+  const audienceResolver: PublicationAudienceResolver = {
+    resolveAudience: vi.fn(() => ({ evaluated: true as const, eligible: true })),
+  };
+
   return new ReadPublicationService({
     publications: {
       findPublicationByIdForTenant: vi.fn(async (tenantId, publicationId) => {
@@ -75,6 +93,9 @@ function createService(
         return found;
       }),
     },
+    exposureResolver,
+    audienceResolver,
+    ...dependencyOverrides,
   });
 }
 
@@ -91,14 +112,7 @@ describe("ReadPublicationService", () => {
   });
 
   it.each([
-    [
-      { lifecycle: "draft" },
-      "RESOURCE_NOT_AVAILABLE",
-    ],
-    [
-      { contentExposure: "SUPPRESSED" },
-      "RESOURCE_NOT_AVAILABLE",
-    ],
+    [{ lifecycle: "draft" }],
     [
       {
         viewer: {
@@ -106,9 +120,8 @@ describe("ReadPublicationService", () => {
           context: { ...viewer.context, assuranceLevel: "L0" },
         },
       },
-      "ASSURANCE_INSUFFICIENT",
     ],
-  ] as const)("returns a code-only denial for %o", async (overrides, code) => {
+  ] as const)("normalizes hydrated denials to NOT_FOUND for %o", async (overrides) => {
     const foundPublication =
       "lifecycle" in overrides
         ? {
@@ -121,8 +134,90 @@ describe("ReadPublicationService", () => {
       input(overrides as Partial<ReadPublicationInput>),
     );
 
-    expect(result).toEqual({ outcome: "DENIED", code });
+    expect(result).toEqual({ outcome: "NOT_FOUND" });
     expect(result).not.toHaveProperty("publication");
+  });
+
+  it("normalizes suppressed exposure to NOT_FOUND without accepting caller input", async () => {
+    const service = createService(publication, [], {
+      exposureResolver: {
+        resolveExposure: () => new Map([[publication.id, "SUPPRESSED"]]),
+      },
+    });
+
+    await expect(
+      service.getPublicationForRead({
+        ...input(),
+        contentExposure: "READABLE",
+      } as unknown as ReadPublicationInput),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+  });
+
+  it("makes same-Tenant hidden reads equivalent to a random nonexistent ID", async () => {
+    const nonexistent = await createService(null).getPublicationForRead(
+      input({ publicationId: missingPublicationId }),
+    );
+    const hiddenResults = await Promise.all([
+      createService({ ...publication, lifecycle: "draft" }).getPublicationForRead(
+        input(),
+      ),
+      createService({ ...publication, lifecycle: "scheduled" }).getPublicationForRead(
+        input(),
+      ),
+      createService(publication, [], {
+        exposureResolver: {
+          resolveExposure: () => new Map([[publication.id, "SUPPRESSED"]]),
+        },
+      }).getPublicationForRead(input()),
+      createService({ ...publication, visibility: "VERIFIED_MEMBERS" }).getPublicationForRead(
+        input({
+          viewer: {
+            ...viewer,
+            context: { ...viewer.context, assuranceLevel: "L1" },
+          },
+        }),
+      ),
+      createService(publication).getPublicationForRead(
+        input({
+          viewer: {
+            ...viewer,
+            context: { ...viewer.context, membershipStatus: "suspended" },
+          },
+        }),
+      ),
+      createService({ ...publication, audienceMode: "targeted" }, [], {
+        audienceResolver: undefined,
+      }).getPublicationForRead(input()),
+      createService({ ...publication, audienceMode: "targeted" }, [], {
+        audienceResolver: {
+          resolveAudience: () => ({ evaluated: true, eligible: false }),
+        },
+      }).getPublicationForRead(input()),
+      createService(publication).getPublicationForRead(
+        input({
+          tenantFacts: {
+            ...tenantFacts,
+            tenantStatus: "archived",
+            archiveNoticeState: "ENDED",
+          },
+          viewer: {
+            ...viewer,
+            context: { ...viewer.context, tenantStatus: "archived" },
+          },
+        }),
+      ),
+      createService({ ...publication, visibility: "PUBLIC" }).getPublicationForRead(
+        input({
+          viewer: { kind: "anonymous", tenantId: tenantAlphaId },
+          tenantFacts: { ...tenantFacts, publicSurfacePermitted: false },
+        }),
+      ),
+    ]);
+
+    expect(nonexistent).toEqual({ outcome: "NOT_FOUND" });
+    for (const result of hiddenResults) {
+      expect(result).toEqual(nonexistent);
+    }
   });
 
   it("returns NOT_FOUND for nonexistent and foreign tenant-scoped lookups", async () => {
@@ -251,25 +346,56 @@ describe("ReadPublicationService", () => {
   });
 
   it("requires an evaluated audience decision for targeted Publications", async () => {
-    const service = createService({ ...publication, audienceMode: "targeted" });
+    const targeted = { ...publication, audienceMode: "targeted" as const };
+    const service = createService(targeted);
 
     await expect(service.getPublicationForRead(input())).resolves.toEqual({
-      outcome: "DENIED",
-      code: "INVALID_INPUT",
+      outcome: "FOUND",
+      publication: targeted,
     });
     await expect(
-      service.getPublicationForRead(
-        input({ audienceDecision: { evaluated: true, eligible: false } }),
-      ),
-    ).resolves.toEqual({
-      outcome: "DENIED",
-      code: "AUDIENCE_INELIGIBLE",
-    });
+      createService(targeted, [], {
+        audienceResolver: {
+          resolveAudience: () => ({ evaluated: true, eligible: false }),
+        },
+      }).getPublicationForRead(input()),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
-      service.getPublicationForRead(
-        input({ audienceDecision: { evaluated: true, eligible: true } }),
+      createService(targeted, [], { audienceResolver: undefined }).getPublicationForRead(
+        input(),
       ),
-    ).resolves.toEqual({ outcome: "FOUND", publication: { ...publication, audienceMode: "targeted" } });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["invalid", { resolveExposure: () => ({}) }],
+    ["missing publication", { resolveExposure: () => new Map() }],
+    ["invalid value", { resolveExposure: () => new Map([[publication.id, "UNKNOWN"]]) }],
+    ["throws", { resolveExposure: () => { throw new Error("resolver failure"); } }],
+  ] as const)("fails closed for %s exposure resolver output", async (_label, resolver) => {
+    const service = createService(publication, [], {
+      exposureResolver: resolver as unknown as PublicationExposureResolver | undefined,
+    });
+
+    await expect(service.getPublicationForRead(input())).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
+  });
+
+  it.each([
+    ["invalid", { resolveAudience: () => ({ eligible: true }) }],
+    ["ineligible", { resolveAudience: () => ({ evaluated: true, eligible: false }) }],
+    ["throws", { resolveAudience: () => { throw new Error("resolver failure"); } }],
+  ] as const)("fails closed for %s audience resolver output", async (_label, resolver) => {
+    const targeted = { ...publication, audienceMode: "targeted" as const };
+    const service = createService(targeted, [], {
+      audienceResolver: resolver as unknown as PublicationAudienceResolver,
+    });
+
+    await expect(service.getPublicationForRead(input())).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
   });
 
   it("fails closed before repository access for malformed identifiers", async () => {
@@ -296,12 +422,6 @@ describe("ReadPublicationService", () => {
     const calls: Array<readonly [string, string]> = [];
     const service = createService(publication, calls);
 
-    await expect(
-      service.getPublicationForRead({
-        ...input(),
-        contentExposure: "UNKNOWN",
-      } as unknown as ReadPublicationInput),
-    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     await expect(
       service.getPublicationForRead({
         ...input(),

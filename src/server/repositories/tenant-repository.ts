@@ -9,6 +9,7 @@ import {
   parseTenantLifecycle,
   type Tenant,
 } from "@/domain/tenancy/tenant";
+import { isUuid } from "@/domain/identifiers/uuid";
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import { tenants, type TenantRow } from "@/server/db/schema";
 
@@ -37,7 +38,7 @@ export class DrizzleTenantRepository implements TenantContextReader {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
   public async findTenantById(id: string): Promise<Tenant | null> {
-    if (typeof id !== "string" || id.trim().length === 0) {
+    if (!isUuid(id)) {
       return null;
     }
 

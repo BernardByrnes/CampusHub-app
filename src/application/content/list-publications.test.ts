@@ -185,7 +185,7 @@ describe("ListPublicationsService", () => {
         tenantId: tenantAlphaId,
         surface: "ACTIVE",
         cursor: null,
-        limit: 3,
+        limit: 25,
       }),
     ]);
   });
@@ -242,11 +242,11 @@ describe("ListPublicationsService", () => {
 
   it("stops after the 150-candidate scan budget", async () => {
     const pages: PublicationCollectionCandidatePage[] = Array.from(
-      { length: 50 },
+      { length: 6 },
       (_, page) => ({
-        items: Array.from({ length: 3 }, (_, index) =>
+        items: Array.from({ length: 25 }, (_, index) =>
           publication(
-            `00000000-0000-4000-8000-${String(page * 3 + index + 100)
+            `00000000-0000-4000-8000-${String(page * 25 + index + 100)
               .padStart(12, "0")}`,
             { visibility: "VERIFIED_MEMBERS" },
           ),
@@ -263,10 +263,45 @@ describe("ListPublicationsService", () => {
       exposureCalls,
     );
 
-    await expect(
-      service.listPublications(input(anonymousViewer, { limit: 1 })),
-    ).resolves.toMatchObject({ outcome: "OK", items: [] });
-    expect(queries).toHaveLength(50);
+    const result = await service.listPublications(
+      input(anonymousViewer, { limit: 1 }),
+    );
+    expect(result).toMatchObject({ outcome: "OK", items: [] });
+    if (result.outcome !== "OK") {
+      return;
+    }
+
+    expect(queries).toHaveLength(6);
     expect(exposureCalls.flat()).toHaveLength(150);
+    expect(result.nextCursor).not.toBeNull();
+    expect(decodePublicationCursor(result.nextCursor)).not.toBeNull();
+  });
+
+  it("uses bounded candidate batches for larger page sizes", async () => {
+    const first = publication("00000000-0000-4000-8000-000000000201", {
+      visibility: "PUBLIC",
+    });
+    const second = publication("00000000-0000-4000-8000-000000000202", {
+      visibility: "PUBLIC",
+    });
+
+    const queries20: PublicationCollectionQuery[] = [];
+    const twenty = createService(
+      [{ items: [first], hasMoreCandidateRows: false }],
+      undefined,
+      queries20,
+    );
+    await twenty.service.listPublications(input(anonymousViewer, { limit: 20 }));
+
+    const queries50: PublicationCollectionQuery[] = [];
+    const fifty = createService(
+      [{ items: [second], hasMoreCandidateRows: false }],
+      undefined,
+      queries50,
+    );
+    await fifty.service.listPublications(input(anonymousViewer, { limit: 50 }));
+
+    expect(queries20[0]?.limit).toBe(60);
+    expect(queries50[0]?.limit).toBe(150);
   });
 });

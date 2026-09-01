@@ -47,6 +47,7 @@ import type {
   ListPublicationsService,
   PublicationExposureResolver,
 } from "@/application/content/list-publications";
+import type { PublicationAudienceResolver } from "@/application/content/publication-read-resolvers";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
@@ -189,10 +190,22 @@ function getReadPublicationService(): ReadPublicationService {
 
 function createCountingReadPublicationService(
   calls: Array<readonly [string, string]>,
+  dependencyOverrides: Partial<{
+    exposureResolver: PublicationExposureResolver | undefined;
+    audienceResolver: PublicationAudienceResolver | undefined;
+  }> = {},
 ): ReadPublicationService {
   if (!readPublicationServiceClass) {
     throw new Error("Publication read service class was not initialized.");
   }
+
+  const exposureResolver: PublicationExposureResolver = {
+    resolveExposure: (candidates) =>
+      new Map(candidates.map((candidate) => [candidate.id, "READABLE" as const])),
+  };
+  const audienceResolver: PublicationAudienceResolver = {
+    resolveAudience: () => ({ evaluated: true, eligible: true }),
+  };
 
   return new readPublicationServiceClass({
     publications: {
@@ -204,6 +217,9 @@ function createCountingReadPublicationService(
         );
       },
     },
+    exposureResolver,
+    audienceResolver,
+    ...dependencyOverrides,
   });
 }
 
@@ -284,7 +300,6 @@ function readInput(
     publicationId,
     viewer,
     tenantFacts: readFacts(tenantId),
-    contentExposure: "READABLE",
     now: READ_NOW,
     ...overrides,
   };
@@ -549,6 +564,13 @@ beforeAll(async () => {
   });
   readPublicationService = new publicationReadModule.ReadPublicationService({
     publications: getPublicationRepository(),
+    exposureResolver: {
+      resolveExposure: (candidates) =>
+        new Map(candidates.map((candidate) => [candidate.id, "READABLE" as const])),
+    },
+    audienceResolver: {
+      resolveAudience: () => ({ evaluated: true, eligible: true }),
+    },
   });
   readPublicationServiceClass = publicationReadModule.ReadPublicationService;
   listPublicationsService = new publicationCollectionModule.ListPublicationsService({
@@ -1225,11 +1247,11 @@ describe("real Supabase PostgreSQL foundation", () => {
     const membership = await createMembership(tenant.id);
     const viewer = await membershipViewerFor(tenant, membership);
     const cases = [
-      ["draft", new Date("2026-01-10T12:00:00.000Z"), "DENIED"],
-      ["scheduled", new Date("2026-01-20T12:00:00.000Z"), "DENIED"],
-      ["scheduled", new Date("2026-01-10T12:00:00.000Z"), "DENIED"],
-      ["published", null, "DENIED"],
-      ["published", new Date("2026-01-20T12:00:00.000Z"), "DENIED"],
+      ["draft", new Date("2026-01-10T12:00:00.000Z"), "NOT_FOUND"],
+      ["scheduled", new Date("2026-01-20T12:00:00.000Z"), "NOT_FOUND"],
+      ["scheduled", new Date("2026-01-10T12:00:00.000Z"), "NOT_FOUND"],
+      ["published", null, "NOT_FOUND"],
+      ["published", new Date("2026-01-20T12:00:00.000Z"), "NOT_FOUND"],
       ["published", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
       ["expired", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
       ["archived", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
@@ -1249,11 +1271,8 @@ describe("real Supabase PostgreSQL foundation", () => {
       );
 
       expect(result.outcome).toBe(outcome);
-      if (outcome === "DENIED") {
-        expect(result).toEqual({
-          outcome: "DENIED",
-          code: "RESOURCE_NOT_AVAILABLE",
-        });
+      if (outcome === "NOT_FOUND") {
+        expect(result).toEqual({ outcome: "NOT_FOUND" });
         expect(result).not.toHaveProperty("publication");
       } else {
         expect(result).toMatchObject({
@@ -1272,17 +1291,18 @@ describe("real Supabase PostgreSQL foundation", () => {
       publishAt: new Date("2026-01-10T12:00:00.000Z"),
     });
     const viewer = await membershipViewerFor(tenant, membership);
+    const suppressedService = createCountingReadPublicationService([], {
+      exposureResolver: {
+        resolveExposure: () => new Map([[publication.id, "SUPPRESSED"]]),
+      },
+    });
 
-    const result = await getReadPublicationService().getPublicationForRead(
+    const result = await suppressedService.getPublicationForRead(
       readInput(tenant.id, publication.id, viewer, {
-        contentExposure: "SUPPRESSED",
       }),
     );
 
-    expect(result).toEqual({
-      outcome: "DENIED",
-      code: "RESOURCE_NOT_AVAILABLE",
-    });
+    expect(result).toEqual({ outcome: "NOT_FOUND" });
     expect(result).not.toHaveProperty("publication");
   });
 
@@ -1296,26 +1316,27 @@ describe("real Supabase PostgreSQL foundation", () => {
     });
     const viewer = await membershipViewerFor(tenant, membership);
 
+    const missingAudienceResolver = createCountingReadPublicationService([], {
+      audienceResolver: undefined,
+    });
+    await expect(
+      missingAudienceResolver.getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    const ineligibleAudienceResolver = createCountingReadPublicationService([], {
+      audienceResolver: {
+        resolveAudience: () => ({ evaluated: true, eligible: false }),
+      },
+    });
+    await expect(
+      ineligibleAudienceResolver.getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer),
-      ),
-    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
-    await expect(
-      getReadPublicationService().getPublicationForRead(
-        readInput(tenant.id, publication.id, viewer, {
-          audienceDecision: { evaluated: true, eligible: false },
-        }),
-      ),
-    ).resolves.toEqual({
-      outcome: "DENIED",
-      code: "AUDIENCE_INELIGIBLE",
-    });
-    await expect(
-      getReadPublicationService().getPublicationForRead(
-        readInput(tenant.id, publication.id, viewer, {
-          audienceDecision: { evaluated: true, eligible: true },
-        }),
       ),
     ).resolves.toMatchObject({
       outcome: "FOUND",
@@ -1354,15 +1375,12 @@ describe("real Supabase PostgreSQL foundation", () => {
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, membersPublication.id, anonymousViewerFor(tenant.id)),
       ),
-    ).resolves.toEqual({ outcome: "DENIED", code: "MEMBERSHIP_REQUIRED" });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, verifiedPublication.id, l1Viewer),
       ),
-    ).resolves.toEqual({
-      outcome: "DENIED",
-      code: "ASSURANCE_INSUFFICIENT",
-    });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
   });
 
   it("keeps suspended Tenants readable for existing readable content", async () => {
@@ -1417,7 +1435,7 @@ describe("real Supabase PostgreSQL foundation", () => {
           }),
         }),
       ),
-    ).resolves.toEqual({ outcome: "DENIED", code: "TENANT_UNAVAILABLE" });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
@@ -1459,10 +1477,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       if (allowed) {
         expect(result).toMatchObject({ outcome: "FOUND" });
       } else {
-        expect(result).toEqual({
-          outcome: "DENIED",
-          code: "MEMBERSHIP_NOT_ELIGIBLE",
-        });
+        expect(result).toEqual({ outcome: "NOT_FOUND" });
       }
     }
   });
@@ -1497,18 +1512,12 @@ describe("real Supabase PostgreSQL foundation", () => {
           tenantFacts: readFacts(tenant.id, { alumniPublicReadEnabled: false }),
         }),
       ),
-    ).resolves.toEqual({
-      outcome: "DENIED",
-      code: "MEMBERSHIP_NOT_ELIGIBLE",
-    });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, memberPublication.id, viewer),
       ),
-    ).resolves.toEqual({
-      outcome: "DENIED",
-      code: "MEMBERSHIP_NOT_ELIGIBLE",
-    });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
   });
 
   it("keeps transferred-out and closed Memberships on PUBLIC-only reads", async () => {
@@ -1538,10 +1547,7 @@ describe("real Supabase PostgreSQL foundation", () => {
         getReadPublicationService().getPublicationForRead(
           readInput(tenant.id, memberPublication.id, viewer),
         ),
-      ).resolves.toEqual({
-        outcome: "DENIED",
-        code: "MEMBERSHIP_NOT_ELIGIBLE",
-      });
+      ).resolves.toEqual({ outcome: "NOT_FOUND" });
     }
   });
 
@@ -2485,7 +2491,10 @@ describe("real Supabase PostgreSQL foundation", () => {
       lifecycle: "stale",
     });
     const readMembership = requireValue(
-      await getMembershipRepository().findMembershipById(membership.id),
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenant.id,
+        membership.id,
+      ),
       "Membership repository did not return the inserted row.",
     );
     const readByRelation = requireValue(
@@ -2506,6 +2515,61 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(readByRelation.id).toBe(membership.id);
     expect(readMembership.createdAt).toBeInstanceOf(Date);
     expect(readMembership.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it("keeps Membership ID reads explicitly Tenant-scoped and fails closed for malformed UUIDs", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("membership-scope-a") });
+    const tenantB = await createTenant({ slug: nextSlug("membership-scope-b") });
+    const membershipA = await createMembership(tenantA.id, {
+      identitySubjectId: nextIdentity("membership-scope-a"),
+    });
+    const membershipB = await createMembership(tenantB.id, {
+      identitySubjectId: nextIdentity("membership-scope-b"),
+    });
+
+    const sameTenant = await getMembershipRepository().findMembershipByIdForTenant(
+      tenantA.id,
+      membershipA.id,
+    );
+    const foreignMembership =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantA.id,
+        membershipB.id,
+      );
+    const nonexistentMembership =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantB.id,
+        randomUUID(),
+      );
+    const foreignOrNonexistent =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantB.id,
+        membershipA.id,
+      );
+    const malformedTenant =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        "banana",
+        membershipA.id,
+      );
+    const malformedMembership =
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantA.id,
+        "banana",
+      );
+    const malformedRelation =
+      await getMembershipRepository().findMembershipForIdentityAndTenant(
+        membershipA.identitySubjectId,
+        "banana",
+      );
+
+    expect(sameTenant?.id).toBe(membershipA.id);
+    expect(foreignMembership).toBeNull();
+    expect(nonexistentMembership).toBeNull();
+    expect(foreignOrNonexistent).toBeNull();
+    expect(foreignOrNonexistent).toEqual(nonexistentMembership);
+    expect(malformedTenant).toBeNull();
+    expect(malformedMembership).toBeNull();
+    expect(malformedRelation).toBeNull();
   });
 
   it("resolves trusted context through real repositories and application policy", async () => {
@@ -2530,6 +2594,42 @@ describe("real Supabase PostgreSQL foundation", () => {
         assuranceLevel: "L2",
         membershipStatus: "verified",
       },
+    });
+  });
+
+  it("equates nonexistent Tenants with existing Tenants that have no Membership", async () => {
+    const existingTenant = await createTenant({
+      slug: nextSlug("context-no-membership"),
+    });
+    const existingWithoutMembership =
+      await getContextService().resolveRequestContext(
+        { identitySubjectId: nextIdentity("context-missing-membership") },
+        { tenantId: existingTenant.id },
+      );
+    const nonexistentTenant = await getContextService().resolveRequestContext(
+      { identitySubjectId: nextIdentity("context-missing-tenant") },
+      { tenantId: randomUUID() },
+    );
+
+    expect(existingWithoutMembership).toEqual({
+      resolved: false,
+      code: "TENANT_SCOPE_NOT_FOUND",
+    });
+    expect(nonexistentTenant).toEqual(existingWithoutMembership);
+  });
+
+  it("rejects malformed Tenant UUIDs before PostgreSQL and hardens the Tenant repository", async () => {
+    const tenantRepositoryResult =
+      await getTenantRepository().findTenantById("banana");
+    const resolution = await getContextService().resolveRequestContext(
+      { identitySubjectId: nextIdentity("context-malformed-tenant") },
+      { tenantId: "banana" },
+    );
+
+    expect(tenantRepositoryResult).toBeNull();
+    expect(resolution).toEqual({
+      resolved: false,
+      code: "TENANT_SCOPE_NOT_FOUND",
     });
   });
 
@@ -2597,7 +2697,10 @@ describe("real Supabase PostgreSQL foundation", () => {
       "Tenant B was not readable.",
     );
     const readMembershipA = requireValue(
-      await getMembershipRepository().findMembershipById(membershipA.id),
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenantA.id,
+        membershipA.id,
+      ),
       "Membership A was not readable.",
     );
 
@@ -2620,7 +2723,10 @@ describe("real Supabase PostgreSQL foundation", () => {
       "Cross-identity Tenant was not readable.",
     );
     const readMembership = requireValue(
-      await getMembershipRepository().findMembershipById(membership.id),
+      await getMembershipRepository().findMembershipByIdForTenant(
+        tenant.id,
+        membership.id,
+      ),
       "Cross-identity Membership was not readable.",
     );
 

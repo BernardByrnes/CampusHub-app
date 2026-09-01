@@ -8,6 +8,7 @@ import {
   type Membership,
 } from "@/domain/membership/membership";
 import { parseAssuranceLevel } from "@/domain/authorization/assurance-level";
+import { isUuid } from "@/domain/identifiers/uuid";
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import { memberships, type MembershipRow } from "@/server/db/schema";
 
@@ -36,15 +37,23 @@ function toMembership(row: MembershipRow): Membership | null {
 export class DrizzleMembershipRepository implements MembershipContextReader {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
-  public async findMembershipById(id: string): Promise<Membership | null> {
-    if (typeof id !== "string" || id.trim().length === 0) {
+  public async findMembershipByIdForTenant(
+    tenantId: string,
+    membershipId: string,
+  ): Promise<Membership | null> {
+    if (!isUuid(tenantId) || !isUuid(membershipId)) {
       return null;
     }
 
     const rows = await this.database
       .select()
       .from(memberships)
-      .where(eq(memberships.id, id))
+      .where(
+        and(
+          eq(memberships.tenantId, tenantId),
+          eq(memberships.id, membershipId),
+        ),
+      )
       .limit(1);
 
     return rows[0] ? toMembership(rows[0]) : null;
@@ -57,8 +66,7 @@ export class DrizzleMembershipRepository implements MembershipContextReader {
     if (
       typeof identitySubjectId !== "string" ||
       identitySubjectId.trim().length === 0 ||
-      typeof tenantId !== "string" ||
-      tenantId.trim().length === 0
+      !isUuid(tenantId)
     ) {
       return null;
     }

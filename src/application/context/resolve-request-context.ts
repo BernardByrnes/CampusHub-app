@@ -11,6 +11,8 @@ import type {
   RequestContextResolver,
   TenantHint,
 } from "@/server/context/request-context";
+import { isUuid } from "@/domain/identifiers/uuid";
+import { isValidTenantSlug } from "@/domain/tenancy/tenant";
 
 import type {
   MembershipContextReader,
@@ -49,9 +51,15 @@ function selectTenantLookup(hint: unknown): TenantHintDecision {
     };
   }
 
-  return hasTenantId
-    ? { lookup: { kind: "id", value: candidate.tenantId as string } }
-    : { lookup: { kind: "slug", value: candidate.slug as string } };
+  if (hasTenantId) {
+    return isUuid(candidate.tenantId)
+      ? { lookup: { kind: "id", value: candidate.tenantId } }
+      : { failure: "TENANT_SCOPE_NOT_FOUND" };
+  }
+
+  return isValidTenantSlug(candidate.slug)
+    ? { lookup: { kind: "slug", value: candidate.slug } }
+    : { failure: "TENANT_SCOPE_NOT_FOUND" };
 }
 
 /**
@@ -92,7 +100,7 @@ export class RequestContextService implements RequestContextResolver {
           );
 
     if (tenant === null) {
-      return { resolved: false, code: "TENANT_UNAVAILABLE" };
+      return { resolved: false, code: "TENANT_SCOPE_NOT_FOUND" };
     }
 
     const membership =
@@ -101,11 +109,21 @@ export class RequestContextService implements RequestContextResolver {
         tenant.id,
       );
 
-    return validateRequestContext({
+    const resolution = validateRequestContext({
       identitySubjectId,
       tenant,
       membership,
     });
+
+    if (
+      !resolution.resolved &&
+      (resolution.code === "TENANT_UNAVAILABLE" ||
+        resolution.code === "MEMBERSHIP_REQUIRED")
+    ) {
+      return { resolved: false, code: "TENANT_SCOPE_NOT_FOUND" };
+    }
+
+    return resolution;
   }
 
   public resolve(

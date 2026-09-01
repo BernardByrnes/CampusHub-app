@@ -15,7 +15,7 @@ import {
 } from "./resolve-request-context";
 
 const tenantAlpha: Tenant = {
-  id: "tenant-alpha",
+  id: "00000000-0000-4000-8000-000000000001",
   slug: "tenant-alpha",
   displayName: "Tenant Alpha",
   status: "active",
@@ -25,8 +25,8 @@ const tenantAlpha: Tenant = {
 };
 
 const membershipAlpha: Membership = {
-  id: "membership-alpha-a",
-  tenantId: "tenant-alpha",
+  id: "00000000-0000-4000-8000-000000000011",
+  tenantId: tenantAlpha.id,
   identitySubjectId: "identity-a",
   assuranceLevel: "L2",
   lifecycle: "verified",
@@ -37,14 +37,18 @@ const membershipAlpha: Membership = {
 function serviceFor(
   tenant: Tenant | null = tenantAlpha,
   membership: Membership | null = membershipAlpha,
+  tenantIdCalls: string[] = [],
 ) {
   const dependencies: ResolveRequestContextDependencies = {
     tenants: {
-      findTenantById: async () => tenant,
+      findTenantById: async (id) => {
+        tenantIdCalls.push(id);
+        return tenant;
+      },
       findTenantBySlug: async () => tenant,
     },
     memberships: {
-      findMembershipById: async () => membership,
+      findMembershipByIdForTenant: async () => membership,
       findMembershipForIdentityAndTenant: async () => membership,
     },
   };
@@ -63,9 +67,9 @@ describe("RequestContextService", () => {
       resolved: true,
       context: {
         identitySubjectId: "identity-a",
-        tenantId: "tenant-alpha",
+        tenantId: tenantAlpha.id,
         tenantStatus: "active",
-        membershipId: "membership-alpha-a",
+        membershipId: membershipAlpha.id,
         assuranceLevel: "L2",
         membershipStatus: "verified",
       },
@@ -80,16 +84,64 @@ describe("RequestContextService", () => {
     await expect(
       serviceFor(tenantAlpha, null).resolveRequestContext(
         { identitySubjectId: "identity-a" },
-        { tenantId: "tenant-alpha" },
+        { tenantId: tenantAlpha.id },
       ),
-    ).resolves.toEqual({ resolved: false, code: "MEMBERSHIP_REQUIRED" });
+    ).resolves.toEqual({ resolved: false, code: "TENANT_SCOPE_NOT_FOUND" });
+  });
+
+  it("equates an existing Tenant without Membership with a nonexistent Tenant", async () => {
+    const existingWithoutMembership = await serviceFor(
+      tenantAlpha,
+      null,
+    ).resolveRequestContext(
+      { identitySubjectId: "identity-a" },
+      { tenantId: tenantAlpha.id },
+    );
+    const nonexistentTenant = await serviceFor(
+      null,
+      null,
+    ).resolveRequestContext(
+      { identitySubjectId: "identity-a" },
+      { tenantId: tenantAlpha.id },
+    );
+
+    expect(existingWithoutMembership).toEqual({
+      resolved: false,
+      code: "TENANT_SCOPE_NOT_FOUND",
+    });
+    expect(nonexistentTenant).toEqual(existingWithoutMembership);
+  });
+
+  it("rejects malformed Tenant identifiers before the Tenant repository", async () => {
+    const tenantIdCalls: string[] = [];
+    const service = serviceFor(tenantAlpha, membershipAlpha, tenantIdCalls);
+
+    await expect(
+      service.resolveRequestContext(
+        { identitySubjectId: "identity-a" },
+        { tenantId: "banana" },
+      ),
+    ).resolves.toEqual({
+      resolved: false,
+      code: "TENANT_SCOPE_NOT_FOUND",
+    });
+    await expect(
+      service.resolveRequestContext(
+        { identitySubjectId: "identity-a" },
+        { slug: "not_a_slug" },
+      ),
+    ).resolves.toEqual({
+      resolved: false,
+      code: "TENANT_SCOPE_NOT_FOUND",
+    });
+    expect(tenantIdCalls).toEqual([]);
   });
 
   it("does not accept two competing client tenant hints", async () => {
     await expect(
       serviceFor().resolveRequestContext(
         { identitySubjectId: "identity-a" },
-        { tenantId: "tenant-alpha", slug: "tenant-alpha" },
+        { tenantId: tenantAlpha.id, slug: "tenant-alpha" },
       ),
     ).resolves.toEqual({ resolved: false, code: "CONTEXT_MISMATCH" });
   });
@@ -99,15 +151,15 @@ describe("RequestContextService", () => {
       await expect(
         serviceFor({ ...tenantAlpha, status }).resolveRequestContext(
           { identitySubjectId: "identity-a" },
-          { tenantId: "tenant-alpha" },
+          { tenantId: tenantAlpha.id },
         ),
       ).resolves.toEqual({
         resolved: true,
         context: {
           identitySubjectId: "identity-a",
-          tenantId: "tenant-alpha",
+        tenantId: tenantAlpha.id,
           tenantStatus: status,
-          membershipId: "membership-alpha-a",
+        membershipId: membershipAlpha.id,
           assuranceLevel: "L2",
           membershipStatus: "verified",
         },
@@ -120,15 +172,15 @@ describe("RequestContextService", () => {
       await expect(
         serviceFor(tenantAlpha, { ...membershipAlpha, lifecycle }).resolveRequestContext(
           { identitySubjectId: "identity-a" },
-          { tenantId: "tenant-alpha" },
+          { tenantId: tenantAlpha.id },
         ),
       ).resolves.toEqual({
         resolved: true,
         context: {
           identitySubjectId: "identity-a",
-          tenantId: "tenant-alpha",
+        tenantId: tenantAlpha.id,
           tenantStatus: "active",
-          membershipId: "membership-alpha-a",
+        membershipId: membershipAlpha.id,
           assuranceLevel: "L2",
           membershipStatus: lifecycle,
         },

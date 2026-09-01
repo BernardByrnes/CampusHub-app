@@ -46,4 +46,40 @@ describe("institutional email assurance invariant", () => {
       false,
     );
   });
+
+  it("does not accept attestation booleans inherited from a prototype", () => {
+    const inherited = Object.create({
+      identityBinding: true,
+      currentEnrollment: true,
+      reliableRevocation: true,
+    }) as Record<string, unknown>;
+
+    expect(institutionalEmailSupportsL3(inherited)).toBe(false);
+    expect(institutionalEmailEvidenceMaximum(inherited)).toBe("L2");
+  });
+
+  it("requires own, exact boolean attestation fields", () => {
+    const complete = Object.create(null) as Record<string, unknown>;
+    complete.identityBinding = true;
+    complete.currentEnrollment = true;
+    complete.reliableRevocation = true;
+
+    const constructorTrick = {
+      identityBinding: true,
+      currentEnrollment: true,
+      reliableRevocation: true,
+      constructor: true,
+      toString: true,
+    };
+
+    expect(institutionalEmailSupportsL3(complete)).toBe(true);
+    expect(institutionalEmailSupportsL3(constructorTrick)).toBe(true);
+    expect(
+      institutionalEmailSupportsL3({
+        identityBinding: new Boolean(true),
+        currentEnrollment: true,
+        reliableRevocation: true,
+      }),
+    ).toBe(false);
+  });
 });

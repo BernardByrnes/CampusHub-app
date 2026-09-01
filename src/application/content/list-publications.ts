@@ -18,6 +18,8 @@ import {
   encodePublicationCursor,
   isPublicationCollectionCursor,
   MAX_PUBLICATION_CANDIDATES_SCANNED,
+  MAX_PUBLICATION_COLLECTION_QUERY_ROUNDS,
+  MIN_PUBLICATION_CANDIDATE_BATCH_SIZE,
   normalizePublicationPageSize,
   parsePublicationCollectionSurface,
   PUBLICATION_COLLECTION_OVERFETCH_FACTOR,
@@ -28,23 +30,14 @@ import {
 } from "@/domain/content/publication-collection";
 import type { Publication } from "@/domain/content/publication";
 import { isUuid } from "@/domain/identifiers/uuid";
+import type { PublicationExposureResolver } from "./publication-read-resolvers";
+
+export type { PublicationExposureResolver } from "./publication-read-resolvers";
 
 export type PublicationCollectionRepository = Readonly<{
   listPublicationCandidatesForTenant(
     input: PublicationCollectionQuery,
   ): Promise<PublicationCollectionCandidatePage>;
-}>;
-
-/**
- * The seam is batch-capable by design. A future persisted moderation/exposure
- * source must resolve a candidate batch in one bounded operation instead of
- * introducing one database lookup per Publication.
- */
-export type PublicationExposureResolver = Readonly<{
-  resolveExposure(
-    publications: readonly Publication[],
-  ): Promise<ReadonlyMap<string, PublicationContentExposure>> |
-    ReadonlyMap<string, PublicationContentExposure>;
 }>;
 
 export type ListPublicationsServiceDependencies = Readonly<{
@@ -184,18 +177,24 @@ export class ListPublicationsService {
 
     const pageSize = normalizePublicationPageSize(input.limit);
     const candidateBatchSize = Math.min(
-      pageSize * PUBLICATION_COLLECTION_OVERFETCH_FACTOR,
+      Math.max(
+        pageSize * PUBLICATION_COLLECTION_OVERFETCH_FACTOR,
+        MIN_PUBLICATION_CANDIDATE_BATCH_SIZE,
+      ),
       MAX_PUBLICATION_CANDIDATES_SCANNED,
     );
     const authorizedItems: Publication[] = [];
     let scannedCandidates = 0;
     let lastScanned: Publication | null = null;
     let hasMoreAfterScan = false;
+    let queryRounds = 0;
 
     while (
       scannedCandidates < MAX_PUBLICATION_CANDIDATES_SCANNED &&
-      authorizedItems.length < pageSize
+      authorizedItems.length < pageSize &&
+      queryRounds < MAX_PUBLICATION_COLLECTION_QUERY_ROUNDS
     ) {
+      queryRounds += 1;
       const remainingScanBudget =
         MAX_PUBLICATION_CANDIDATES_SCANNED - scannedCandidates;
       const batchLimit = Math.min(candidateBatchSize, remainingScanBudget);
@@ -281,6 +280,11 @@ export class ListPublicationsService {
       }
 
       if (scannedCandidates >= MAX_PUBLICATION_CANDIDATES_SCANNED) {
+        hasMoreAfterScan = candidatePage.hasMoreCandidateRows;
+        break;
+      }
+
+      if (queryRounds >= MAX_PUBLICATION_COLLECTION_QUERY_ROUNDS) {
         hasMoreAfterScan = candidatePage.hasMoreCandidateRows;
         break;
       }

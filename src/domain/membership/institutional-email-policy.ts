@@ -16,11 +16,18 @@ function isCompleteAttestation(
   }
 
   const candidate = value as Record<string, unknown>;
-  return (
-    candidate.identityBinding === true &&
-    candidate.currentEnrollment === true &&
-    candidate.reliableRevocation === true
-  );
+  try {
+    return (
+      Object.prototype.hasOwnProperty.call(candidate, "identityBinding") &&
+      Object.prototype.hasOwnProperty.call(candidate, "currentEnrollment") &&
+      Object.prototype.hasOwnProperty.call(candidate, "reliableRevocation") &&
+      candidate.identityBinding === true &&
+      candidate.currentEnrollment === true &&
+      candidate.reliableRevocation === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** An institutional email is evidence, not by itself Strong Institutional Proof. */

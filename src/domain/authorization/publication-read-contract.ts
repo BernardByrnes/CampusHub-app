@@ -2,6 +2,8 @@ import {
   parseTenantLifecycle,
   type TenantLifecycle,
 } from "@/domain/tenancy/tenant";
+import "server-only";
+
 import { isUuid } from "@/domain/identifiers/uuid";
 
 import {

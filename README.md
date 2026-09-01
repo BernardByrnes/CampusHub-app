@@ -69,6 +69,13 @@ the tenant-plus-identity Membership uniqueness index, and an explicit
 `drizzle/0000_young_adam_warlock.sql` migration. No destructive reset command
 is provided.
 
+The current PostgreSQL foundation includes Tenant, Membership, and Publication
+persistence, with reviewed Drizzle migrations through `0004`. Migrations
+`0002` and `0003` were applied while the Publication table had no real rows;
+that historical pre-production condition is not a claim that every migration
+is safe to upgrade on populated data. Future mandatory-column changes on
+populated tables must use an expand/backfill/contract-safe migration process.
+
 ## Local setup
 
 ```powershell
@@ -118,10 +125,11 @@ npm run db:migrate   Apply Drizzle migrations to PostgreSQL
 npm run db:check     Check Drizzle migration consistency
 ```
 
-There is no `db:push` production workflow. The current migration contains only
-the Tenant and Membership foundation; Poll response, XP, Streak, and content
-tables remain out of scope. Playwright E2E setup is reserved for a later
-phase; domain/application tests belong in Vitest.
+There is no `db:push` production workflow. Poll response, XP, and Streak
+tables remain out of scope, while the Publication persistence foundation is
+present through migration `0004`; future product features remain outside this
+checkpoint. Playwright E2E setup is reserved for a later phase;
+domain/application tests belong in Vitest.
 
 `npm audit --omit=dev` currently reports zero production vulnerabilities. The
 full audit still reports four moderate, development-only `esbuild` findings

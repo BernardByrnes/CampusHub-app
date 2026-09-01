@@ -7,11 +7,7 @@ import {
   type ResourceReadViewer,
 } from "@/domain/authorization/resource-read-policy";
 import { mapPublicationToResourceAccessFacts } from "@/domain/authorization/publication-read-mapper";
-import type {
-  PublicationAudienceDecision,
-  PublicationContentExposure,
-  ResolvedTenantReadFacts,
-} from "@/domain/authorization/publication-read-contract";
+import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import {
   isPublicationAudienceDecision,
   isResolvedTenantReadFacts,
@@ -19,6 +15,10 @@ import {
 } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
 import { isUuid } from "@/domain/identifiers/uuid";
+import type {
+  PublicationAudienceResolver,
+  PublicationExposureResolver,
+} from "./publication-read-resolvers";
 
 export type PublicationReadRepository = Readonly<{
   findPublicationByIdForTenant(
@@ -29,6 +29,8 @@ export type PublicationReadRepository = Readonly<{
 
 export type ReadPublicationServiceDependencies = Readonly<{
   publications: PublicationReadRepository;
+  exposureResolver?: PublicationExposureResolver;
+  audienceResolver?: PublicationAudienceResolver;
 }>;
 
 export type ReadPublicationInput = Readonly<{
@@ -36,8 +38,6 @@ export type ReadPublicationInput = Readonly<{
   publicationId: string;
   viewer: ResourceReadViewer;
   tenantFacts: ResolvedTenantReadFacts;
-  contentExposure: PublicationContentExposure;
-  audienceDecision?: PublicationAudienceDecision;
   now: Date;
 }>;
 
@@ -61,16 +61,12 @@ function isReadInput(value: unknown): value is ReadPublicationInput {
     !isUuid(value.publicationId) ||
     !isResourceReadViewer(value.viewer) ||
     !isResolvedTenantReadFacts(value.tenantFacts) ||
-    parsePublicationContentExposure(value.contentExposure) === null ||
     !isValidDate(value.now)
   ) {
     return false;
   }
 
-  return (
-    value.audienceDecision === undefined ||
-    isPublicationAudienceDecision(value.audienceDecision)
-  );
+  return true;
 }
 
 function denied(code: ResourceReadDenialCode): ReadPublicationResult {
@@ -129,16 +125,62 @@ export class ReadPublicationService {
       return { outcome: "NOT_FOUND" };
     }
 
+    if (this.dependencies.exposureResolver === undefined) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    let exposureById: unknown;
+    try {
+      exposureById = await this.dependencies.exposureResolver.resolveExposure([
+        publication,
+      ]);
+    } catch {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    if (!(exposureById instanceof Map)) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    const contentExposure = parsePublicationContentExposure(
+      exposureById.get(publication.id),
+    );
+    if (contentExposure === null) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    let audienceDecision;
+    if (publication.audienceMode === "targeted") {
+      if (this.dependencies.audienceResolver === undefined) {
+        return { outcome: "NOT_FOUND" };
+      }
+
+      let evaluatedAudience: unknown;
+      try {
+        evaluatedAudience = await this.dependencies.audienceResolver.resolveAudience(
+          { publication, viewer: input.viewer },
+        );
+      } catch {
+        return { outcome: "NOT_FOUND" };
+      }
+
+      if (!isPublicationAudienceDecision(evaluatedAudience)) {
+        return { outcome: "NOT_FOUND" };
+      }
+
+      audienceDecision = evaluatedAudience;
+    }
+
     const resource = mapPublicationToResourceAccessFacts(
       publication,
       input.tenantFacts,
-      input.contentExposure,
-      input.audienceDecision,
+      contentExposure,
+      audienceDecision,
       input.now,
     );
 
     if (resource === null) {
-      return denied("INVALID_INPUT");
+      return { outcome: "NOT_FOUND" };
     }
 
     const decision = authorizeResourceRead({
@@ -147,7 +189,7 @@ export class ReadPublicationService {
     });
 
     if (!decision.allowed) {
-      return denied(decision.code);
+      return { outcome: "NOT_FOUND" };
     }
 
     return { outcome: "FOUND", publication };

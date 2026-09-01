@@ -7,7 +7,10 @@ export interface TenantContextReader {
 }
 
 export interface MembershipContextReader {
-  findMembershipById(id: string): Promise<Membership | null>;
+  findMembershipByIdForTenant(
+    tenantId: string,
+    membershipId: string,
+  ): Promise<Membership | null>;
   findMembershipForIdentityAndTenant(
     identitySubjectId: string,
     tenantId: string,

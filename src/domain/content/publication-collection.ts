@@ -43,6 +43,8 @@ export const MIN_PUBLICATION_PAGE_SIZE = 1;
 export const MAX_PUBLICATION_PAGE_SIZE = 50;
 export const PUBLICATION_COLLECTION_OVERFETCH_FACTOR = 3;
 export const MAX_PUBLICATION_CANDIDATES_SCANNED = 150;
+export const MIN_PUBLICATION_CANDIDATE_BATCH_SIZE = 25;
+export const MAX_PUBLICATION_COLLECTION_QUERY_ROUNDS = 6;
 
 export function normalizePublicationPageSize(value: unknown): number {
   if (value === undefined) {
