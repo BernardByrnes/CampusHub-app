@@ -5,9 +5,11 @@ import { and, eq } from "drizzle-orm";
 import {
   isPublication,
   parsePublicationLifecycle,
+  parsePublicationPriority,
   parsePublicationType,
   type Publication,
   type PublicationLifecycle,
+  type PublicationPriority,
   type PublicationType,
 } from "@/domain/content/publication";
 import {
@@ -24,20 +26,37 @@ export type CreatePublicationInput = Readonly<{
   type: PublicationType;
   title: string;
   body: string;
+  priority?: PublicationPriority;
   visibility?: ResourceVisibility;
   lifecycle?: PublicationLifecycle;
+  authorOfficeLabel: string;
+  publishAt?: Date | null;
+  expiresAt?: Date | null;
 }>;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isNullableDate(value: unknown): value is Date | null {
+  return (
+    value === null ||
+    (value instanceof Date && !Number.isNaN(value.getTime()))
+  );
+}
+
 function toPublication(row: PublicationRow): Publication | null {
   const type = parsePublicationType(row.type);
+  const priority = parsePublicationPriority(row.priority);
   const lifecycle = parsePublicationLifecycle(row.lifecycle);
   const visibility = parseResourceVisibility(row.visibility);
 
-  if (type === null || lifecycle === null || visibility === null) {
+  if (
+    type === null ||
+    priority === null ||
+    lifecycle === null ||
+    visibility === null
+  ) {
     return null;
   }
 
@@ -47,8 +66,12 @@ function toPublication(row: PublicationRow): Publication | null {
     type,
     title: row.title,
     body: row.body,
+    priority,
     visibility,
     lifecycle,
+    authorOfficeLabel: row.authorOfficeLabel,
+    publishAt: row.publishAt,
+    expiresAt: row.expiresAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -73,6 +96,10 @@ export class DrizzlePublicationRepository {
 
     const candidate = input as Record<string, unknown>;
     const type = parsePublicationType(candidate.type);
+    const priority =
+      candidate.priority === undefined
+        ? "standard"
+        : parsePublicationPriority(candidate.priority);
     const lifecycle =
       candidate.lifecycle === undefined
         ? "draft"
@@ -81,13 +108,21 @@ export class DrizzlePublicationRepository {
       candidate.visibility === undefined
         ? "MEMBERS"
         : parseResourceVisibility(candidate.visibility);
+    const publishAt =
+      candidate.publishAt === undefined ? null : candidate.publishAt;
+    const expiresAt =
+      candidate.expiresAt === undefined ? null : candidate.expiresAt;
 
     if (
       type === null ||
+      priority === null ||
       lifecycle === null ||
       visibility === null ||
       !isNonEmptyString(candidate.title) ||
-      !isNonEmptyString(candidate.body)
+      !isNonEmptyString(candidate.body) ||
+      !isNonEmptyString(candidate.authorOfficeLabel) ||
+      !isNullableDate(publishAt) ||
+      !isNullableDate(expiresAt)
     ) {
       return null;
     }
@@ -99,8 +134,12 @@ export class DrizzlePublicationRepository {
         type,
         title: candidate.title,
         body: candidate.body,
+        priority,
         visibility,
         lifecycle,
+        authorOfficeLabel: candidate.authorOfficeLabel,
+        publishAt,
+        expiresAt,
       })
       .returning();
 

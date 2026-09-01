@@ -6,6 +6,7 @@ import {
   membershipLifecycleEnum,
   memberships,
   publicationLifecycleEnum,
+  publicationPriorityEnum,
   publicationTypeEnum,
   publicationVisibilityEnum,
   publications,
@@ -36,6 +37,10 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "L3",
     ]);
     expect(publicationTypeEnum.enumValues).toEqual(["notice", "news"]);
+    expect(publicationPriorityEnum.enumValues).toEqual([
+      "standard",
+      "priority",
+    ]);
     expect(publicationLifecycleEnum.enumValues).toEqual([
       "draft",
       "scheduled",
@@ -71,6 +76,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(publicationConfig.checks.map((check) => check.name)).toEqual([
       "publications_title_nonempty",
       "publications_body_nonempty",
+      "publications_author_office_label_nonempty",
     ]);
   });
 });

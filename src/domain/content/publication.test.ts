@@ -5,8 +5,10 @@ import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibilit
 import {
   isPublication,
   parsePublicationLifecycle,
+  parsePublicationPriority,
   parsePublicationType,
   PUBLICATION_LIFECYCLES,
+  PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
   type Publication,
 } from "./publication";
@@ -17,8 +19,12 @@ const basePublication: Publication = {
   type: "news",
   title: "Campus update",
   body: "The campus update body.",
+  priority: "standard",
   visibility: "MEMBERS",
   lifecycle: "draft",
+  authorOfficeLabel: "Guild Communications Office",
+  publishAt: null,
+  expiresAt: null,
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 };
@@ -26,6 +32,7 @@ const basePublication: Publication = {
 describe("Publication domain", () => {
   it("uses the frozen Publication type, lifecycle, and shared visibility values", () => {
     expect(PUBLICATION_TYPES).toEqual(["notice", "news"]);
+    expect(PUBLICATION_PRIORITIES).toEqual(["standard", "priority"]);
     expect(PUBLICATION_LIFECYCLES).toEqual([
       "draft",
       "scheduled",
@@ -39,6 +46,7 @@ describe("Publication domain", () => {
       "VERIFIED_MEMBERS",
     ]);
     expect(parsePublicationType("notice")).toBe("notice");
+    expect(parsePublicationPriority("priority")).toBe("priority");
     expect(parsePublicationLifecycle("published")).toBe("published");
   });
 
@@ -46,6 +54,9 @@ describe("Publication domain", () => {
     expect(parsePublicationType("announcement")).toBeNull();
     expect(parsePublicationType("constructor")).toBeNull();
     expect(parsePublicationType("toString")).toBeNull();
+    expect(parsePublicationPriority("urgent")).toBeNull();
+    expect(parsePublicationPriority("constructor")).toBeNull();
+    expect(parsePublicationPriority("toString")).toBeNull();
     expect(parsePublicationLifecycle("live")).toBeNull();
     expect(parsePublicationLifecycle("constructor")).toBeNull();
     expect(parsePublicationLifecycle("toString")).toBeNull();
@@ -60,6 +71,9 @@ describe("Publication domain", () => {
     expect(isPublication({ ...basePublication, tenantId: " " })).toBe(false);
     expect(isPublication({ ...basePublication, title: "   " })).toBe(false);
     expect(isPublication({ ...basePublication, body: "" })).toBe(false);
+    expect(isPublication({ ...basePublication, priority: "urgent" })).toBe(
+      false,
+    );
     expect(isPublication({ ...basePublication, type: "noticeboard" })).toBe(
       false,
     );
@@ -67,6 +81,18 @@ describe("Publication domain", () => {
       false,
     );
     expect(isPublication({ ...basePublication, visibility: "PRIVATE" })).toBe(
+      false,
+    );
+    expect(
+      isPublication({ ...basePublication, authorOfficeLabel: " " }),
+    ).toBe(false);
+    expect(
+      isPublication({ ...basePublication, publishAt: new Date("invalid") }),
+    ).toBe(false);
+    expect(
+      isPublication({ ...basePublication, expiresAt: new Date("invalid") }),
+    ).toBe(false);
+    expect(isPublication({ ...basePublication, publishAt: undefined })).toBe(
       false,
     );
     expect(

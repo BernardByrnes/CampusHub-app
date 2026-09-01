@@ -12,12 +12,18 @@ import {
 import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
 import {
   PUBLICATION_LIFECYCLES,
+  PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
 
 import { tenants } from "./tenant";
 
 export const publicationTypeEnum = pgEnum("publication_type", PUBLICATION_TYPES);
+
+export const publicationPriorityEnum = pgEnum(
+  "publication_priority",
+  PUBLICATION_PRIORITIES,
+);
 
 export const publicationLifecycleEnum = pgEnum(
   "publication_lifecycle",
@@ -42,12 +48,24 @@ export const publications = pgTable(
     type: publicationTypeEnum("type").notNull(),
     title: text("title").notNull(),
     body: text("body").notNull(),
+    priority: publicationPriorityEnum("priority")
+      .notNull()
+      .default("standard"),
     visibility: publicationVisibilityEnum("visibility")
       .notNull()
       .default("MEMBERS"),
     lifecycle: publicationLifecycleEnum("lifecycle")
       .notNull()
       .default("draft"),
+    authorOfficeLabel: text("author_office_label").notNull(),
+    publishAt: timestamp("publish_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -74,6 +92,10 @@ export const publications = pgTable(
     check(
       "publications_body_nonempty",
       sql`char_length(btrim(${table.body})) > 0`,
+    ),
+    check(
+      "publications_author_office_label_nonempty",
+      sql`char_length(btrim(${table.authorOfficeLabel})) > 0`,
     ),
   ],
 );

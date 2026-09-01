@@ -9,6 +9,7 @@ import { validateRequestContext } from "@/domain/authorization/context-policy";
 import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
 import {
   PUBLICATION_LIFECYCLES,
+  PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
 import { MEMBERSHIP_LIFECYCLE_STATUSES } from "@/domain/membership/membership";
@@ -259,8 +260,12 @@ async function createPublication(
     type: "news",
     title: `Synthetic Publication ${runPrefix}`,
     body: `Synthetic publication body ${runPrefix}`,
+    priority: "standard",
     visibility: "MEMBERS",
     lifecycle: "draft",
+    authorOfficeLabel: "Guild Communications Office",
+    publishAt: null,
+    expiresAt: null,
     ...overrides,
   };
   const rows = await getDatabase()
@@ -320,8 +325,12 @@ async function insertRawPublication(values: {
   type?: string;
   title?: string;
   body?: string;
+  priority?: string;
   visibility?: string;
   lifecycle?: string;
+  authorOfficeLabel?: string | null;
+  publishAt?: Date | null;
+  expiresAt?: Date | null;
 }): Promise<void> {
   await getDatabase().execute(sql`
     insert into "publications" (
@@ -329,16 +338,24 @@ async function insertRawPublication(values: {
       "type",
       "title",
       "body",
+      "priority",
       "visibility",
-      "lifecycle"
+      "lifecycle",
+      "author_office_label",
+      "publish_at",
+      "expires_at"
     )
     values (
       ${values.tenantId ?? null},
       ${values.type ?? "news"},
       ${values.title ?? `Synthetic Publication ${runPrefix}`},
       ${values.body ?? `Synthetic publication body ${runPrefix}`},
+      ${values.priority ?? "standard"},
       ${values.visibility ?? "MEMBERS"},
-      ${values.lifecycle ?? "draft"}
+      ${values.lifecycle ?? "draft"},
+      ${values.authorOfficeLabel === undefined ? `Synthetic Guild Communications Office` : values.authorOfficeLabel},
+      ${values.publishAt ?? null},
+      ${values.expiresAt ?? null}
     )
   `);
 }
@@ -445,7 +462,8 @@ describe("real Supabase PostgreSQL foundation", () => {
           'membership_assurance_level',
           'publication_type',
           'publication_lifecycle',
-          'publication_visibility'
+          'publication_visibility',
+          'publication_priority'
         )
       order by t.typname, e.enumsortorder
     `);
@@ -464,6 +482,9 @@ describe("real Supabase PostgreSQL foundation", () => {
       ...ASSURANCE_LEVELS,
     ]);
     expect(enums.get("publication_type")).toEqual([...PUBLICATION_TYPES]);
+    expect(enums.get("publication_priority")).toEqual([
+      ...PUBLICATION_PRIORITIES,
+    ]);
     expect(enums.get("publication_lifecycle")).toEqual([
       ...PUBLICATION_LIFECYCLES,
     ]);
@@ -498,7 +519,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(2);
+    ).toBe(3);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -517,8 +538,12 @@ describe("real Supabase PostgreSQL foundation", () => {
         type: "notice",
         title: "Synthetic notice",
         body: "Synthetic notice body",
+        priority: "priority",
         visibility: "PUBLIC",
         lifecycle: "published",
+        authorOfficeLabel: "Guild President's Office",
+        publishAt: new Date("2030-01-15T09:30:00.000Z"),
+        expiresAt: new Date("2030-02-15T09:30:00.000Z"),
       }),
       "Publication repository did not return the inserted row.",
     );
@@ -529,9 +554,13 @@ describe("real Supabase PostgreSQL foundation", () => {
       type: "notice",
       title: "Synthetic notice",
       body: "Synthetic notice body",
+      priority: "priority",
       visibility: "PUBLIC",
       lifecycle: "published",
+      authorOfficeLabel: "Guild President's Office",
     });
+    expect(created.publishAt).toEqual(new Date("2030-01-15T09:30:00.000Z"));
+    expect(created.expiresAt).toEqual(new Date("2030-02-15T09:30:00.000Z"));
     expect(created.createdAt).toBeInstanceOf(Date);
     expect(created.updatedAt).toBeInstanceOf(Date);
 
@@ -545,6 +574,39 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(read).toEqual(created);
   });
 
+  it("uses the standard priority default and nullable timestamps for drafts", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-draft-defaults") });
+    const created = requireValue(
+      await getPublicationRepository().createPublication(tenant.id, {
+        type: "news",
+        title: "Synthetic draft",
+        body: "Synthetic draft body",
+        authorOfficeLabel: "Sports Office",
+      }),
+      "Publication draft defaults were not returned.",
+    );
+
+    expect(created.priority).toBe("standard");
+    expect(created.publishAt).toBeNull();
+    expect(created.expiresAt).toBeNull();
+
+    const persisted = await getDatabase()
+      .select({
+        priority: publications.priority,
+        authorOfficeLabel: publications.authorOfficeLabel,
+        publishAt: publications.publishAt,
+        expiresAt: publications.expiresAt,
+      })
+      .from(publications)
+      .where(eq(publications.id, created.id));
+    expect(persisted[0]).toEqual({
+      priority: "standard",
+      authorOfficeLabel: "Sports Office",
+      publishAt: null,
+      expiresAt: null,
+    });
+  });
+
   it("rejects a Publication referencing a nonexistent Tenant", async () => {
     await expectPostgresCode(
       () =>
@@ -552,6 +614,7 @@ describe("real Supabase PostgreSQL foundation", () => {
           type: "news",
           title: "Synthetic foreign publication",
           body: "This insert must fail at the Tenant foreign key.",
+          authorOfficeLabel: "Guild Communications Office",
         }),
       "23503",
     );
@@ -674,6 +737,10 @@ describe("real Supabase PostgreSQL foundation", () => {
       "22P02",
     );
     await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, priority: "urgent" }),
+      "22P02",
+    );
+    await expectPostgresCode(
       () =>
         insertRawPublication({
           tenantId: tenant.id,
@@ -692,6 +759,22 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expectPostgresCode(
       () => insertRawPublication({ tenantId: tenant.id, title: "   " }),
       "23514",
+    );
+    await expectPostgresCode(
+      () =>
+        insertRawPublication({
+          tenantId: tenant.id,
+          authorOfficeLabel: " ",
+        }),
+      "23514",
+    );
+    await expectPostgresCode(
+      () =>
+        insertRawPublication({
+          tenantId: tenant.id,
+          authorOfficeLabel: null,
+        }),
+      "23502",
     );
     await expectPostgresCode(
       () => insertRawPublication({ tenantId: tenant.id, body: "" }),

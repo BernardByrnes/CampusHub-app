@@ -7,6 +7,10 @@ export const PUBLICATION_TYPES = ["notice", "news"] as const;
 
 export type PublicationType = (typeof PUBLICATION_TYPES)[number];
 
+export const PUBLICATION_PRIORITIES = ["standard", "priority"] as const;
+
+export type PublicationPriority = (typeof PUBLICATION_PRIORITIES)[number];
+
 export const PUBLICATION_LIFECYCLES = [
   "draft",
   "scheduled",
@@ -23,8 +27,12 @@ export type Publication = Readonly<{
   type: PublicationType;
   title: string;
   body: string;
+  priority: PublicationPriority;
   visibility: ResourceVisibility;
   lifecycle: PublicationLifecycle;
+  authorOfficeLabel: string;
+  publishAt: Date | null;
+  expiresAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }>;
@@ -40,6 +48,15 @@ export function parsePublicationType(value: unknown): PublicationType | null {
     : null;
 }
 
+export function parsePublicationPriority(
+  value: unknown,
+): PublicationPriority | null {
+  return typeof value === "string" &&
+    (PUBLICATION_PRIORITIES as readonly string[]).includes(value)
+    ? (value as PublicationPriority)
+    : null;
+}
+
 export function parsePublicationLifecycle(
   value: unknown,
 ): PublicationLifecycle | null {
@@ -47,6 +64,13 @@ export function parsePublicationLifecycle(
     (PUBLICATION_LIFECYCLES as readonly string[]).includes(value)
     ? (value as PublicationLifecycle)
     : null;
+}
+
+function isNullableDate(value: unknown): value is Date | null {
+  return (
+    value === null ||
+    (value instanceof Date && !Number.isNaN(value.getTime()))
+  );
 }
 
 export function isPublication(value: unknown): value is Publication {
@@ -61,8 +85,12 @@ export function isPublication(value: unknown): value is Publication {
     parsePublicationType(candidate.type) !== null &&
     isNonEmptyString(candidate.title) &&
     isNonEmptyString(candidate.body) &&
+    parsePublicationPriority(candidate.priority) !== null &&
     parseResourceVisibility(candidate.visibility) !== null &&
     parsePublicationLifecycle(candidate.lifecycle) !== null &&
+    isNonEmptyString(candidate.authorOfficeLabel) &&
+    isNullableDate(candidate.publishAt) &&
+    isNullableDate(candidate.expiresAt) &&
     candidate.createdAt instanceof Date &&
     !Number.isNaN(candidate.createdAt.getTime()) &&
     candidate.updatedAt instanceof Date &&
