@@ -38,6 +38,10 @@ export function mapPublicationToResourceAccessFacts(
     return null;
   }
 
+  if (publication.tenantId !== tenantFacts.tenantId) {
+    return null;
+  }
+
   if (
     audienceDecision !== undefined &&
     !isPublicationAudienceDecision(audienceDecision)

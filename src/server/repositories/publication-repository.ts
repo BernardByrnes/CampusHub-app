@@ -18,6 +18,7 @@ import {
   parseResourceVisibility,
   type ResourceVisibility,
 } from "@/domain/authorization/resource-visibility";
+import { isUuid } from "@/domain/identifiers/uuid";
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import {
   publications,
@@ -159,7 +160,7 @@ export class DrizzlePublicationRepository {
     tenantId: string,
     publicationId: string,
   ): Promise<Publication | null> {
-    if (!isNonEmptyString(tenantId) || !isNonEmptyString(publicationId)) {
+    if (!isUuid(tenantId) || !isUuid(publicationId)) {
       return null;
     }
 

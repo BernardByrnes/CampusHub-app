@@ -9,10 +9,11 @@ import type {
 } from "./publication-read-contract";
 
 const now = new Date("2026-01-15T12:00:00.000Z");
+const tenantId = "00000000-0000-4000-8000-000000000001";
 
 const basePublication: Publication = {
-  id: "publication-alpha",
-  tenantId: "tenant-alpha",
+  id: "00000000-0000-4000-8000-000000000011",
+  tenantId,
   type: "news",
   title: "Campus update",
   body: "The campus update body.",
@@ -28,6 +29,7 @@ const basePublication: Publication = {
 };
 
 const baseTenantFacts: ResolvedTenantReadFacts = {
+  tenantId,
   tenantStatus: "active",
   publicSurfacePermitted: true,
   onLeaveReadEnabled: true,
@@ -52,8 +54,8 @@ function map(
 describe("Publication read mapper", () => {
   it("maps an entire-Tenant Publication to unrestricted readable facts", () => {
     expect(map()).toEqual({
-      resourceId: "publication-alpha",
-      tenantId: "tenant-alpha",
+      resourceId: "00000000-0000-4000-8000-000000000011",
+      tenantId,
       tenantStatus: "active",
       visibility: "MEMBERS",
       readable: true,
@@ -122,6 +124,12 @@ describe("Publication read mapper", () => {
         ...baseTenantFacts,
         publicSurfacePermitted: "yes",
       } as unknown as ResolvedTenantReadFacts),
+    ).toBeNull();
+    expect(
+      map(basePublication, {
+        ...baseTenantFacts,
+        tenantId: "00000000-0000-4000-8000-000000000002",
+      }),
     ).toBeNull();
     expect(
       map(basePublication, baseTenantFacts, "UNKNOWN" as never),

@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   authorizeResourceRead,
+  isResourceReadViewer,
   type ResourceReadDenialCode,
   type ResourceReadViewer,
 } from "@/domain/authorization/resource-read-policy";
@@ -17,6 +18,7 @@ import {
   parsePublicationContentExposure,
 } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
+import { isUuid } from "@/domain/identifiers/uuid";
 
 export type PublicationReadRepository = Readonly<{
   findPublicationByIdForTenant(
@@ -44,10 +46,6 @@ export type ReadPublicationResult =
   | Readonly<{ outcome: "NOT_FOUND" }>
   | Readonly<{ outcome: "DENIED"; code: ResourceReadDenialCode }>;
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -59,8 +57,9 @@ function isValidDate(value: unknown): value is Date {
 function isReadInput(value: unknown): value is ReadPublicationInput {
   if (
     !isRecord(value) ||
-    !isNonEmptyString(value.tenantId) ||
-    !isNonEmptyString(value.publicationId) ||
+    !isUuid(value.tenantId) ||
+    !isUuid(value.publicationId) ||
+    !isResourceReadViewer(value.viewer) ||
     !isResolvedTenantReadFacts(value.tenantFacts) ||
     parsePublicationContentExposure(value.contentExposure) === null ||
     !isValidDate(value.now)
@@ -91,7 +90,32 @@ export class ReadPublicationService {
   public async getPublicationForRead(
     input: ReadPublicationInput,
   ): Promise<ReadPublicationResult> {
+    if (!isRecord(input) || !isUuid(input.tenantId)) {
+      return denied("INVALID_INPUT");
+    }
+
+    if (!isUuid(input.publicationId)) {
+      return { outcome: "NOT_FOUND" };
+    }
+
     if (!isReadInput(input)) {
+      return denied("INVALID_INPUT");
+    }
+
+    const viewerTenantId =
+      input.viewer.kind === "anonymous"
+        ? input.viewer.tenantId
+        : input.viewer.context.tenantId;
+
+    if (viewerTenantId !== input.tenantId) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    if (
+      input.tenantFacts.tenantId !== input.tenantId ||
+      (input.viewer.kind === "membership" &&
+        input.viewer.context.tenantStatus !== input.tenantFacts.tenantStatus)
+    ) {
       return denied("INVALID_INPUT");
     }
 

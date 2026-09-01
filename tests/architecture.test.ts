@@ -52,6 +52,8 @@ describe("server-only architecture boundary", () => {
     );
 
     expect(source).toContain("authorizeResourceRead");
+    expect(source).toContain("isResourceReadViewer");
+    expect(source).toContain("isUuid");
     expect(source).toContain("mapPublicationToResourceAccessFacts");
     expect(source).not.toContain("assuranceAtLeast");
     expect(source).not.toContain("MEMBERSHIP_NOT_ELIGIBLE");

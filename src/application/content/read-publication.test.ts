@@ -10,10 +10,14 @@ import {
 } from "./read-publication";
 
 const now = new Date("2026-01-15T12:00:00.000Z");
+const tenantAlphaId = "00000000-0000-4000-8000-000000000001";
+const tenantBetaId = "00000000-0000-4000-8000-000000000002";
+const publicationAlphaId = "00000000-0000-4000-8000-000000000011";
+const missingPublicationId = "00000000-0000-4000-8000-000000000099";
 
 const publication: Publication = {
-  id: "publication-alpha",
-  tenantId: "tenant-alpha",
+  id: publicationAlphaId,
+  tenantId: tenantAlphaId,
   type: "news",
   title: "Campus update",
   body: "The campus update body.",
@@ -29,6 +33,7 @@ const publication: Publication = {
 };
 
 const tenantFacts: ResolvedTenantReadFacts = {
+  tenantId: tenantAlphaId,
   tenantStatus: "active",
   publicSurfacePermitted: true,
   onLeaveReadEnabled: true,
@@ -39,7 +44,7 @@ const viewer: ResourceReadViewer = {
   kind: "membership",
   context: {
     identitySubjectId: "identity-alpha",
-    tenantId: "tenant-alpha",
+    tenantId: tenantAlphaId,
     tenantStatus: "active",
     membershipId: "membership-alpha",
     assuranceLevel: "L2",
@@ -49,7 +54,7 @@ const viewer: ResourceReadViewer = {
 
 function input(overrides: Partial<ReadPublicationInput> = {}): ReadPublicationInput {
   return {
-    tenantId: "tenant-alpha",
+    tenantId: tenantAlphaId,
     publicationId: publication.id,
     viewer,
     tenantFacts,
@@ -82,7 +87,7 @@ describe("ReadPublicationService", () => {
       outcome: "FOUND",
       publication,
     });
-    expect(calls).toEqual([["tenant-alpha", "publication-alpha"]]);
+    expect(calls).toEqual([[tenantAlphaId, publicationAlphaId]]);
   });
 
   it.each([
@@ -132,19 +137,117 @@ describe("ReadPublicationService", () => {
     });
 
     await expect(
-      service.getPublicationForRead(input({ publicationId: "missing-publication" })),
+      service.getPublicationForRead(input({ publicationId: missingPublicationId })),
     ).resolves.toEqual({ outcome: "NOT_FOUND" });
     await expect(
       service.getPublicationForRead({
         ...input(),
-        tenantId: "tenant-beta",
+        tenantId: tenantBetaId,
         publicationId: publication.id,
         viewer: {
           kind: "anonymous",
-          tenantId: "tenant-beta",
+          tenantId: tenantBetaId,
         },
+        tenantFacts: { ...tenantFacts, tenantId: tenantBetaId },
       }),
     ).resolves.toEqual({ outcome: "NOT_FOUND" });
+  });
+
+  it("returns NOT_FOUND before lookup for a misbound Membership viewer", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const service = createService(publication, calls);
+    const misboundViewer: ResourceReadViewer = {
+      kind: "membership",
+      context: { ...viewer.context, tenantId: tenantAlphaId },
+    };
+    const betaFacts = { ...tenantFacts, tenantId: tenantBetaId };
+
+    await expect(
+      service.getPublicationForRead({
+        ...input(),
+        tenantId: tenantBetaId,
+        publicationId: publication.id,
+        viewer: misboundViewer,
+        tenantFacts: betaFacts,
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead({
+        ...input(),
+        tenantId: tenantBetaId,
+        publicationId: missingPublicationId,
+        viewer: misboundViewer,
+        tenantFacts: betaFacts,
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    expect(calls).toEqual([]);
+  });
+
+  it("returns NOT_FOUND before lookup for a misbound anonymous viewer", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const service = createService(publication, calls);
+
+    await expect(
+      service.getPublicationForRead({
+        ...input(),
+        tenantId: tenantBetaId,
+        viewer: { kind: "anonymous", tenantId: tenantAlphaId },
+        tenantFacts: { ...tenantFacts, tenantId: tenantBetaId },
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects misbound Tenant facts and membership status before lookup", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const service = createService(publication, calls);
+
+    await expect(
+      service.getPublicationForRead(
+        input({
+          tenantFacts: { ...tenantFacts, tenantId: tenantBetaId },
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.getPublicationForRead({
+        ...input(),
+        viewer: { kind: "anonymous", tenantId: tenantAlphaId },
+        tenantFacts: { ...tenantFacts, tenantId: tenantBetaId },
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.getPublicationForRead(
+        input({
+          viewer: {
+            ...viewer,
+            context: { ...viewer.context, tenantStatus: "archived" },
+          },
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects malformed viewers before lookup through the canonical viewer validator", async () => {
+    const calls: Array<readonly [string, string]> = [];
+    const service = createService(publication, calls);
+    const malformedViewers = [
+      {},
+      { kind: "membership" },
+      { kind: "anonymous", tenantId: "" },
+      { kind: "unknown", tenantId: tenantAlphaId },
+    ];
+
+    for (const malformedViewer of malformedViewers) {
+      await expect(
+        service.getPublicationForRead(
+          input({ viewer: malformedViewer as never }),
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    }
+
+    expect(calls).toEqual([]);
   });
 
   it("requires an evaluated audience decision for targeted Publications", async () => {
@@ -175,6 +278,16 @@ describe("ReadPublicationService", () => {
 
     await expect(
       service.getPublicationForRead({ ...input(), tenantId: " " } as ReadPublicationInput),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.getPublicationForRead(
+        input({ publicationId: "banana" } as Partial<ReadPublicationInput>),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead(
+        input({ tenantId: "banana" } as Partial<ReadPublicationInput>),
+      ),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     expect(calls).toEqual([]);
   });

@@ -17,6 +17,7 @@ import {
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
+import { isUuid } from "@/domain/identifiers/uuid";
 import { MEMBERSHIP_LIFECYCLE_STATUSES } from "@/domain/membership/membership";
 import { TENANT_LIFECYCLE_STATUSES } from "@/domain/tenancy/tenant";
 import type { CampusHubDatabase } from "@/server/db/client";
@@ -40,8 +41,6 @@ import type { DrizzleMembershipRepository } from "@/server/repositories/membersh
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROLLBACK_MARKER = "CAMPUSHUB_INTENTIONAL_ROLLBACK";
 const READ_NOW = new Date("2026-01-15T12:00:00.000Z");
 
@@ -122,6 +121,7 @@ let membershipRepository: DrizzleMembershipRepository | undefined;
 let publicationRepository: DrizzlePublicationRepository | undefined;
 let contextService: RequestContextService | undefined;
 let readPublicationService: ReadPublicationService | undefined;
+let readPublicationServiceClass: typeof ReadPublicationService | undefined;
 let serverVersion = "";
 let currentDatabaseName = "";
 let sequence = 0;
@@ -175,10 +175,32 @@ function getReadPublicationService(): ReadPublicationService {
   return readPublicationService;
 }
 
+function createCountingReadPublicationService(
+  calls: Array<readonly [string, string]>,
+): ReadPublicationService {
+  if (!readPublicationServiceClass) {
+    throw new Error("Publication read service class was not initialized.");
+  }
+
+  return new readPublicationServiceClass({
+    publications: {
+      findPublicationByIdForTenant: async (tenantId, publicationId) => {
+        calls.push([tenantId, publicationId]);
+        return getPublicationRepository().findPublicationByIdForTenant(
+          tenantId,
+          publicationId,
+        );
+      },
+    },
+  });
+}
+
 function readFacts(
+  tenantId: string,
   overrides: Partial<ResolvedTenantReadFacts> = {},
 ): ResolvedTenantReadFacts {
   return {
+    tenantId,
     tenantStatus: "active",
     publicSurfacePermitted: true,
     onLeaveReadEnabled: true,
@@ -217,7 +239,7 @@ function readInput(
     tenantId,
     publicationId,
     viewer,
-    tenantFacts: readFacts(),
+    tenantFacts: readFacts(tenantId),
     contentExposure: "READABLE",
     now: READ_NOW,
     ...overrides,
@@ -466,6 +488,7 @@ beforeAll(async () => {
   readPublicationService = new publicationReadModule.ReadPublicationService({
     publications: getPublicationRepository(),
   });
+  readPublicationServiceClass = publicationReadModule.ReadPublicationService;
 
   const connectionResult = await databaseHandle.execute(sql`
     select current_database() as database_name, version() as server_version
@@ -608,8 +631,8 @@ describe("real Supabase PostgreSQL foundation", () => {
     const tenant = await createTenant();
     const membership = await createMembership(tenant.id);
 
-    expect(tenant.id).toMatch(UUID_PATTERN);
-    expect(membership.id).toMatch(UUID_PATTERN);
+    expect(isUuid(tenant.id)).toBe(true);
+    expect(isUuid(membership.id)).toBe(true);
     expect(tenant.id).not.toBe(membership.id);
   });
 
@@ -631,7 +654,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       "Publication repository did not return the inserted row.",
     );
 
-    expect(created.id).toMatch(UUID_PATTERN);
+    expect(isUuid(created.id)).toBe(true);
     expect(created).toMatchObject({
       tenantId: tenant.id,
       type: "notice",
@@ -747,6 +770,24 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(foreign).toBeNull();
     expect(nonexistent).toBeNull();
     expect(foreign).toEqual(nonexistent);
+  });
+
+  it("returns null for malformed scoped UUIDs without reaching PostgreSQL", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-malformed-id") });
+    const publication = await createPublication(tenant.id);
+
+    await expect(
+      getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        "banana",
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      getPublicationRepository().findPublicationByIdForTenant(
+        "banana",
+        publication.id,
+      ),
+    ).resolves.toBeNull();
   });
 
   it("returns only the requested Publication for multiple rows in one Tenant", async () => {
@@ -960,6 +1001,150 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(foreign).toEqual(nonexistent);
   });
 
+  it("does not look up a foreign Publication for a misbound Membership viewer", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("read-bind-membership-a") });
+    const tenantB = await createTenant({ slug: nextSlug("read-bind-membership-b") });
+    const membershipA = await createMembership(tenantA.id);
+    const publicationB = await createPublication(tenantB.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewerA = await membershipViewerFor(tenantA, membershipA);
+    if (viewerA.kind !== "membership") {
+      throw new Error("Expected a Membership viewer.");
+    }
+    const calls: Array<readonly [string, string]> = [];
+    const service = createCountingReadPublicationService(calls);
+    const factsB = readFacts(tenantB.id);
+
+    const foreign = await service.getPublicationForRead(
+      readInput(tenantB.id, publicationB.id, viewerA, {
+        tenantFacts: factsB,
+      }),
+    );
+    const nonexistent = await service.getPublicationForRead(
+      readInput(tenantB.id, randomUUID(), viewerA, {
+        tenantFacts: factsB,
+      }),
+    );
+
+    expect(foreign).toEqual({ outcome: "NOT_FOUND" });
+    expect(nonexistent).toEqual({ outcome: "NOT_FOUND" });
+    expect(foreign).toEqual(nonexistent);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not look up a Publication for a misbound anonymous viewer", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("read-bind-anonymous-a") });
+    const tenantB = await createTenant({ slug: nextSlug("read-bind-anonymous-b") });
+    const publicationB = await createPublication(tenantB.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const calls: Array<readonly [string, string]> = [];
+    const service = createCountingReadPublicationService(calls);
+
+    await expect(
+      service.getPublicationForRead(
+        readInput(tenantB.id, publicationB.id, anonymousViewerFor(tenantA.id), {
+          tenantFacts: readFacts(tenantB.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects misbound Tenant facts and Tenant status before lookup", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("read-bind-facts-a") });
+    const tenantB = await createTenant({ slug: nextSlug("read-bind-facts-b") });
+    const membershipA = await createMembership(tenantA.id);
+    const publicationA = await createPublication(tenantA.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewerA = await membershipViewerFor(tenantA, membershipA);
+    if (viewerA.kind !== "membership") {
+      throw new Error("Expected a Membership viewer.");
+    }
+    const calls: Array<readonly [string, string]> = [];
+    const service = createCountingReadPublicationService(calls);
+
+    await expect(
+      service.getPublicationForRead(
+        readInput(tenantA.id, publicationA.id, viewerA, {
+          tenantFacts: readFacts(tenantB.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.getPublicationForRead(
+        readInput(tenantA.id, publicationA.id, anonymousViewerFor(tenantA.id), {
+          tenantFacts: readFacts(tenantB.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.getPublicationForRead(
+        readInput(tenantA.id, publicationA.id, {
+          kind: "membership",
+          context: { ...viewerA.context, tenantStatus: "archived" },
+        }, {
+          tenantFacts: readFacts(tenantA.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects malformed viewers before any real repository lookup", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-bind-malformed-viewer") });
+    const publication = await createPublication(tenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const calls: Array<readonly [string, string]> = [];
+    const service = createCountingReadPublicationService(calls);
+    const malformedViewers = [
+      {},
+      { kind: "membership" },
+      { kind: "anonymous", tenantId: "" },
+      { kind: "unknown", tenantId: tenant.id },
+    ];
+
+    for (const malformedViewer of malformedViewers) {
+      await expect(
+        service.getPublicationForRead(
+          readInput(tenant.id, publication.id, malformedViewer as never),
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    }
+
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects malformed service UUIDs without repository access", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-bind-malformed-uuid") });
+    const publication = await createPublication(tenant.id);
+    const membership = await createMembership(tenant.id);
+    const viewer = await membershipViewerFor(tenant, membership);
+    const calls: Array<readonly [string, string]> = [];
+    const service = createCountingReadPublicationService(calls);
+
+    await expect(
+      service.getPublicationForRead(
+        readInput(tenant.id, "banana", viewer),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead(
+        readInput("banana", publication.id, viewer, {
+          tenantFacts: readFacts("banana"),
+        } as Partial<ReadPublicationInput>),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    expect(calls).toEqual([]);
+  });
+
   it("applies the Publication lifecycle and publishAt read matrix", async () => {
     const tenant = await createTenant({ slug: nextSlug("read-lifecycle") });
     const membership = await createMembership(tenant.id);
@@ -1120,7 +1305,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
-          tenantFacts: readFacts({ tenantStatus: "suspended" }),
+          tenantFacts: readFacts(tenant.id, { tenantStatus: "suspended" }),
         }),
       ),
     ).resolves.toMatchObject({ outcome: "FOUND" });
@@ -1141,7 +1326,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
-          tenantFacts: readFacts({
+          tenantFacts: readFacts(tenant.id, {
             tenantStatus: "archived",
             archiveNoticeState: "ACTIVE",
           }),
@@ -1151,7 +1336,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
-          tenantFacts: readFacts({
+          tenantFacts: readFacts(tenant.id, {
             tenantStatus: "archived",
             archiveNoticeState: "ENDED",
           }),
@@ -1161,7 +1346,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
-          tenantFacts: readFacts({ tenantStatus: "archived" }),
+          tenantFacts: readFacts(tenant.id, { tenantStatus: "archived" }),
         }),
       ),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
@@ -1190,7 +1375,9 @@ describe("real Supabase PostgreSQL foundation", () => {
       const viewer = await membershipViewerFor(tenant, membership);
       const result = await getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer, {
-          tenantFacts: readFacts({ onLeaveReadEnabled: onLeaveReadEnabled ?? true }),
+          tenantFacts: readFacts(tenant.id, {
+            onLeaveReadEnabled: onLeaveReadEnabled ?? true,
+          }),
         }),
       );
 
@@ -1225,14 +1412,14 @@ describe("real Supabase PostgreSQL foundation", () => {
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publicPublication.id, viewer, {
-          tenantFacts: readFacts({ alumniPublicReadEnabled: true }),
+          tenantFacts: readFacts(tenant.id, { alumniPublicReadEnabled: true }),
         }),
       ),
     ).resolves.toMatchObject({ outcome: "FOUND" });
     await expect(
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publicPublication.id, viewer, {
-          tenantFacts: readFacts({ alumniPublicReadEnabled: false }),
+          tenantFacts: readFacts(tenant.id, { alumniPublicReadEnabled: false }),
         }),
       ),
     ).resolves.toEqual({

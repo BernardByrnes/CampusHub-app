@@ -194,7 +194,9 @@ function isTrustedRequestContext(
   );
 }
 
-function isResourceReadViewer(value: unknown): value is ResourceReadViewer {
+export function isResourceReadViewer(
+  value: unknown,
+): value is ResourceReadViewer {
   if (!isRecord(value) || typeof value.kind !== "string") {
     return false;
   }

@@ -2,6 +2,7 @@ import {
   parseTenantLifecycle,
   type TenantLifecycle,
 } from "@/domain/tenancy/tenant";
+import { isUuid } from "@/domain/identifiers/uuid";
 
 import {
   parseArchiveNoticeState,
@@ -55,6 +56,7 @@ export function isPublicationAudienceDecision(
  * No browser-provided defaults or operation decisions belong here.
  */
 export type ResolvedTenantReadFacts = Readonly<{
+  tenantId: string;
   tenantStatus: TenantLifecycle;
   publicSurfacePermitted: boolean;
   onLeaveReadEnabled: boolean;
@@ -74,6 +76,7 @@ export function isResolvedTenantReadFacts(
   const archiveNoticeState = candidate.archiveNoticeState;
 
   if (
+    !isUuid(candidate.tenantId) ||
     tenantStatus === null ||
     typeof candidate.publicSurfacePermitted !== "boolean" ||
     typeof candidate.onLeaveReadEnabled !== "boolean" ||
