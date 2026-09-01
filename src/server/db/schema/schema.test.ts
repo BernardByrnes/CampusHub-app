@@ -70,6 +70,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(publicationConfig.indexes.map((index) => index.config.name)).toEqual([
       "publications_tenant_id_id",
       "publications_tenant_lifecycle",
+      "publications_tenant_collection_order",
     ]);
     expect(publicationConfig.foreignKeys[0]?.onDelete).toBe("restrict");
     expect(publicationConfig.foreignKeys[0]?.onUpdate).toBe("cascade");

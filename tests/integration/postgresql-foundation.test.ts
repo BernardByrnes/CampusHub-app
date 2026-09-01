@@ -17,6 +17,11 @@ import {
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
+import {
+  decodePublicationCursor,
+  encodePublicationCursor,
+  type PublicationCollectionQuery,
+} from "@/domain/content/publication-collection";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { MEMBERSHIP_LIFECYCLE_STATUSES } from "@/domain/membership/membership";
 import { TENANT_LIFECYCLE_STATUSES } from "@/domain/tenancy/tenant";
@@ -37,6 +42,11 @@ import type {
   ReadPublicationInput,
   ReadPublicationService,
 } from "@/application/content/read-publication";
+import type {
+  ListPublicationsInput,
+  ListPublicationsService,
+  PublicationExposureResolver,
+} from "@/application/content/list-publications";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
@@ -122,6 +132,8 @@ let publicationRepository: DrizzlePublicationRepository | undefined;
 let contextService: RequestContextService | undefined;
 let readPublicationService: ReadPublicationService | undefined;
 let readPublicationServiceClass: typeof ReadPublicationService | undefined;
+let listPublicationsService: ListPublicationsService | undefined;
+let listPublicationsServiceClass: typeof ListPublicationsService | undefined;
 let serverVersion = "";
 let currentDatabaseName = "";
 let sequence = 0;
@@ -195,6 +207,38 @@ function createCountingReadPublicationService(
   });
 }
 
+function getListPublicationsService(): ListPublicationsService {
+  if (!listPublicationsService) {
+    throw new Error("Publication collection service was not initialized.");
+  }
+
+  return listPublicationsService;
+}
+
+function createCountingListPublicationsService(
+  queries: PublicationCollectionQuery[],
+  exposureResolver: PublicationExposureResolver = {
+    resolveExposure: (candidates) =>
+      new Map(candidates.map((candidate) => [candidate.id, "READABLE"])),
+  },
+): ListPublicationsService {
+  if (!listPublicationsServiceClass) {
+    throw new Error("Publication collection service class was not initialized.");
+  }
+
+  return new listPublicationsServiceClass({
+    publications: {
+      listPublicationCandidatesForTenant: async (query) => {
+        queries.push(query);
+        return getPublicationRepository().listPublicationCandidatesForTenant(
+          query,
+        );
+      },
+    },
+    exposureResolver,
+  });
+}
+
 function readFacts(
   tenantId: string,
   overrides: Partial<ResolvedTenantReadFacts> = {},
@@ -241,6 +285,21 @@ function readInput(
     viewer,
     tenantFacts: readFacts(tenantId),
     contentExposure: "READABLE",
+    now: READ_NOW,
+    ...overrides,
+  };
+}
+
+function listInput(
+  tenantId: string,
+  viewer: ResourceReadViewer,
+  overrides: Partial<ListPublicationsInput> = {},
+): ListPublicationsInput {
+  return {
+    tenantId,
+    surface: "ACTIVE",
+    viewer,
+    tenantFacts: readFacts(tenantId),
     now: READ_NOW,
     ...overrides,
   };
@@ -471,6 +530,9 @@ beforeAll(async () => {
   const publicationReadModule = await import(
     "@/application/content/read-publication"
   );
+  const publicationCollectionModule = await import(
+    "@/application/content/list-publications"
+  );
 
   databaseHandle = databaseModule.db;
   connectionPool = databaseModule.pool;
@@ -489,6 +551,17 @@ beforeAll(async () => {
     publications: getPublicationRepository(),
   });
   readPublicationServiceClass = publicationReadModule.ReadPublicationService;
+  listPublicationsService = new publicationCollectionModule.ListPublicationsService({
+    publications: getPublicationRepository(),
+    exposureResolver: {
+      resolveExposure: (candidates) =>
+        new Map(
+          candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+        ),
+    },
+  });
+  listPublicationsServiceClass =
+    publicationCollectionModule.ListPublicationsService;
 
   const connectionResult = await databaseHandle.execute(sql`
     select current_database() as database_name, version() as server_version
@@ -605,12 +678,14 @@ describe("real Supabase PostgreSQL foundation", () => {
           'tenants_slug_unique',
           'memberships_tenant_identity_unique',
           'publications_tenant_id_id',
+          'publications_tenant_collection_order',
           'publications_tenant_lifecycle'
         )
       order by indexname
     `);
     expect(indexResult.rows.map((row) => String(row.indexname))).toEqual([
       "memberships_tenant_identity_unique",
+      "publications_tenant_collection_order",
       "publications_tenant_id_id",
       "publications_tenant_lifecycle",
       "tenants_slug_unique",
@@ -624,7 +699,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(4);
+    ).toBe(5);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -1468,6 +1543,698 @@ describe("real Supabase PostgreSQL foundation", () => {
         code: "MEMBERSHIP_NOT_ELIGIBLE",
       });
     }
+  });
+
+  it("lists only Tenant-scoped ACTIVE and ARCHIVE candidates with lifecycle, time, and audience filtering", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("collection-sql-a") });
+    const tenantB = await createTenant({ slug: nextSlug("collection-sql-b") });
+    const membershipA = await createMembership(tenantA.id);
+    const active = await createPublication(tenantA.id, {
+      title: "active",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      expiresAt: null,
+    });
+    const scheduledFuture = await createPublication(tenantA.id, {
+      title: "scheduled-future",
+      lifecycle: "scheduled",
+      publishAt: new Date("2026-01-20T12:00:00.000Z"),
+    });
+    const scheduledPast = await createPublication(tenantA.id, {
+      title: "scheduled-past",
+      lifecycle: "scheduled",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const draft = await createPublication(tenantA.id, {
+      title: "draft",
+      lifecycle: "draft",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const publishedFuture = await createPublication(tenantA.id, {
+      title: "published-future",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-20T12:00:00.000Z"),
+    });
+    const publishedExpired = await createPublication(tenantA.id, {
+      title: "published-expired",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      expiresAt: new Date("2026-01-15T12:00:00.000Z"),
+    });
+    const expired = await createPublication(tenantA.id, {
+      title: "expired",
+      lifecycle: "expired",
+      publishAt: new Date("2026-01-09T12:00:00.000Z"),
+    });
+    const archived = await createPublication(tenantA.id, {
+      title: "archived",
+      lifecycle: "archived",
+      publishAt: new Date("2026-01-08T12:00:00.000Z"),
+    });
+    const targeted = await createPublication(tenantA.id, {
+      title: "targeted",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      audienceMode: "targeted",
+      publishAt: new Date("2026-01-07T12:00:00.000Z"),
+    });
+    const noPublishAt = await createPublication(tenantA.id, {
+      title: "no-publish-at",
+      lifecycle: "published",
+      publishAt: null,
+    });
+    const tenantBActive = await createPublication(tenantB.id, {
+      title: "tenant-b-active",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+
+    const activePage =
+      await getPublicationRepository().listPublicationCandidatesForTenant({
+        tenantId: tenantA.id,
+        surface: "ACTIVE",
+        now: READ_NOW,
+        cursor: null,
+        limit: 50,
+      });
+    const archivePage =
+      await getPublicationRepository().listPublicationCandidatesForTenant({
+        tenantId: tenantA.id,
+        surface: "ARCHIVE",
+        now: READ_NOW,
+        cursor: null,
+        limit: 50,
+      });
+
+    expect(activePage.items.map((item) => item.id)).toEqual([active.id]);
+    expect(activePage.items.every((item) => item.tenantId === tenantA.id)).toBe(
+      true,
+    );
+    expect(activePage.items.map((item) => item.id)).not.toContain(tenantBActive.id);
+    expect(activePage.items.map((item) => item.id)).not.toContain(
+      scheduledFuture.id,
+    );
+    expect(activePage.items.map((item) => item.id)).not.toContain(
+      scheduledPast.id,
+    );
+    expect(activePage.items.map((item) => item.id)).not.toContain(draft.id);
+    expect(activePage.items.map((item) => item.id)).not.toContain(
+      publishedFuture.id,
+    );
+    expect(activePage.items.map((item) => item.id)).not.toContain(
+      publishedExpired.id,
+    );
+    expect(activePage.items.map((item) => item.id)).not.toContain(targeted.id);
+    expect(activePage.items.map((item) => item.id)).not.toContain(noPublishAt.id);
+
+    expect(new Set(archivePage.items.map((item) => item.id))).toEqual(
+      new Set([publishedExpired.id, expired.id, archived.id]),
+    );
+    expect(archivePage.items.every((item) => item.tenantId === tenantA.id)).toBe(
+      true,
+    );
+    expect(archivePage.items.map((item) => item.id)).not.toContain(
+      scheduledPast.id,
+    );
+    expect(archivePage.items.map((item) => item.id)).not.toContain(targeted.id);
+
+    const archiveViewer = await membershipViewerFor(tenantA, membershipA);
+    const archiveResult = await getListPublicationsService().listPublications(
+      listInput(tenantA.id, archiveViewer, {
+        surface: "ARCHIVE",
+        limit: 50,
+      }),
+    );
+    expect(archiveResult).toMatchObject({ outcome: "OK", nextCursor: null });
+    if (archiveResult.outcome === "OK") {
+      expect(new Set(archiveResult.items.map((item) => item.id))).toEqual(
+        new Set([publishedExpired.id, expired.id, archived.id]),
+      );
+    }
+  });
+
+  it("applies canonical visibility, assurance, exposure, and batch authorization to collections", async () => {
+    const tenant = await createTenant({ slug: nextSlug("collection-policy") });
+    const l1Membership = await createMembership(tenant.id, {
+      assuranceLevel: "L1",
+    });
+    const l2Membership = await createMembership(tenant.id, {
+      assuranceLevel: "L2",
+    });
+    const publicPublication = await createPublication(tenant.id, {
+      title: "collection-public",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const membersPublication = await createPublication(tenant.id, {
+      title: "collection-members",
+      visibility: "MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-09T12:00:00.000Z"),
+    });
+    const verifiedPublication = await createPublication(tenant.id, {
+      title: "collection-verified",
+      visibility: "VERIFIED_MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-08T12:00:00.000Z"),
+    });
+    const suppressedPublication = await createPublication(tenant.id, {
+      title: "collection-suppressed",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-07T12:00:00.000Z"),
+    });
+    const targetedPublication = await createPublication(tenant.id, {
+      title: "collection-targeted",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      audienceMode: "targeted",
+      publishAt: new Date("2026-01-06T12:00:00.000Z"),
+    });
+    const queries: PublicationCollectionQuery[] = [];
+    let exposureCalls = 0;
+    const service = createCountingListPublicationsService(queries, {
+      resolveExposure: (candidates) => {
+        exposureCalls += 1;
+        return new Map(
+          candidates.map((candidate) => [
+            candidate.id,
+            candidate.id === suppressedPublication.id
+              ? ("SUPPRESSED" as const)
+              : ("READABLE" as const),
+          ]),
+        );
+      },
+    });
+    const anonymous = anonymousViewerFor(tenant.id);
+    const l1Viewer = await membershipViewerFor(tenant, l1Membership);
+    const l2Viewer = await membershipViewerFor(tenant, l2Membership);
+
+    const anonymousResult = await service.listPublications(
+      listInput(tenant.id, anonymous, { limit: 50 }),
+    );
+    const l1Result = await service.listPublications(
+      listInput(tenant.id, l1Viewer, { limit: 50 }),
+    );
+    const l2Result = await service.listPublications(
+      listInput(tenant.id, l2Viewer, { limit: 50 }),
+    );
+
+    expect(anonymousResult).toMatchObject({
+      outcome: "OK",
+      items: [{ id: publicPublication.id }],
+      nextCursor: null,
+    });
+    expect(l1Result).toMatchObject({ outcome: "OK", nextCursor: null });
+    expect(l1Result.outcome === "OK" ? l1Result.items.map((item) => item.id) : []).toEqual(
+      expect.arrayContaining([publicPublication.id, membersPublication.id]),
+    );
+    expect(l1Result.outcome === "OK" ? l1Result.items.map((item) => item.id) : []).not.toContain(
+      verifiedPublication.id,
+    );
+    expect(l2Result).toMatchObject({ outcome: "OK", nextCursor: null });
+    expect(l2Result.outcome === "OK" ? l2Result.items.map((item) => item.id) : []).toEqual(
+      expect.arrayContaining([
+        publicPublication.id,
+        membersPublication.id,
+        verifiedPublication.id,
+      ]),
+    );
+    for (const result of [anonymousResult, l1Result, l2Result]) {
+      expect(result.outcome === "OK" ? result.items.map((item) => item.id) : []).not.toContain(
+        suppressedPublication.id,
+      );
+      expect(result.outcome === "OK" ? result.items.map((item) => item.id) : []).not.toContain(
+        targetedPublication.id,
+      );
+    }
+    expect(exposureCalls).toBe(3);
+    expect(queries.every((query) => query.tenantId === tenant.id)).toBe(true);
+    expect(queries.every((query) => query.limit <= 150)).toBe(true);
+  });
+
+  it("preserves restrictive Membership and Tenant lifecycle collection outcomes", async () => {
+    const cases = [
+      {
+        status: "stale",
+        expected: "both",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "participation_suspended",
+        expected: "both",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "suspended",
+        expected: "none",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "on_leave",
+        expected: "both",
+        onLeaveReadEnabled: true,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "on_leave",
+        expected: "public",
+        onLeaveReadEnabled: false,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "alumni",
+        expected: "public",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: true,
+      },
+      {
+        status: "alumni",
+        expected: "none",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: false,
+      },
+      {
+        status: "transferred_out",
+        expected: "public",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: undefined,
+      },
+      {
+        status: "closed",
+        expected: "public",
+        onLeaveReadEnabled: undefined,
+        alumniPublicReadEnabled: undefined,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const tenant = await createTenant({
+        slug: nextSlug(
+          `collection-${testCase.status.replaceAll("_", "-")}`,
+        ),
+      });
+      const membership = await createMembership(tenant.id, {
+        lifecycle: testCase.status,
+      });
+      const publicPublication = await createPublication(tenant.id, {
+        visibility: "PUBLIC",
+        lifecycle: "published",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      });
+      const membersPublication = await createPublication(tenant.id, {
+        visibility: "MEMBERS",
+        lifecycle: "published",
+        publishAt: new Date("2026-01-09T12:00:00.000Z"),
+      });
+      const viewer = await membershipViewerFor(tenant, membership);
+      const result = await getListPublicationsService().listPublications(
+        listInput(tenant.id, viewer, {
+          tenantFacts: readFacts(tenant.id, {
+            onLeaveReadEnabled: testCase.onLeaveReadEnabled ?? true,
+            alumniPublicReadEnabled: testCase.alumniPublicReadEnabled ?? true,
+          }),
+          limit: 50,
+        }),
+      );
+
+      expect(result.outcome).toBe("OK");
+      if (result.outcome !== "OK") {
+        continue;
+      }
+
+      const expectedIds =
+        testCase.expected === "both"
+          ? [publicPublication.id, membersPublication.id]
+          : testCase.expected === "public"
+            ? [publicPublication.id]
+            : [];
+      expect(result.items.map((item) => item.id)).toEqual(
+        expect.arrayContaining(expectedIds),
+      );
+      expect(result.items).toHaveLength(expectedIds.length);
+    }
+  });
+
+  it("preserves suspended and archived Tenant collection read rules", async () => {
+    const suspendedTenant = await createTenant({
+      slug: nextSlug("collection-suspended-tenant"),
+      status: "suspended",
+    });
+    const suspendedMembership = await createMembership(suspendedTenant.id);
+    const suspendedPublication = await createPublication(suspendedTenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const suspendedViewer = await membershipViewerFor(
+      suspendedTenant,
+      suspendedMembership,
+    );
+
+    await expect(
+      getListPublicationsService().listPublications(
+        listInput(suspendedTenant.id, suspendedViewer, {
+          tenantFacts: readFacts(suspendedTenant.id, {
+            tenantStatus: "suspended",
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      outcome: "OK",
+      items: [{ id: suspendedPublication.id }],
+    });
+
+    const archivedTenant = await createTenant({
+      slug: nextSlug("collection-archived-tenant"),
+      status: "archived",
+    });
+    const archivedMembership = await createMembership(archivedTenant.id);
+    const archivedPublication = await createPublication(archivedTenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const archivedViewer = await membershipViewerFor(
+      archivedTenant,
+      archivedMembership,
+    );
+
+    await expect(
+      getListPublicationsService().listPublications(
+        listInput(archivedTenant.id, archivedViewer, {
+          tenantFacts: readFacts(archivedTenant.id, {
+            tenantStatus: "archived",
+            archiveNoticeState: "ACTIVE",
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      outcome: "OK",
+      items: [{ id: archivedPublication.id }],
+    });
+    await expect(
+      getListPublicationsService().listPublications(
+        listInput(archivedTenant.id, archivedViewer, {
+          tenantFacts: readFacts(archivedTenant.id, {
+            tenantStatus: "archived",
+            archiveNoticeState: "ENDED",
+          }),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "OK", items: [], nextCursor: null });
+  });
+
+  it("binds Tenant and cursor trust before a collection query", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("collection-bind-a") });
+    const tenantB = await createTenant({ slug: nextSlug("collection-bind-b") });
+    const membershipA = await createMembership(tenantA.id);
+    const publicationB = await createPublication(tenantB.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewerA = await membershipViewerFor(tenantA, membershipA);
+    const queries: PublicationCollectionQuery[] = [];
+    const service = createCountingListPublicationsService(queries);
+
+    await expect(
+      service.listPublications(
+        listInput(tenantB.id, viewerA, {
+          tenantFacts: readFacts(tenantB.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "OK", items: [], nextCursor: null });
+    await expect(
+      service.listPublications(
+        listInput(tenantB.id, anonymousViewerFor(tenantB.id), {
+          cursor: "not-a-cursor",
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_CURSOR" });
+    await expect(
+      service.listPublications(
+        listInput(tenantB.id, anonymousViewerFor(tenantB.id), {
+          tenantFacts: readFacts(tenantA.id),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+
+    const tenantACursor = encodePublicationCursor({
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      id: randomUUID(),
+    });
+    if (tenantACursor === null) {
+      throw new Error("Could not create a synthetic keyset cursor.");
+    }
+    await expect(
+      service.listPublications(
+        listInput(tenantB.id, anonymousViewerFor(tenantB.id), {
+          cursor: tenantACursor,
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: "OK" });
+
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.tenantId).toBe(tenantB.id);
+    expect(publicationB.tenantId).toBe(tenantB.id);
+  });
+
+  it("keeps same-timestamp pages complete and ignores a newer concurrent insert after the cursor", async () => {
+    const tenant = await createTenant({ slug: nextSlug("collection-pagination") });
+    const oldPublications: PublicationRow[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      oldPublications.push(
+        await createPublication(tenant.id, {
+          title: `same-timestamp-${index}`,
+          visibility: "PUBLIC",
+          lifecycle: "published",
+          publishAt: new Date("2026-01-10T12:00:00.000Z"),
+        }),
+      );
+    }
+    const viewer = anonymousViewerFor(tenant.id);
+    const firstPage = await getListPublicationsService().listPublications(
+      listInput(tenant.id, viewer, { limit: 2 }),
+    );
+    expect(firstPage.outcome).toBe("OK");
+    if (firstPage.outcome !== "OK" || firstPage.nextCursor === null) {
+      throw new Error("Expected a first-page cursor.");
+    }
+    expect(decodePublicationCursor(firstPage.nextCursor)).toMatchObject({
+      id: firstPage.items[1]?.id,
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+
+    const newer = await createPublication(tenant.id, {
+      title: "newer-after-page-one",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-14T12:00:00.000Z"),
+    });
+    const returnedIds = [...firstPage.items.map((item) => item.id)];
+    let cursor: string | null = firstPage.nextCursor;
+    let pageCount = 1;
+    while (cursor !== null) {
+      const page = await getListPublicationsService().listPublications(
+        listInput(tenant.id, viewer, { limit: 2, cursor }),
+      );
+      expect(page.outcome).toBe("OK");
+      if (page.outcome !== "OK") {
+        break;
+      }
+      returnedIds.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+      pageCount += 1;
+      if (pageCount > 5) {
+        throw new Error("Collection pagination did not terminate.");
+      }
+    }
+
+    const expectedOldRows =
+      await getPublicationRepository().listPublicationCandidatesForTenant({
+        tenantId: tenant.id,
+        surface: "ACTIVE",
+        now: READ_NOW,
+        cursor: null,
+        limit: 50,
+      });
+    const expectedOldIds = expectedOldRows.items
+      .filter((item) => oldPublications.some((old) => old.id === item.id))
+      .map((item) => item.id);
+
+    expect(returnedIds).toEqual(expectedOldIds);
+    expect(returnedIds).not.toContain(newer.id);
+    expect(new Set(returnedIds).size).toBe(returnedIds.length);
+    expect(pageCount).toBe(3);
+  });
+
+  it("handles a realistic 120-row volume without cross-Tenant hydration or unbounded page queries", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("collection-volume-a") });
+    const tenantB = await createTenant({ slug: nextSlug("collection-volume-b") });
+    const membershipA = await createMembership(tenantA.id, {
+      assuranceLevel: "L2",
+    });
+    const values: NewPublicationRow[] = Array.from(
+      { length: 120 },
+      (_, index) => {
+        const lifecycle =
+          index % 11 === 0
+            ? "draft"
+            : index % 11 === 1
+              ? "scheduled"
+              : index % 11 === 2
+                ? "published"
+                : index % 11 === 3
+                  ? "published"
+                  : index % 11 === 4
+                    ? "expired"
+                    : index % 11 === 5
+                      ? "archived"
+                      : "published";
+        const publishAt =
+          index % 11 === 2
+            ? new Date("2026-01-20T12:00:00.000Z")
+            : new Date(`2026-01-${String((index % 10) + 1).padStart(2, "0")}T12:00:00.000Z`);
+        const expiresAt =
+          index % 11 === 3 || index % 11 === 4
+            ? new Date("2026-01-14T12:00:00.000Z")
+            : null;
+
+        return {
+          tenantId: index % 2 === 0 ? tenantA.id : tenantB.id,
+          type: "news",
+          title: `${runPrefix}-volume-title-${index}`,
+          body: `${runPrefix}-volume-body-${index}`,
+          priority: "standard",
+          visibility:
+            index % 3 === 0
+              ? "PUBLIC"
+              : index % 3 === 1
+                ? "MEMBERS"
+                : "VERIFIED_MEMBERS",
+          lifecycle,
+          audienceMode: index % 13 === 0 ? "targeted" : "entire_tenant",
+          authorOfficeLabel: "Guild Communications Office",
+          publishAt,
+          expiresAt,
+        };
+      },
+    );
+    const inserted = await getDatabase().insert(publications).values(values).returning();
+    expect(inserted).toHaveLength(120);
+
+    const viewer = await membershipViewerFor(tenantA, membershipA);
+    const queries: PublicationCollectionQuery[] = [];
+    const service = createCountingListPublicationsService(queries);
+    const returnedIds: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const result = await service.listPublications(
+        listInput(tenantA.id, viewer, { limit: 50, cursor }),
+      );
+      expect(result.outcome).toBe("OK");
+      if (result.outcome !== "OK") {
+        break;
+      }
+      returnedIds.push(...result.items.map((item) => item.id));
+      cursor = result.nextCursor;
+      pages += 1;
+      if (pages > 4) {
+        throw new Error("Volume collection pagination did not terminate.");
+      }
+    } while (cursor !== null);
+
+    const expected =
+      await getPublicationRepository().listPublicationCandidatesForTenant({
+        tenantId: tenantA.id,
+        surface: "ACTIVE",
+        now: READ_NOW,
+        cursor: null,
+        limit: 150,
+      });
+    expect(returnedIds).toEqual(expected.items.map((item) => item.id));
+    expect(returnedIds.every((id) => inserted.some((row) => row.id === id && row.tenantId === tenantA.id))).toBe(
+      true,
+    );
+    expect(new Set(returnedIds).size).toBe(returnedIds.length);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every((query) => query.tenantId === tenantA.id)).toBe(true);
+    expect(queries.every((query) => query.limit >= 1 && query.limit <= 150)).toBe(
+      true,
+    );
+  });
+
+  it("runs safe representative ACTIVE and ARCHIVE EXPLAIN checks with the Tenant predicate and keyset order", async () => {
+    const tenant = await createTenant({ slug: nextSlug("collection-explain") });
+    const explainIndex = await getDatabase().execute(sql`
+      select indexname
+      from pg_indexes
+      where schemaname = 'public'
+        and tablename = 'publications'
+        and indexname = 'publications_tenant_collection_order'
+    `);
+    expect(explainIndex.rows).toHaveLength(1);
+
+    const activePlan = await getDatabase().execute(sql`
+      explain (costs off)
+      select "id"
+      from "publications"
+      where "tenant_id" = ${tenant.id}
+        and "audience_mode" = 'entire_tenant'
+        and "lifecycle" = 'published'
+        and "publish_at" is not null
+        and "publish_at" <= ${READ_NOW}
+        and ("expires_at" is null or "expires_at" > ${READ_NOW})
+        and (
+          "publish_at" < ${READ_NOW}
+          or ("publish_at" = ${READ_NOW} and "id" < ${randomUUID()})
+        )
+      order by "publish_at" desc, "id" desc
+      limit 151
+    `);
+    const archivePlan = await getDatabase().execute(sql`
+      explain (costs off)
+      select "id"
+      from "publications"
+      where "tenant_id" = ${tenant.id}
+        and "audience_mode" = 'entire_tenant'
+        and "publish_at" is not null
+        and "publish_at" <= ${READ_NOW}
+        and (
+          "lifecycle" in ('expired', 'archived')
+          or (
+            "lifecycle" = 'published'
+            and "expires_at" is not null
+            and "expires_at" <= ${READ_NOW}
+          )
+        )
+        and (
+          "publish_at" < ${READ_NOW}
+          or ("publish_at" = ${READ_NOW} and "id" < ${randomUUID()})
+        )
+      order by "publish_at" desc, "id" desc
+      limit 151
+    `);
+    const planText = (result: { rows: unknown[] }) =>
+      result.rows
+        .flatMap((row) =>
+          typeof row === "object" && row !== null
+            ? Object.values(row as Record<string, unknown>).map(String)
+            : [String(row)],
+        )
+        .join("\n")
+        .toLowerCase();
+
+    expect(planText(activePlan)).toContain("tenant_id");
+    expect(planText(activePlan)).toContain("publish_at");
+    expect(planText(archivePlan)).toContain("tenant_id");
+    expect(planText(archivePlan)).toContain("publish_at");
+    expect(planText(activePlan)).not.toContain("offset");
+    expect(planText(archivePlan)).not.toContain("offset");
   });
 
   it("accepts every Tenant lifecycle and rejects an invalid enum value", async () => {

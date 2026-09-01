@@ -13,6 +13,7 @@ const serverOnlyModules = [
   "src/server/repositories/tenant-repository.ts",
   "src/application/context/resolve-request-context.ts",
   "src/application/content/read-publication.ts",
+  "src/application/content/list-publications.ts",
   "src/domain/authorization/context-policy.ts",
   "src/domain/authorization/trusted-request-context.ts",
   "src/domain/authorization/resource-read-policy.ts",
@@ -42,6 +43,24 @@ describe("server-only architecture boundary", () => {
     expect(source).not.toMatch(/findPublicationById\s*\(/);
   });
 
+  it("keeps Publication collection queries tenant-scoped and keyset-based", () => {
+    const source = readFileSync(
+      path.join(
+        process.cwd(),
+        "src/server/repositories/publication-repository.ts",
+      ),
+      "utf8",
+    );
+
+    expect(source).toContain("listPublicationCandidatesForTenant");
+    expect(source).toContain("eq(publications.tenantId, input.tenantId)");
+    expect(source).toContain('eq(publications.audienceMode, "entire_tenant")');
+    expect(source).toContain("orderBy(desc(publications.publishAt)");
+    expect(source).not.toMatch(/listPublications\s*\(/);
+    expect(source).not.toMatch(/\.offset\s*\(/i);
+    expect(source).not.toContain("OFFSET");
+  });
+
   it("routes Publication reads through the canonical policy and pure mapper", () => {
     const source = readFileSync(
       path.join(
@@ -58,5 +77,21 @@ describe("server-only architecture boundary", () => {
     expect(source).not.toContain("assuranceAtLeast");
     expect(source).not.toContain("MEMBERSHIP_NOT_ELIGIBLE");
     expect(source).not.toContain("VERIFIED_MEMBERS");
+  });
+
+  it("routes Publication collections through the canonical policy and stays server-only", () => {
+    const source = readFileSync(
+      path.join(process.cwd(), "src/application/content/list-publications.ts"),
+      "utf8",
+    );
+
+    expect(source).toContain('import "server-only"');
+    expect(source).toContain("authorizeResourceRead");
+    expect(source).toContain("mapPublicationToResourceAccessFacts");
+    expect(source).toContain("resolveExposure");
+    expect(source).toContain("MAX_PUBLICATION_CANDIDATES_SCANNED");
+    expect(source).not.toContain("audienceDecision: { evaluated: true");
+    expect(source).not.toMatch(/\.offset\s*\(/i);
+    expect(source).not.toContain("supabase");
   });
 });

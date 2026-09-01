@@ -92,6 +92,13 @@ export const publications = pgTable(
       table.tenantId,
       table.lifecycle,
     ),
+    index("publications_tenant_collection_order").on(
+      table.tenantId,
+      table.audienceMode,
+      table.lifecycle,
+      table.publishAt,
+      table.id,
+    ),
     check(
       "publications_title_nonempty",
       sql`char_length(btrim(${table.title})) > 0`,

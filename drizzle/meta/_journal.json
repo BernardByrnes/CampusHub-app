@@ -29,6 +29,13 @@
       "when": 1788277883931,
       "tag": "0003_skinny_boom_boom",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788284636814,
+      "tag": "0004_right_whizzer",
+      "breakpoints": true
     }
   ]
 }

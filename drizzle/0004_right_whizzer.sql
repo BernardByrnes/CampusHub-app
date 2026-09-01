@@ -1,0 +1,1 @@
+CREATE INDEX "publications_tenant_collection_order" ON "publications" USING btree ("tenant_id","audience_mode","lifecycle","publish_at","id");

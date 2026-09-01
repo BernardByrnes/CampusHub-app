@@ -1,6 +1,17 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+} from "drizzle-orm";
 
 import {
   isPublication,
@@ -19,6 +30,13 @@ import {
   type ResourceVisibility,
 } from "@/domain/authorization/resource-visibility";
 import { isUuid } from "@/domain/identifiers/uuid";
+import {
+  isPublicationCollectionCursor,
+  MAX_PUBLICATION_CANDIDATES_SCANNED,
+  parsePublicationCollectionSurface,
+  type PublicationCollectionCandidatePage,
+  type PublicationCollectionQuery,
+} from "@/domain/content/publication-collection";
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import {
   publications,
@@ -176,5 +194,84 @@ export class DrizzlePublicationRepository {
       .limit(1);
 
     return rows[0] ? toPublication(rows[0]) : null;
+  }
+
+  public async listPublicationCandidatesForTenant(
+    input: PublicationCollectionQuery,
+  ): Promise<PublicationCollectionCandidatePage> {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      !isUuid(input.tenantId) ||
+      parsePublicationCollectionSurface(input.surface) === null ||
+      !(input.now instanceof Date) ||
+      Number.isNaN(input.now.getTime()) ||
+      !Number.isInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > MAX_PUBLICATION_CANDIDATES_SCANNED ||
+      (input.cursor !== null && !isPublicationCollectionCursor(input.cursor))
+    ) {
+      return { items: [], hasMoreCandidateRows: false };
+    }
+
+    const historicalPublishAt = and(
+      isNotNull(publications.publishAt),
+      lte(publications.publishAt, input.now),
+    );
+    const lifecycleAndTime =
+      input.surface === "ACTIVE"
+        ? and(
+            eq(publications.lifecycle, "published"),
+            historicalPublishAt,
+            or(
+              isNull(publications.expiresAt),
+              gt(publications.expiresAt, input.now),
+            ),
+          )
+        : and(
+            historicalPublishAt,
+            or(
+              inArray(publications.lifecycle, ["expired", "archived"]),
+              and(
+                eq(publications.lifecycle, "published"),
+                isNotNull(publications.expiresAt),
+                lte(publications.expiresAt, input.now),
+              ),
+            ),
+          );
+    const cursorAfter =
+      input.cursor === null
+        ? undefined
+        : or(
+            lt(publications.publishAt, input.cursor.publishAt),
+            and(
+              eq(publications.publishAt, input.cursor.publishAt),
+              lt(publications.id, input.cursor.id),
+            ),
+          );
+    // Targeted Publications are intentionally excluded until CH-PUB-003 has
+    // a real audience evaluator. Direct B.2.2 reads may consume an explicit
+    // trusted audience decision; collection reads must not invent one.
+    const scope = and(
+      eq(publications.tenantId, input.tenantId),
+      eq(publications.audienceMode, "entire_tenant"),
+      lifecycleAndTime,
+      cursorAfter,
+    );
+
+    const rows = await this.database
+      .select()
+      .from(publications)
+      .where(scope)
+      .orderBy(desc(publications.publishAt), desc(publications.id))
+      .limit(input.limit + 1);
+    const pageRows = rows.slice(0, input.limit);
+
+    return {
+      items: pageRows
+        .map((row) => toPublication(row))
+        .filter((publication): publication is Publication => publication !== null),
+      hasMoreCandidateRows: rows.length > input.limit,
+    };
   }
 }
