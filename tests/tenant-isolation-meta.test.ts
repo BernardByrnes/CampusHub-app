@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
@@ -6,52 +6,23 @@ import { describe, expect, it } from "vitest";
 
 import * as schema from "@/server/db/schema";
 import {
-  GOVERNED_SURFACE_ROOTS,
   type RegistryValidationInput,
   type TenantSurfaceRegistryEntry,
   tenantSurfaceRegistry,
   validateTenantSurfaceRegistry,
 } from "@/server/tenancy/tenant-surface-registry";
 
+import {
+  discoverGovernedImplementationPaths,
+  discoverGovernedImplementationPathsFromRelativePaths,
+  discoverGovernedOperations,
+  discoverMigrationPaths,
+  discoverMigrationPathsFromRelativePaths,
+  discoverOperationsFromSource,
+} from "./tenant-isolation-discovery";
 import { tenantIsolationProbeRegistry } from "./tenant-isolation-probes";
 
 const repositoryRoot = process.cwd();
-
-function toRepositoryPath(filePath: string): string {
-  return path.relative(repositoryRoot, filePath).split(path.sep).join("/");
-}
-
-function collectGovernedImplementationPaths(
-  relativeDirectory: string,
-  collected: string[] = [],
-): string[] {
-  const absoluteDirectory = path.join(repositoryRoot, relativeDirectory);
-  if (!existsSync(absoluteDirectory)) {
-    return collected;
-  }
-
-  for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
-    const absoluteEntryPath = path.join(absoluteDirectory, entry.name);
-    if (entry.isDirectory()) {
-      collectGovernedImplementationPaths(
-        path.join(relativeDirectory, entry.name),
-        collected,
-      );
-      continue;
-    }
-
-    if (
-      entry.isFile() &&
-      (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) &&
-      !entry.name.endsWith(".test.ts") &&
-      !entry.name.endsWith(".test.tsx")
-    ) {
-      collected.push(toRepositoryPath(absoluteEntryPath));
-    }
-  }
-
-  return collected.sort();
-}
 
 function implementationPathForDatabaseObject(
   databaseObjectName: string,
@@ -99,12 +70,19 @@ function discoverTenantModels() {
 }
 
 function currentRegistryValidationInput(): RegistryValidationInput {
+  const governedImplementationPaths = discoverGovernedImplementationPaths(
+    repositoryRoot,
+  );
+
   return {
     registry: tenantSurfaceRegistry,
     discoveredTenantModels: discoverTenantModels(),
-    governedImplementationPaths: GOVERNED_SURFACE_ROOTS.flatMap((root) =>
-      collectGovernedImplementationPaths(root),
+    governedImplementationPaths,
+    discoveredOperations: discoverGovernedOperations(
+      repositoryRoot,
+      governedImplementationPaths,
     ),
+    discoveredMigrationPaths: discoverMigrationPaths(repositoryRoot),
     implementationPathExists: (implementationPath) =>
       existsSync(path.join(repositoryRoot, implementationPath)),
     isolationProbeIds: new Set(Object.keys(tenantIsolationProbeRegistry)),
@@ -120,7 +98,7 @@ function fixtureEntry(
     implementationPath: "src/fixture.ts",
     surface: "fixtures",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "fixture Tenant predicate",
+    isolationStrategy: "Fixture Tenant predicate and negative probe.",
     requiredNegativeTestIds: ["fixture.probe"],
     databaseObjectName: "fixtures",
     ...overrides,
@@ -140,6 +118,8 @@ function fixtureInput(
       },
     ],
     governedImplementationPaths: ["src/fixture.ts"],
+    discoveredOperations: [],
+    discoveredMigrationPaths: [],
     implementationPathExists: () => true,
     isolationProbeIds: new Set(["fixture.probe"]),
     ...overrides,
@@ -147,7 +127,7 @@ function fixtureInput(
 }
 
 describe("Tenant isolation governance registry", () => {
-  it("declares discovered Tenant models and every governed implementation path", () => {
+  it("declares discovered Tenant models, operations, migrations, and every governed path", () => {
     expect(validateTenantSurfaceRegistry(currentRegistryValidationInput())).toEqual(
       [],
     );
@@ -159,11 +139,264 @@ describe("Tenant isolation governance registry", () => {
     });
   }
 
-  it("fails when a governed surface has no registry entry", () => {
+  it("discovers every governed source extension, including alternate server and API files", () => {
+    const discovered = discoverGovernedImplementationPathsFromRelativePaths([
+      "src/app/api/future/route.ts",
+      "src/app/api/future/route.tsx",
+      "src/app/api/future/route.js",
+      "src/app/api/future/route.jsx",
+      "src/app/api/future/route.mts",
+      "src/app/api/future/route.cts",
+      "src/app/api/future/route.mjs",
+      "src/app/api/future/route.cjs",
+      "src/server/services/event-service.ts",
+      "src/server/services/nested/event-service.js",
+      "src/server/jobs/send-notifications.mts",
+      "src/server/jobs/worker.cjs",
+      "src/app/api/future/route.test.ts",
+      "src/server/jobs/worker.spec.ts",
+    ]);
+
+    expect(discovered).toEqual([
+      "src/app/api/future/route.cjs",
+      "src/app/api/future/route.cts",
+      "src/app/api/future/route.js",
+      "src/app/api/future/route.jsx",
+      "src/app/api/future/route.mjs",
+      "src/app/api/future/route.mts",
+      "src/app/api/future/route.ts",
+      "src/app/api/future/route.tsx",
+      "src/server/jobs/send-notifications.mts",
+      "src/server/jobs/worker.cjs",
+      "src/server/services/event-service.ts",
+      "src/server/services/nested/event-service.js",
+    ]);
+
     const errors = validateTenantSurfaceRegistry(
-      fixtureInput({ governedImplementationPaths: ["src/undeclared.ts"] }),
+      fixtureInput({
+        governedImplementationPaths: discovered,
+        implementationPathExists: (implementationPath) =>
+          implementationPath === "src/fixture.ts",
+      }),
     );
-    expect(errors).toContain("governed surface is undeclared: src/undeclared.ts");
+    for (const implementationPath of discovered) {
+      expect(errors).toContain(`governed surface is undeclared: ${implementationPath}`);
+    }
+  });
+
+  it("discovers route handler operations as well as exported public functions", () => {
+    const operations = discoverOperationsFromSource(
+      "src/app/api/example/route.ts",
+      `export function GET() { return new Response(); }
+       export const POST = () => new Response();`,
+    );
+
+    expect(operations).toEqual([
+      {
+        implementationPath: "src/app/api/example/route.ts",
+        operation: "GET",
+        kind: "route_handler",
+      },
+      {
+        implementationPath: "src/app/api/example/route.ts",
+        operation: "POST",
+        kind: "route_handler",
+      },
+    ]);
+  });
+
+  it("fails when an alternate server directory has no registry entry", () => {
+    const paths = discoverGovernedImplementationPathsFromRelativePaths([
+      "src/server/services/event-service.ts",
+      "src/server/services/nested/event-service.ts",
+      "src/app/api/admin/route.ts",
+    ]);
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({ governedImplementationPaths: paths }),
+    );
+
+    expect(errors).toContain(
+      "governed surface is undeclared: src/server/services/event-service.ts",
+    );
+    expect(errors).toContain(
+      "governed surface is undeclared: src/server/services/nested/event-service.ts",
+    );
+    expect(errors).toContain(
+      "governed surface is undeclared: src/app/api/admin/route.ts",
+    );
+  });
+
+  it("fails when a newly discovered SQL migration is not in the declared history/head", () => {
+    const currentMigrations = [
+      "drizzle/0000_young_adam_warlock.sql",
+      "drizzle/0001_luxuriant_monster_badoon.sql",
+      "drizzle/0002_talented_timeslip.sql",
+      "drizzle/0003_skinny_boom_boom.sql",
+      "drizzle/0004_right_whizzer.sql",
+    ];
+    const discoveredMigrations = discoverMigrationPathsFromRelativePaths([
+      ...currentMigrations,
+      "drizzle/0005_new.sql",
+      "drizzle/meta/not-a-migration.json",
+    ]);
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry(),
+          {
+            id: "fixture.migrations",
+            category: "migration",
+            implementationPath: "drizzle/0004_right_whizzer.sql",
+            surface: "fixture migration history",
+            tenantScope: "GLOBAL_NON_TENANT",
+            isolationStrategy: "Fixture migration governance.",
+            requiredNegativeTestIds: [],
+            globalExemptionReason: "Fixture migration metadata changes schema only, not resource data.",
+            declaredImplementationPaths: currentMigrations,
+            migrationHead: "drizzle/0004_right_whizzer.sql",
+          },
+        ],
+        discoveredMigrationPaths: discoveredMigrations,
+      }),
+    );
+
+    expect(errors).toContain(
+      "migration history declaration does not match discovered SQL migrations",
+    );
+    expect(errors).toContain(
+      "migration head is not the current discovered head: drizzle/0004_right_whizzer.sql",
+    );
+  });
+
+  it("fails when an existing route or job is declared FUTURE_NOT_IMPLEMENTED", () => {
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry(),
+          fixtureEntry({
+            id: "future.route",
+            category: "route",
+            implementationPath: "src/app/api/future/route.ts",
+            surface: "future route",
+            tenantScope: "FUTURE_NOT_IMPLEMENTED",
+            requiredNegativeTestIds: [],
+            isolationStrategy: "Future route requires explicit Tenant contract.",
+          }),
+          fixtureEntry({
+            id: "future.job",
+            category: "job",
+            implementationPath: "src/server/jobs/future-job.ts",
+            surface: "future job",
+            tenantScope: "FUTURE_NOT_IMPLEMENTED",
+            requiredNegativeTestIds: [],
+            isolationStrategy: "Future job requires durable Tenant context.",
+          }),
+        ],
+        governedImplementationPaths: [
+          "src/fixture.ts",
+          "src/app/api/future/route.ts",
+          "src/server/jobs/future-job.ts",
+        ],
+        implementationPathExists: () => true,
+      }),
+    );
+
+    expect(errors).toContain(
+      "FUTURE_NOT_IMPLEMENTED entry has an existing implementation: future.route: src/app/api/future/route.ts",
+    );
+    expect(errors).toContain(
+      "FUTURE_NOT_IMPLEMENTED entry has an existing implementation: future.job: src/server/jobs/future-job.ts",
+    );
+  });
+
+  it("fails when a Tenant root classification is assigned to an ordinary application service", () => {
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry({
+            category: "application_service",
+            tenantScope: "TENANT_ROOT",
+          }),
+        ],
+      }),
+    );
+
+    expect(errors).toContain(
+      "illegal category/scope pair for fixture.model: application_service/TENANT_ROOT",
+    );
+    expect(errors).toContain(
+      "TENANT_ROOT entry is not an approved Tenant-root contract: fixture.model",
+    );
+  });
+
+  it("fails when a model or repository declaration abuses FUTURE or root semantics", () => {
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry({
+            id: "future.model",
+            tenantScope: "FUTURE_NOT_IMPLEMENTED",
+            requiredNegativeTestIds: [],
+            isolationStrategy: "Future model requires reviewed Tenant ownership.",
+            implementationPath: "src/server/db/schema/future.ts",
+          }),
+          fixtureEntry({
+            id: "publication.repository.root-abuse",
+            category: "repository",
+            tenantScope: "TENANT_ROOT",
+            implementationPath: "src/server/repositories/publication-repository.ts",
+            operation: "DrizzlePublicationRepository.createPublication",
+          }),
+        ],
+        governedImplementationPaths: [
+          "src/server/db/schema/future.ts",
+          "src/server/repositories/publication-repository.ts",
+        ],
+        implementationPathExists: () => true,
+      }),
+    );
+
+    expect(errors).toContain(
+      "TENANT_ROOT entry is not an approved Tenant-root contract: publication.repository.root-abuse",
+    );
+    expect(errors).toContain(
+      "FUTURE_NOT_IMPLEMENTED entry has an existing implementation: future.model: src/server/db/schema/future.ts",
+    );
+  });
+
+  it("fails on an illegal migration-scoped classification", () => {
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry({
+            category: "migration",
+            tenantScope: "TENANT_SCOPED",
+          }),
+        ],
+      }),
+    );
+
+    expect(errors).toContain(
+      "illegal category/scope pair for fixture.model: migration/TENANT_SCOPED",
+    );
+  });
+
+  it("fails when a GLOBAL_NON_TENANT entry has no specific exemption", () => {
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry({
+            tenantScope: "GLOBAL_NON_TENANT",
+            requiredNegativeTestIds: [],
+            globalExemptionReason: "global",
+          }),
+        ],
+      }),
+    );
+
+    expect(errors).toContain(
+      "GLOBAL_NON_TENANT entry lacks a specific exemption reason: fixture.model",
+    );
   });
 
   it("fails when a scoped declaration has no executable isolation probe", () => {
@@ -252,6 +485,52 @@ describe("Tenant isolation governance registry", () => {
     );
     expect(errors).toContain(
       "governed surface is undeclared: src/server/jobs/send-digest.ts",
+    );
+  });
+
+  it("fails when a public method in a declared file is not registered", () => {
+    const implementationPath = "src/server/services/event-service.ts";
+    const discoveredOperations = discoverOperationsFromSource(
+      implementationPath,
+      `export class EventService {
+         public allowed() { return true; }
+         public unregistered() { return false; }
+       }`,
+    );
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [
+          fixtureEntry({
+            id: "event.service",
+            category: "application_service",
+            implementationPath,
+            operation: "EventService.allowed",
+            databaseObjectName: undefined,
+          }),
+        ],
+        discoveredTenantModels: [],
+        governedImplementationPaths: [implementationPath],
+        discoveredOperations,
+        implementationPathExists: () => true,
+      }),
+    );
+
+    expect(errors).toContain(
+      "governed operation is undeclared: src/server/services/event-service.ts#EventService.unregistered",
+    );
+  });
+
+  it("fails when the Publication create operation is removed from the registry", () => {
+    const current = currentRegistryValidationInput();
+    const errors = validateTenantSurfaceRegistry({
+      ...current,
+      registry: tenantSurfaceRegistry.filter(
+        (entry) => entry.id !== "publication.create",
+      ),
+    });
+
+    expect(errors).toContain(
+      "governed operation is undeclared: src/application/content/create-publication.ts#CreatePublicationService.createPublication",
     );
   });
 });

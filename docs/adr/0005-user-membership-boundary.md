@@ -1,18 +1,36 @@
 # ADR 0005: Global User and Tenant Membership Boundary
 
-- Status: **PROPOSED — AWAITING INDEPENDENT SECURITY REVIEW**
+- Status: **APPROVED — INDEPENDENT SECURITY REVIEW 2026-09-02**
+- Review decision: **A4_APPROVED_WITH_NONBLOCKING_OBLIGATIONS**
+- Reviewed production SHA: `279a3b7d2f2e5fbe87e4d74025884ec9bd229060`
 - Date: 2026-09-02
-- Decision owner: independent security review is still required
+- Decision owner: independent security review
 - Scope: 8V-B.A4 user/Membership boundary and identifier governance
 
 ## Authority and decision boundary
 
-The frozen Product Specification is authoritative for this proposal, especially
+The frozen Product Specification is authoritative for this decision, especially
 the Global User/Membership hard invariant in §10 and TI-12, the explicit active
 Tenant context, Tenant-local notifications and analytics, transfer behavior,
 support boundary, and audit/security constraints. ADR 0004 remains
-`PROPOSED — AWAITING INDEPENDENT SECURITY REVIEW`; this ADR does not approve
-A2, A4, authentication, or any later implementation phase.
+`PROPOSED — READY FOR INDEPENDENT RE-REVIEW`; this ADR records A4 only and does
+not approve A2, authentication, or any later implementation phase.
+
+## Independent review record
+
+The independent review decision is `A4_APPROVED_WITH_NONBLOCKING_OBLIGATIONS`.
+Approval is limited to the Global User/Membership boundary and identifier
+inventory contract at the reviewed SHA above. It does not authorize Global User
+or Auth persistence, cross-Tenant behavioral joins, or any later phase.
+
+The following obligations remain nonblocking for A4 and must be completed before
+the relevant future surfaces are implemented:
+
+- strengthen the global behavioral guard before Global User/Auth persistence;
+- add negative tests for Auth, analytics, notifications, exports, jobs,
+  recovery, support, admin, transfer, and closure surfaces;
+- use Tenant-local analytics pseudonyms rather than global identity keys; and
+- keep account recovery and security communication Tenant-neutral.
 
 The current production foundation has no Global User, account, session,
 credential, OAuth, or MFA persistence. It uses `identitySubjectId` as an
@@ -218,7 +236,7 @@ support/admin, jobs, and transfer/closure workflows remain explicit
 
 ## Review boundary
 
-This is a proposed architecture blocker packet. It is ready for independent
-security review only after the reported quality gates pass. It is not A4
-approval or closure. A2 remains `READY_FOR_INDEPENDENT_REVIEW`, and B.2.4
-must remain blocked until independent approval of both A2 and A4.
+This ADR is approved for A4 with the nonblocking future obligations recorded
+above. It does not close those obligations or approve A2. A2 remains
+`READY_FOR_INDEPENDENT_REVIEW`, and B.2.4 must remain blocked until independent
+re-review approves A2 as well.

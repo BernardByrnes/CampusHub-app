@@ -2,8 +2,9 @@
 
 ## Review status
 
-This is a proposed A4 evidence and future-obligation plan. It is not an
-approval record. A4 remains `PROPOSED — AWAITING INDEPENDENT SECURITY REVIEW`.
+This is the A4 evidence and future-obligation plan. It is not the approval
+record; ADR 0005 records `A4_APPROVED_WITH_NONBLOCKING_OBLIGATIONS` after the
+independent review on 2026-09-02. The future obligations below remain active.
 
 ## Test subject
 
@@ -81,9 +82,9 @@ security review and an explicit declaration.
 
 ## Review exit criteria
 
-Independent security review must inspect the two-Membership evidence, exact
-response shapes, repository surface, identifier classifications, global
-behavioral guard limitations, and every future obligation. Any finding must be
-remediated before A4 can be treated as complete. A2 remains
-`READY_FOR_INDEPENDENT_REVIEW`; B.2.4 must not begin until both A2 and A4 are
-independently approved.
+The independent review recorded in ADR 0005 approved the A4 boundary with
+nonblocking future obligations. The two-Membership evidence, exact response
+shapes, repository surface, identifier classifications, global behavioral guard
+limitations, and every future obligation remain the handoff record. A2 remains
+`READY_FOR_INDEPENDENT_REVIEW`; B.2.4 must not begin until A2 is independently
+re-reviewed and approved as well.

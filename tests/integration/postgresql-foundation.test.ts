@@ -42,6 +42,7 @@ import type {
   ReadPublicationInput,
   ReadPublicationService,
 } from "@/application/content/read-publication";
+import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 import type {
   ListPublicationsInput,
   ListPublicationsService,
@@ -823,6 +824,109 @@ describe("real Supabase PostgreSQL foundation", () => {
           body: "This insert must fail at the Tenant foreign key.",
           audienceMode: "entire_tenant",
           authorOfficeLabel: "Guild Communications Office",
+        }),
+      "23503",
+    );
+  });
+
+  it("creates Publications only through a matching trusted Tenant context", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("create-context-a") });
+    const tenantB = await createTenant({ slug: nextSlug("create-context-b") });
+    const identitySubjectId = nextIdentity("create-context");
+    await createMembership(tenantA.id, {
+      identitySubjectId,
+      assuranceLevel: "L2",
+      lifecycle: "verified",
+    });
+    await createMembership(tenantB.id, {
+      identitySubjectId,
+      assuranceLevel: "L2",
+      lifecycle: "verified",
+    });
+
+    const contextResolution = await getContextService().resolveRequestContext(
+      { identitySubjectId },
+      { tenantId: tenantA.id },
+    );
+    if (!contextResolution.resolved) {
+      throw new Error("Tenant A trusted context did not resolve.");
+    }
+
+    const { CreatePublicationService } = await import(
+      "@/application/content/create-publication"
+    );
+    const service = new CreatePublicationService({
+      publications: getPublicationRepository(),
+    });
+    const publicationInput: CreatePublicationInput = {
+      type: "notice",
+      title: `Trusted Tenant A create ${runPrefix}`,
+      body: "Created through the matching trusted Tenant context.",
+      audienceMode: "entire_tenant",
+      authorOfficeLabel: "Guild Communications Office",
+    };
+
+    const created = await service.createPublication({
+      trustedContext: contextResolution.context,
+      requestedTenantId: tenantA.id,
+      publication: publicationInput,
+    });
+    expect(created.outcome).toBe("CREATED");
+    if (created.outcome !== "CREATED") {
+      throw new Error("Matching trusted Tenant create was denied.");
+    }
+    expect(created.publication).toMatchObject({
+      tenantId: tenantA.id,
+      title: publicationInput.title,
+    });
+
+    const persistedInA = await getPublicationRepository().findPublicationByIdForTenant(
+      tenantA.id,
+      created.publication.id,
+    );
+    expect(persistedInA).toMatchObject({
+      id: created.publication.id,
+      tenantId: tenantA.id,
+    });
+    await expect(
+      getPublicationRepository().findPublicationByIdForTenant(
+        tenantB.id,
+        created.publication.id,
+      ),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.createPublication({
+        trustedContext: contextResolution.context,
+        requestedTenantId: tenantB.id,
+        publication: {
+          ...publicationInput,
+          title: `Rejected Tenant B create ${runPrefix}`,
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "DENIED",
+      code: "TENANT_SCOPE_NOT_FOUND",
+    });
+    const tenantBRows = await getDatabase()
+      .select({ id: publications.id })
+      .from(publications)
+      .where(eq(publications.title, `Rejected Tenant B create ${runPrefix}`));
+    expect(tenantBRows).toEqual([]);
+
+    await expect(
+      service.createPublication({
+        trustedContext: contextResolution.context,
+        requestedTenantId: "banana",
+        publication: publicationInput,
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+
+    await expectPostgresCode(
+      () =>
+        getPublicationRepository().createPublication(randomUUID(), {
+          ...publicationInput,
+          title: `Foreign FK create ${runPrefix}`,
         }),
       "23503",
     );

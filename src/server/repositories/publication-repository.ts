@@ -112,7 +112,7 @@ export class DrizzlePublicationRepository {
     input: CreatePublicationInput,
   ): Promise<Publication | null> {
     if (
-      !isNonEmptyString(tenantId) ||
+      !isUuid(tenantId) ||
       typeof input !== "object" ||
       input === null
     ) {

@@ -7,12 +7,15 @@ import { validateRequestContext } from "@/domain/authorization/context-policy";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
+import { CreatePublicationService } from "@/application/content/create-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
 import { RequestContextService } from "@/application/context/resolve-request-context";
+import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { memberships, publications, tenants } from "@/server/db/schema";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
+import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
 const tenantBId = "00000000-0000-4000-8000-000000000002";
@@ -189,6 +192,63 @@ async function publicationCollectionProbe(): Promise<void> {
   expect(observedTenantId).toBe(tenantAId);
 }
 
+async function publicationCreateProbe(): Promise<void> {
+  const calls: Array<{ tenantId: string; input: CreatePublicationInput }> = [];
+  const service = new CreatePublicationService({
+    publications: {
+      createPublication: async (tenantId, input) => {
+        calls.push({ tenantId, input });
+        return publicationA;
+      },
+    },
+  });
+  const trustedContext: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+  const publicationInput: CreatePublicationInput = {
+    type: "news",
+    title: "Tenant A create probe",
+    body: "Tenant A create probe body",
+    audienceMode: "entire_tenant",
+    authorOfficeLabel: "Communications",
+  };
+
+  await expect(
+    service.createPublication({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      publication: publicationInput,
+    }),
+  ).resolves.toEqual({
+    outcome: "DENIED",
+    code: "TENANT_SCOPE_NOT_FOUND",
+  });
+  await expect(
+    service.createPublication({
+      trustedContext,
+      requestedTenantId: "banana",
+      publication: publicationInput,
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(calls).toHaveLength(0);
+
+  await expect(
+    service.createPublication({
+      trustedContext,
+      requestedTenantId: tenantAId,
+      publication: publicationInput,
+    }),
+  ).resolves.toEqual({ outcome: "CREATED", publication: publicationA });
+  expect(calls).toEqual([
+    { tenantId: tenantAId, input: publicationInput },
+  ]);
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -204,4 +264,5 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.persistence": () => expectTenantOwnedTable(publications),
   "publication.direct": publicationDirectProbe,
   "publication.collection": publicationCollectionProbe,
+  "publication.create": publicationCreateProbe,
 };

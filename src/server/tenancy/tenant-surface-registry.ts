@@ -12,6 +12,7 @@ export const TENANT_SURFACE_CATEGORIES = [
   "media",
   "notification",
   "analytics",
+  "backup",
   "infrastructure",
   "migration",
 ] as const;
@@ -29,6 +30,38 @@ export const TENANT_SCOPE_CLASSIFICATIONS = [
 export type TenantScopeClassification =
   (typeof TENANT_SCOPE_CLASSIFICATIONS)[number];
 
+type ImplementedTenantScopeClassification = Exclude<
+  TenantScopeClassification,
+  "FUTURE_NOT_IMPLEMENTED"
+>;
+
+/**
+ * Legal ownership semantics for an implemented surface. FUTURE_NOT_IMPLEMENTED
+ * is a temporal declaration handled separately: it is legal only while its
+ * implementation path is absent from the repository.
+ */
+export const TENANT_SCOPE_MATRIX = {
+  model: ["TENANT_ROOT", "TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  repository: ["TENANT_ROOT", "TENANT_SCOPED"],
+  application_service: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  route: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  job: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  export: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  search_index: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  cache: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  media: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  notification: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  analytics: ["TENANT_SCOPED", "GLOBAL_NON_TENANT"],
+  backup: ["GLOBAL_NON_TENANT"],
+  infrastructure: ["GLOBAL_NON_TENANT"],
+  migration: ["GLOBAL_NON_TENANT"],
+} as const satisfies Readonly<
+  Record<
+    TenantSurfaceCategory,
+    readonly ImplementedTenantScopeClassification[]
+  >
+>;
+
 export type TenantSurfaceRegistryEntry = Readonly<{
   id: string;
   category: TenantSurfaceCategory;
@@ -39,6 +72,17 @@ export type TenantSurfaceRegistryEntry = Readonly<{
   requiredNegativeTestIds: readonly string[];
   databaseObjectName?: string;
   globalExemptionReason?: string;
+  /** Stable public operation metadata, when the file exposes an operation. */
+  operation?: string;
+  /** Explicit migration history declaration, used only by migration entries. */
+  declaredImplementationPaths?: readonly string[];
+  migrationHead?: string;
+}>;
+
+export type DiscoveredTenantOperation = Readonly<{
+  implementationPath: string;
+  operation: string;
+  kind: "class_method" | "exported_function" | "route_handler";
 }>;
 
 /**
@@ -55,15 +99,27 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Tenant root owns the identifier namespace for child resources.",
     requiredNegativeTestIds: ["tenant.root.contract"],
     databaseObjectName: "tenants",
+    operation: "table:tenants",
   },
   {
-    id: "tenant.repository.lookup",
+    id: "tenant.repository.find-by-id",
     category: "repository",
     implementationPath: "src/server/repositories/tenant-repository.ts",
-    surface: "DrizzleTenantRepository.findTenantById/findTenantBySlug",
+    surface: "DrizzleTenantRepository.findTenantById",
     tenantScope: "TENANT_ROOT",
-    isolationStrategy: "Tenant root lookup validates the canonical identifier or slug before SQL.",
+    isolationStrategy: "Tenant root lookup validates the canonical UUID before SQL.",
     requiredNegativeTestIds: ["tenant.root.contract"],
+    operation: "DrizzleTenantRepository.findTenantById",
+  },
+  {
+    id: "tenant.repository.find-by-slug",
+    category: "repository",
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    surface: "DrizzleTenantRepository.findTenantBySlug",
+    tenantScope: "TENANT_ROOT",
+    isolationStrategy: "Tenant root lookup validates the canonical slug before SQL.",
+    requiredNegativeTestIds: ["tenant.root.contract"],
+    operation: "DrizzleTenantRepository.findTenantBySlug",
   },
   {
     id: "membership.persistence",
@@ -74,6 +130,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Required tenant_id ownership with a foreign key to tenants.id.",
     requiredNegativeTestIds: ["membership.persistence"],
     databaseObjectName: "memberships",
+    operation: "table:memberships",
   },
   {
     id: "membership.context.reader-contract",
@@ -92,6 +149,17 @@ export const tenantSurfaceRegistry = [
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "The server resolves Tenant first and binds identity plus Tenant before trusting context.",
     requiredNegativeTestIds: ["membership.context"],
+    operation: "RequestContextService.resolveRequestContext",
+  },
+  {
+    id: "membership.context.resolve",
+    category: "application_service",
+    implementationPath: "src/application/context/resolve-request-context.ts",
+    surface: "RequestContextService.resolve",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "The public resolver alias preserves the same explicit Tenant-bound context contract.",
+    requiredNegativeTestIds: ["membership.context"],
+    operation: "RequestContextService.resolve",
   },
   {
     id: "membership.context.server-boundary",
@@ -110,24 +178,27 @@ export const tenantSurfaceRegistry = [
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "Server wiring composes Tenant and Membership repositories behind the context resolver.",
     requiredNegativeTestIds: ["membership.context"],
+    operation: "createRequestContextResolver",
   },
   {
     id: "membership.repository.identity-tenant",
     category: "repository",
     implementationPath: "src/server/repositories/membership-repository.ts",
-    surface: "findMembershipForIdentityAndTenant",
+    surface: "DrizzleMembershipRepository.findMembershipForIdentityAndTenant",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "SQL requires both identitySubjectId and tenant_id; invalid Tenant UUIDs stop before SQL.",
     requiredNegativeTestIds: ["membership.identity-tenant"],
+    operation: "DrizzleMembershipRepository.findMembershipForIdentityAndTenant",
   },
   {
     id: "membership.repository.tenant-id",
     category: "repository",
     implementationPath: "src/server/repositories/membership-repository.ts",
-    surface: "findMembershipByIdForTenant",
+    surface: "DrizzleMembershipRepository.findMembershipByIdForTenant",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "SQL requires tenant_id and Membership id; foreign or malformed IDs return null.",
     requiredNegativeTestIds: ["membership.id-tenant"],
+    operation: "DrizzleMembershipRepository.findMembershipByIdForTenant",
   },
   {
     id: "publication.persistence",
@@ -138,6 +209,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Required tenant_id ownership with a restricted foreign key to tenants.id.",
     requiredNegativeTestIds: ["publication.persistence"],
     databaseObjectName: "publications",
+    operation: "table:publications",
   },
   {
     id: "publication.authorization.resolvers",
@@ -149,22 +221,34 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.direct"],
   },
   {
+    id: "publication.repository.create",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface: "DrizzlePublicationRepository.createPublication",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Publication writes accept only a canonical Tenant UUID and persist that ownership field.",
+    requiredNegativeTestIds: ["publication.create"],
+    operation: "DrizzlePublicationRepository.createPublication",
+  },
+  {
     id: "publication.repository.direct",
     category: "repository",
     implementationPath: "src/server/repositories/publication-repository.ts",
-    surface: "findPublicationByIdForTenant",
+    surface: "DrizzlePublicationRepository.findPublicationByIdForTenant",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "SQL requires tenant_id and Publication id before hydration.",
     requiredNegativeTestIds: ["publication.direct"],
+    operation: "DrizzlePublicationRepository.findPublicationByIdForTenant",
   },
   {
     id: "publication.repository.collection",
     category: "repository",
     implementationPath: "src/server/repositories/publication-repository.ts",
-    surface: "listPublicationCandidatesForTenant",
+    surface: "DrizzlePublicationRepository.listPublicationCandidatesForTenant",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "SQL requires tenant_id, surface lifecycle predicates, and keyset ordering without OFFSET.",
     requiredNegativeTestIds: ["publication.collection"],
+    operation: "DrizzlePublicationRepository.listPublicationCandidatesForTenant",
   },
   {
     id: "publication.direct-read",
@@ -174,24 +258,27 @@ export const tenantSurfaceRegistry = [
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "Viewer and trusted Tenant facts bind before lookup; hydrated denials normalize to NOT_FOUND.",
     requiredNegativeTestIds: ["publication.direct"],
+    operation: "ReadPublicationService.getPublicationForRead",
   },
   {
-    id: "publication.collection.active",
+    id: "publication.collection",
     category: "application_service",
     implementationPath: "src/application/content/list-publications.ts",
-    surface: "ListPublicationsService ACTIVE",
+    surface: "ListPublicationsService.listPublications ACTIVE/ARCHIVE",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Collection input binds viewer and Tenant before bounded tenant-scoped keyset reads.",
+    isolationStrategy: "Collection input binds viewer and Tenant before bounded tenant-scoped keyset reads for both surfaces.",
     requiredNegativeTestIds: ["publication.collection"],
+    operation: "ListPublicationsService.listPublications",
   },
   {
-    id: "publication.collection.archive",
+    id: "publication.create",
     category: "application_service",
-    implementationPath: "src/application/content/list-publications.ts",
-    surface: "ListPublicationsService ARCHIVE",
+    implementationPath: "src/application/content/create-publication.ts",
+    surface: "CreatePublicationService.createPublication",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Archive collection preserves the same Tenant binding, policy, and bounded keyset contract.",
-    requiredNegativeTestIds: ["publication.collection"],
+    isolationStrategy: "Trusted context and requested Tenant must match before the repository write; scope validation is not capability authorization.",
+    requiredNegativeTestIds: ["publication.create"],
+    operation: "CreatePublicationService.createPublication",
   },
   {
     id: "global.health.route",
@@ -202,6 +289,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Liveness response contains no Tenant or resource data.",
     requiredNegativeTestIds: [],
     globalExemptionReason: "Global process liveness is intentionally available without a Tenant context.",
+    operation: "GET",
   },
   {
     id: "global.health.service",
@@ -212,6 +300,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Returns only the fixed process liveness status.",
     requiredNegativeTestIds: [],
     globalExemptionReason: "Health is infrastructure liveness, not a Tenant-owned operation.",
+    operation: "getHealth",
   },
   {
     id: "global.database.client",
@@ -234,6 +323,39 @@ export const tenantSurfaceRegistry = [
     globalExemptionReason: "This is a schema-module index; Tenant ownership is declared on individual table entries.",
   },
   {
+    id: "global.env.reader",
+    category: "infrastructure",
+    implementationPath: "src/server/config/env.ts",
+    surface: "getServerEnv",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "Server configuration reads process configuration and exposes no Tenant resource data.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Environment configuration is process infrastructure; it is not a Tenant resource query.",
+    operation: "getServerEnv",
+  },
+  {
+    id: "global.env.schema",
+    category: "infrastructure",
+    implementationPath: "src/server/config/env-schema.ts",
+    surface: "parseServerEnv",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "Environment validation constrains process configuration without loading Tenant data.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Environment schema validation is process startup infrastructure, not a Tenant-owned operation.",
+    operation: "parseServerEnv",
+  },
+  {
+    id: "global.tenancy.registry",
+    category: "infrastructure",
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    surface: "validateTenantSurfaceRegistry",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "The registry validator checks architecture metadata and never queries resource data.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Registry validation is a CI architecture gate and has no runtime Tenant resource access.",
+    operation: "validateTenantSurfaceRegistry",
+  },
+  {
     id: "global.migrations",
     category: "migration",
     implementationPath: "drizzle/0004_right_whizzer.sql",
@@ -242,22 +364,26 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
     globalExemptionReason: "Migration history is deployment infrastructure; table ownership is checked structurally from the current schema.",
+    declaredImplementationPaths: [
+      "drizzle/0000_young_adam_warlock.sql",
+      "drizzle/0001_luxuriant_monster_badoon.sql",
+      "drizzle/0002_talented_timeslip.sql",
+      "drizzle/0003_skinny_boom_boom.sql",
+      "drizzle/0004_right_whizzer.sql",
+    ],
+    migrationHead: "drizzle/0004_right_whizzer.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 
 export const GOVERNED_SURFACE_ROOTS = [
-  "src/app/api",
+  "src/server",
   "src/application",
-  "src/server/context",
-  "src/server/repositories",
-  "src/server/db/schema",
-  "src/server/jobs",
-  "src/server/exports",
-  "src/server/search",
-  "src/server/cache",
-  "src/server/media",
-  "src/server/notifications",
-  "src/server/analytics",
+  "src/app/api",
+] as const;
+
+export const GOVERNED_SINGLE_FILE_PREFIXES = [
+  "src/middleware",
+  "src/proxy",
 ] as const;
 
 export const FUTURE_TENANT_SURFACE_CATEGORIES = [
@@ -268,6 +394,7 @@ export const FUTURE_TENANT_SURFACE_CATEGORIES = [
   "media",
   "notification",
   "analytics",
+  "backup",
 ] as const;
 
 export type DiscoveredTenantModel = Readonly<{
@@ -280,6 +407,8 @@ export type RegistryValidationInput = Readonly<{
   registry: readonly TenantSurfaceRegistryEntry[];
   discoveredTenantModels: readonly DiscoveredTenantModel[];
   governedImplementationPaths: readonly string[];
+  discoveredOperations: readonly DiscoveredTenantOperation[];
+  discoveredMigrationPaths: readonly string[];
   implementationPathExists: (implementationPath: string) => boolean;
   isolationProbeIds: ReadonlySet<string>;
 }>;
@@ -295,6 +424,104 @@ function includesValue<T extends readonly string[]>(
   return typeof value === "string" && values.includes(value);
 }
 
+function hasSpecificGlobalExemptionReason(value: unknown): value is string {
+  if (!isNonEmptyString(value)) {
+    return false;
+  }
+
+  const reason = value.trim();
+  const genericReasons = new Set([
+    "global",
+    "global exemption",
+    "not tenant scoped",
+    "not tenant-scoped",
+    "infrastructure",
+    "n/a",
+    "none",
+  ]);
+
+  return (
+    reason.length >= 24 &&
+    reason.split(/\s+/).length >= 4 &&
+    !genericReasons.has(reason.toLowerCase())
+  );
+}
+
+function isLegalCategoryScopePair(
+  category: unknown,
+  tenantScope: unknown,
+): boolean {
+  if (
+    !includesValue(TENANT_SURFACE_CATEGORIES, category) ||
+    !includesValue(TENANT_SCOPE_CLASSIFICATIONS, tenantScope)
+  ) {
+    return false;
+  }
+
+  if (tenantScope === "FUTURE_NOT_IMPLEMENTED") {
+    return true;
+  }
+
+  return (TENANT_SCOPE_MATRIX[category] as readonly string[]).includes(
+    tenantScope,
+  );
+}
+
+function operationKey(
+  implementationPath: string,
+  operation: string,
+): string {
+  return `${implementationPath}#${operation}`;
+}
+
+function sameStringSet(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return (
+    leftSet.size === rightSet.size &&
+    [...leftSet].every((value) => rightSet.has(value))
+  );
+}
+
+const tenantRootContracts = [
+  {
+    id: "tenant.persistence.root",
+    category: "model",
+    implementationPath: "src/server/db/schema/tenant.ts",
+    operation: "table:tenants",
+    databaseObjectName: "tenants",
+  },
+  {
+    id: "tenant.repository.find-by-id",
+    category: "repository",
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    operation: "DrizzleTenantRepository.findTenantById",
+  },
+  {
+    id: "tenant.repository.find-by-slug",
+    category: "repository",
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    operation: "DrizzleTenantRepository.findTenantBySlug",
+  },
+] as const;
+
+function isApprovedTenantRootContract(
+  entry: TenantSurfaceRegistryEntry,
+): boolean {
+  return tenantRootContracts.some(
+    (contract) =>
+      entry.id === contract.id &&
+      entry.category === contract.category &&
+      entry.implementationPath === contract.implementationPath &&
+      entry.operation === contract.operation &&
+      (!("databaseObjectName" in contract) ||
+        entry.databaseObjectName === contract.databaseObjectName),
+  );
+}
+
 /**
  * Validates architecture metadata and discovery evidence. It deliberately
  * contains no authorization or database-query behavior.
@@ -304,6 +531,7 @@ export function validateTenantSurfaceRegistry(
 ): string[] {
   const errors: string[] = [];
   const ids = new Set<string>();
+  const operationKeys = new Set<string>();
   const entriesByPath = new Map<string, TenantSurfaceRegistryEntry[]>();
 
   for (const entry of input.registry) {
@@ -321,13 +549,31 @@ export function validateTenantSurfaceRegistry(
     if (!includesValue(TENANT_SCOPE_CLASSIFICATIONS, entry.tenantScope)) {
       errors.push(`invalid Tenant scope classification for ${entry.id}`);
     }
+    if (!isLegalCategoryScopePair(entry.category, entry.tenantScope)) {
+      errors.push(
+        `illegal category/scope pair for ${entry.id}: ${entry.category}/${entry.tenantScope}`,
+      );
+    }
     if (!isNonEmptyString(entry.implementationPath)) {
       errors.push(`missing implementation path for ${entry.id}`);
     } else {
       const pathEntries = entriesByPath.get(entry.implementationPath) ?? [];
       pathEntries.push(entry);
       entriesByPath.set(entry.implementationPath, pathEntries);
-      if (!input.implementationPathExists(entry.implementationPath)) {
+
+      const pathExists = input.implementationPathExists(entry.implementationPath);
+      if (
+        entry.tenantScope === "FUTURE_NOT_IMPLEMENTED" &&
+        pathExists
+      ) {
+        errors.push(
+          `FUTURE_NOT_IMPLEMENTED entry has an existing implementation: ${entry.id}: ${entry.implementationPath}`,
+        );
+      }
+      if (
+        entry.tenantScope !== "FUTURE_NOT_IMPLEMENTED" &&
+        !pathExists
+      ) {
         errors.push(
           `implementation path missing for ${entry.id}: ${entry.implementationPath}`,
         );
@@ -336,6 +582,33 @@ export function validateTenantSurfaceRegistry(
 
     if (!isNonEmptyString(entry.surface)) {
       errors.push(`missing surface description for ${entry.id}`);
+    }
+
+    if (entry.operation !== undefined) {
+      if (!isNonEmptyString(entry.operation)) {
+        errors.push(`empty operation metadata for ${entry.id}`);
+      } else {
+        const key = operationKey(entry.implementationPath, entry.operation);
+        if (operationKeys.has(key)) {
+          errors.push(`duplicate operation declaration: ${key}`);
+        } else {
+          operationKeys.add(key);
+        }
+      }
+    }
+
+    if (entry.tenantScope === "TENANT_ROOT") {
+      if (!isApprovedTenantRootContract(entry)) {
+        errors.push(
+          `TENANT_ROOT entry is not an approved Tenant-root contract: ${entry.id}`,
+        );
+      }
+      if (entry.requiredNegativeTestIds.length === 0) {
+        errors.push(`TENANT_ROOT entry lacks root negative-test obligation: ${entry.id}`);
+      }
+      if (entry.globalExemptionReason !== undefined) {
+        errors.push(`TENANT_ROOT entry has a global exemption: ${entry.id}`);
+      }
     }
 
     if (entry.tenantScope === "TENANT_SCOPED") {
@@ -356,18 +629,63 @@ export function validateTenantSurfaceRegistry(
     }
 
     if (entry.tenantScope === "GLOBAL_NON_TENANT") {
-      if (!isNonEmptyString(entry.globalExemptionReason)) {
-        errors.push(`GLOBAL_NON_TENANT entry lacks exemption reason: ${entry.id}`);
+      if (!hasSpecificGlobalExemptionReason(entry.globalExemptionReason)) {
+        errors.push(
+          `GLOBAL_NON_TENANT entry lacks a specific exemption reason: ${entry.id}`,
+        );
       }
       if (entry.requiredNegativeTestIds.length > 0) {
         errors.push(`GLOBAL_NON_TENANT entry has a negative-test obligation: ${entry.id}`);
       }
+    }
+
+    if (entry.tenantScope === "FUTURE_NOT_IMPLEMENTED") {
+      if (!isNonEmptyString(entry.isolationStrategy)) {
+        errors.push(`FUTURE_NOT_IMPLEMENTED entry lacks future obligation: ${entry.id}`);
+      }
+      if (entry.requiredNegativeTestIds.length > 0) {
+        errors.push(`FUTURE_NOT_IMPLEMENTED entry has a current probe: ${entry.id}`);
+      }
+      if (entry.globalExemptionReason !== undefined) {
+        errors.push(`FUTURE_NOT_IMPLEMENTED entry has a global exemption: ${entry.id}`);
+      }
+    }
+
+    if (
+      entry.category !== "migration" &&
+      (entry.declaredImplementationPaths !== undefined ||
+        entry.migrationHead !== undefined)
+    ) {
+      errors.push(`migration metadata is only valid on migration entries: ${entry.id}`);
     }
   }
 
   for (const implementationPath of input.governedImplementationPaths) {
     if (!entriesByPath.has(implementationPath)) {
       errors.push(`governed surface is undeclared: ${implementationPath}`);
+    }
+  }
+
+  for (const discoveredOperation of input.discoveredOperations) {
+    const key = operationKey(
+      discoveredOperation.implementationPath,
+      discoveredOperation.operation,
+    );
+    const candidates = input.registry.filter(
+      (entry) =>
+        entry.implementationPath === discoveredOperation.implementationPath &&
+        entry.operation === discoveredOperation.operation,
+    );
+    if (candidates.length === 0) {
+      errors.push(`governed operation is undeclared: ${key}`);
+      continue;
+    }
+
+    if (
+      discoveredOperation.kind === "route_handler" &&
+      !candidates.some((entry) => entry.category === "route")
+    ) {
+      errors.push(`route handler lacks route registry category: ${key}`);
     }
   }
 
@@ -394,6 +712,44 @@ export function validateTenantSurfaceRegistry(
       errors.push(
         `discovered Tenant-owned model declaration is invalid: ${model.databaseObjectName}`,
       );
+    }
+  }
+
+  const migrationEntries = input.registry.filter(
+    (entry) => entry.category === "migration",
+  );
+  if (input.discoveredMigrationPaths.length > 0) {
+    if (migrationEntries.length !== 1) {
+      errors.push(
+        `migration history declaration must contain exactly one entry for discovered SQL migrations; found ${migrationEntries.length}`,
+      );
+    } else {
+      const migrationEntry = migrationEntries[0];
+      const declaredPaths = migrationEntry.declaredImplementationPaths;
+      if (declaredPaths === undefined || declaredPaths.length === 0) {
+        errors.push("migration history paths are not explicitly declared");
+      } else {
+        if (!sameStringSet(declaredPaths, input.discoveredMigrationPaths)) {
+          errors.push("migration history declaration does not match discovered SQL migrations");
+        }
+        for (const declaredPath of declaredPaths) {
+          if (!input.implementationPathExists(declaredPath)) {
+            errors.push(`declared migration path missing: ${declaredPath}`);
+          }
+        }
+      }
+
+      const expectedHead = input.discoveredMigrationPaths.at(-1);
+      if (migrationEntry.migrationHead !== expectedHead) {
+        errors.push(
+          `migration head is not the current discovered head: ${migrationEntry.migrationHead ?? "<missing>"}`,
+        );
+      }
+      if (migrationEntry.implementationPath !== migrationEntry.migrationHead) {
+        errors.push(
+          `migration implementation path must equal declared head: ${migrationEntry.id}`,
+        );
+      }
     }
   }
 

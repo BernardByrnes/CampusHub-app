@@ -1,6 +1,6 @@
 # ADR 0004: Tenant Isolation and Resource Registry
 
-- Status: **PROPOSED — AWAITING INDEPENDENT SECURITY REVIEW**
+- Status: **PROPOSED — READY FOR INDEPENDENT RE-REVIEW**
 - Date: 2026-09-02
 - Decision owner: independent security review is still required
 - Scope: 8V-B.A2 tenant-isolation governance and resource-registry gate
@@ -9,8 +9,9 @@
 
 CampusHub treats the active Tenant as a mandatory security boundary for every
 Tenant-owned resource. A resource read, collection read, background operation,
-export, search operation, cache access, media access, notification, and
-analytics operation must carry a trusted Tenant context or fail closed. This
+export, search operation, cache access, media access, notification, analytics,
+backup, and restore operation must carry a trusted Tenant context or fail
+closed. This
 ADR is a proposed governance contract; it does not approve A2 and does not
 grant authorization by itself.
 
@@ -113,24 +114,51 @@ Future behavioral analytics must remain Tenant-local, using the product’s
 pseudonymous identity rules. Aggregation must not create a cross-Tenant
 behavioral profile or allow one Tenant to query another Tenant’s events.
 
-## O. Security-event expectation
+## O. Backup and restore boundary
+
+Backup and restore are a governed future category, not a current A2
+implementation. The status is `FUTURE_OBLIGATION` / `NOT_IMPLEMENTED`; A2 adds
+no backup provider scripts, export path, restore command, or per-Tenant backup
+capability.
+
+Future provider-managed or application-managed backups must inherit the
+confidentiality and Tenant-isolation boundary of the source data. Backup and
+restore operations must be privileged and auditable; a restore from Tenant A
+must never be promoted into Tenant B. Before promotion, restore validation must
+check Tenant ownership, foreign keys, schema compatibility, and integrity.
+Retention, redaction, and removal requirements must be explicit, and backup
+artifacts are not ordinary Tenant downloads. Provider-managed backups remain
+subject to this contract. The detailed recovery and continuity handoff belongs
+to A7/NFR-8.
+
+## P. Security-event expectation
 
 Security-event recording is a required future obligation for relevant
-Tenant-isolation failures and security-sensitive decisions. A2 documents the
-expectation but does not invent a logging implementation or schema. Independent
-review must confirm the event taxonomy, retention, redaction, and delivery
-boundary before that work begins.
+Tenant-isolation failures and security-sensitive decisions. Before the first
+externally exposed Tenant-scoped route or server action, cross-Tenant attempts
+must emit a redacted durable security event. A2 documents the expectation but
+does not invent a logging implementation or schema. The event taxonomy,
+retention, redaction, and delivery boundary hand off to A6/NFR-9 before that
+work begins.
 
-## P. Testing and CI contract
+## Q. Testing and CI contract
 
 The A2 gate includes:
 
 - structural discovery of current Drizzle tables;
-- governed production-path discovery, including reserved future sensitive roots;
-- a registry entry for every discovered model and governed path;
+- governed production-path discovery for `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`,
+  `.cts`, `.mjs`, and `.cjs`, including complete `src/server/**`,
+  `src/application/**`, `src/app/api/**`, and the single-file middleware/proxy
+  boundary, with explicit test/spec exclusion;
+- TypeScript AST discovery of public class methods, exported functions, and
+  route handlers, with operation-level registry metadata;
+- recursive discovery and explicit declaration of every `drizzle/**/*.sql`
+  migration plus the current migration head;
+- a registry entry for every discovered model, operation, and governed path;
 - an isolation probe for every `TENANT_SCOPED` registry entry;
 - executable simulations for missing entries, missing probes, duplicate IDs,
-  invalid scoped declarations, missing implementation paths, and undeclared
+  invalid category/scope declarations, missing implementation paths, future
+  implementations, undeclared operations, migration drift, and undeclared
   discovered models;
 - unit, integration, typecheck, lint, build, database-schema check, and
   whitespace checks as reported in the implementation handoff.
@@ -139,16 +167,18 @@ The meta-test is intentionally designed to fail CI when a governed surface is
 added without registry metadata or when a Tenant-owned model is added without a
 scope declaration.
 
-## Q. Registry and meta-test architecture
+## R. Registry and meta-test architecture
 
 The registry is a typed list of stable metadata records. Each record declares
-its category, implementation path, surface, Tenant classification, isolation
-strategy, and required negative-test IDs. `tests/tenant-isolation-meta.test.ts`
-validates the records against the filesystem, structural schema discovery, and
-the executable probe registry. It has no authorization logic and performs no
-database connection. Future governed directories are intentionally empty today;
-their presence in the governed-root list makes an unregistered implementation
-fail the gate rather than silently becoming global.
+its category, implementation path, public operation when present, surface,
+Tenant classification, isolation strategy, and required negative-test IDs.
+`tests/tenant-isolation-meta.test.ts` validates the records against complete
+filesystem discovery, TypeScript AST operation discovery, structural schema
+discovery, migration history/head discovery, and the executable probe registry.
+It has no authorization logic and performs no database connection. Future
+governed directories are intentionally empty today; their presence in the
+governed-root list makes an unregistered implementation fail the gate rather
+than silently becoming global.
 
 ## Current production inventory
 
@@ -161,12 +191,14 @@ fail the gate rather than silently becoming global.
 | `publications` model | `TENANT_SCOPED` | Non-null `tenant_id` FK; structural model probe. |
 | Publication direct read | `TENANT_SCOPED` | Tenant + Publication ID query, then canonical exposure/audience policy. |
 | Publication ACTIVE/ARCHIVE collection | `TENANT_SCOPED` | Tenant + lifecycle + keyset query, bounded orchestration, then policy. |
+| Publication create operation | `TENANT_SCOPED` | Trusted context/requested Tenant match before repository write; scope validation is not capability authorization. |
 | `RequestContext` and resolver wiring | `TENANT_SCOPED` | Server-owned identity/Tenant binding and mismatch rejection. |
-| Health route/service, DB client, schema barrel, migration history | `GLOBAL_NON_TENANT` | Explicit infrastructure exemptions; no Tenant resource data. |
+| Health route/service, DB client, config, schema barrel, migration history | `GLOBAL_NON_TENANT` | Specific infrastructure exemptions; no Tenant resource data. |
 
-The current route/application/repository/schema files under the governed roots
-are all declared by the registry. The reserved categories `jobs`, `exports`,
-`search`, `cache`, `media`, `notifications`, and `analytics` are
+The current route/application/repository/schema/config files under the governed
+roots are all declared by the registry, including their discovered public
+operations. The reserved categories `jobs`, `exports`, `search`, `cache`,
+`media`, `notifications`, `analytics`, and `backups/restore` are
 `FUTURE_NOT_IMPLEMENTED`; no fake implementation is added by A2.
 
 ## Threat and failure matrix
@@ -186,14 +218,16 @@ are all declared by the registry. The reserved categories `jobs`, `exports`,
 | Media path missing Tenant namespace | Reject path/signature/download. | `FUTURE_OBLIGATION` — media not implemented. |
 | Notification crosses Tenant | Do not create or deliver cross-Tenant event. | `FUTURE_OBLIGATION` — notifications not implemented. |
 | Analytics crosses Tenant | Keep events and aggregates Tenant-local. | `FUTURE_OBLIGATION` — analytics not implemented. |
+| Backup/restore crosses Tenant or bypasses integrity checks | Keep artifacts confidential, require privileged audit, validate ownership/FKs, and never promote A data into B. | `FUTURE_OBLIGATION` / `NOT_IMPLEMENTED` — backup and restore not implemented; A7/NFR-8 handoff. |
+| Cross-Tenant attempt before security-event boundary | Emit a redacted durable security event once an externally exposed Tenant-scoped route/server action exists. | `FUTURE_OBLIGATION` — A6/NFR-9 handoff; logging not implemented in A2. |
 | Cursor reused across Tenant | Cursor supplies position only; requested trusted Tenant supplies scope. | `PASS` — collection unit and integration evidence. |
 | Malformed identifier | Reject before PostgreSQL. | `PASS` — repository/context/service tests. |
 | Deleted/nonexistent resource | Same safe not-found outcome as wrong-Tenant resource. | `PASS` — direct-read evidence. |
 
 ## Review boundary and recommendation
 
-This proposal is ready to be handed to independent security review after the
-reported quality gates pass. It remains explicitly unapproved. A2 may remain
-ready for independent security review while A4 is prepared in parallel or
-sequentially. B.2.4 must not begin until A2 and A4 receive independent
-approval.
+The A2.1 remediation is ready to be handed to independent security re-review
+after the reported quality gates pass. This ADR remains explicitly proposed
+and unapproved; it records no A2 approval. A4 is separately approved with
+nonblocking future obligations in ADR 0005. B.2.4 must not begin until A2 is
+independently re-reviewed and approved.
