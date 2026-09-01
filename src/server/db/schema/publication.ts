@@ -12,6 +12,7 @@ import {
 import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
 import {
   PUBLICATION_LIFECYCLES,
+  PUBLICATION_AUDIENCE_MODES,
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
@@ -33,6 +34,11 @@ export const publicationLifecycleEnum = pgEnum(
 export const publicationVisibilityEnum = pgEnum(
   "publication_visibility",
   RESOURCE_VISIBILITIES,
+);
+
+export const publicationAudienceModeEnum = pgEnum(
+  "publication_audience_mode",
+  PUBLICATION_AUDIENCE_MODES,
 );
 
 export const publications = pgTable(
@@ -57,6 +63,7 @@ export const publications = pgTable(
     lifecycle: publicationLifecycleEnum("lifecycle")
       .notNull()
       .default("draft"),
+    audienceMode: publicationAudienceModeEnum("audience_mode").notNull(),
     authorOfficeLabel: text("author_office_label").notNull(),
     publishAt: timestamp("publish_at", {
       withTimezone: true,

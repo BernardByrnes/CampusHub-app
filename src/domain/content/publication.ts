@@ -21,6 +21,14 @@ export const PUBLICATION_LIFECYCLES = [
 
 export type PublicationLifecycle = (typeof PUBLICATION_LIFECYCLES)[number];
 
+export const PUBLICATION_AUDIENCE_MODES = [
+  "entire_tenant",
+  "targeted",
+] as const;
+
+export type PublicationAudienceMode =
+  (typeof PUBLICATION_AUDIENCE_MODES)[number];
+
 export type Publication = Readonly<{
   id: string;
   tenantId: string;
@@ -30,6 +38,7 @@ export type Publication = Readonly<{
   priority: PublicationPriority;
   visibility: ResourceVisibility;
   lifecycle: PublicationLifecycle;
+  audienceMode: PublicationAudienceMode;
   authorOfficeLabel: string;
   publishAt: Date | null;
   expiresAt: Date | null;
@@ -66,6 +75,15 @@ export function parsePublicationLifecycle(
     : null;
 }
 
+export function parsePublicationAudienceMode(
+  value: unknown,
+): PublicationAudienceMode | null {
+  return typeof value === "string" &&
+    (PUBLICATION_AUDIENCE_MODES as readonly string[]).includes(value)
+    ? (value as PublicationAudienceMode)
+    : null;
+}
+
 function isNullableDate(value: unknown): value is Date | null {
   return (
     value === null ||
@@ -88,6 +106,7 @@ export function isPublication(value: unknown): value is Publication {
     parsePublicationPriority(candidate.priority) !== null &&
     parseResourceVisibility(candidate.visibility) !== null &&
     parsePublicationLifecycle(candidate.lifecycle) !== null &&
+    parsePublicationAudienceMode(candidate.audienceMode) !== null &&
     isNonEmptyString(candidate.authorOfficeLabel) &&
     isNullableDate(candidate.publishAt) &&
     isNullableDate(candidate.expiresAt) &&

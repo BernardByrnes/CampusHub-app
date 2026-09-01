@@ -12,6 +12,7 @@ const serverOnlyModules = [
   "src/server/repositories/publication-repository.ts",
   "src/server/repositories/tenant-repository.ts",
   "src/application/context/resolve-request-context.ts",
+  "src/application/content/read-publication.ts",
   "src/domain/authorization/context-policy.ts",
   "src/domain/authorization/trusted-request-context.ts",
   "src/domain/authorization/resource-read-policy.ts",
@@ -39,5 +40,21 @@ describe("server-only architecture boundary", () => {
     expect(source).toContain("eq(publications.tenantId, tenantId)");
     expect(source).toContain("eq(publications.id, publicationId)");
     expect(source).not.toMatch(/findPublicationById\s*\(/);
+  });
+
+  it("routes Publication reads through the canonical policy and pure mapper", () => {
+    const source = readFileSync(
+      path.join(
+        process.cwd(),
+        "src/application/content/read-publication.ts",
+      ),
+      "utf8",
+    );
+
+    expect(source).toContain("authorizeResourceRead");
+    expect(source).toContain("mapPublicationToResourceAccessFacts");
+    expect(source).not.toContain("assuranceAtLeast");
+    expect(source).not.toContain("MEMBERSHIP_NOT_ELIGIBLE");
+    expect(source).not.toContain("VERIFIED_MEMBERS");
   });
 });

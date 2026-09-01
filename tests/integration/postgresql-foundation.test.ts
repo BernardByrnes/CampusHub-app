@@ -7,7 +7,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ASSURANCE_LEVELS } from "@/domain/authorization/assurance-level";
 import { validateRequestContext } from "@/domain/authorization/context-policy";
 import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
+import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
+import type {
+  ResolvedTenantReadFacts,
+} from "@/domain/authorization/publication-read-contract";
 import {
+  PUBLICATION_AUDIENCE_MODES,
   PUBLICATION_LIFECYCLES,
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
@@ -27,6 +32,10 @@ import type { NewTenantRow, TenantRow } from "@/server/db/schema/tenant";
 import type { Pool } from "pg";
 
 import type { RequestContextService } from "@/application/context/resolve-request-context";
+import type {
+  ReadPublicationInput,
+  ReadPublicationService,
+} from "@/application/content/read-publication";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
@@ -34,6 +43,7 @@ import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repos
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROLLBACK_MARKER = "CAMPUSHUB_INTENTIONAL_ROLLBACK";
+const READ_NOW = new Date("2026-01-15T12:00:00.000Z");
 
 function loadIntegrationEnvironment() {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -111,6 +121,7 @@ let tenantRepository: DrizzleTenantRepository | undefined;
 let membershipRepository: DrizzleMembershipRepository | undefined;
 let publicationRepository: DrizzlePublicationRepository | undefined;
 let contextService: RequestContextService | undefined;
+let readPublicationService: ReadPublicationService | undefined;
 let serverVersion = "";
 let currentDatabaseName = "";
 let sequence = 0;
@@ -154,6 +165,63 @@ function getContextService(): RequestContextService {
   }
 
   return contextService;
+}
+
+function getReadPublicationService(): ReadPublicationService {
+  if (!readPublicationService) {
+    throw new Error("Publication read service was not initialized.");
+  }
+
+  return readPublicationService;
+}
+
+function readFacts(
+  overrides: Partial<ResolvedTenantReadFacts> = {},
+): ResolvedTenantReadFacts {
+  return {
+    tenantStatus: "active",
+    publicSurfacePermitted: true,
+    onLeaveReadEnabled: true,
+    alumniPublicReadEnabled: true,
+    ...overrides,
+  };
+}
+
+async function membershipViewerFor(
+  tenant: TenantRow,
+  membership: MembershipRow,
+): Promise<ResourceReadViewer> {
+  const resolution = await getContextService().resolveRequestContext(
+    { identitySubjectId: membership.identitySubjectId },
+    { tenantId: tenant.id },
+  );
+
+  if (!resolution.resolved) {
+    throw new Error(`Could not resolve synthetic Membership: ${resolution.code}`);
+  }
+
+  return { kind: "membership", context: resolution.context };
+}
+
+function anonymousViewerFor(tenantId: string): ResourceReadViewer {
+  return { kind: "anonymous", tenantId };
+}
+
+function readInput(
+  tenantId: string,
+  publicationId: string,
+  viewer: ResourceReadViewer,
+  overrides: Partial<ReadPublicationInput> = {},
+): ReadPublicationInput {
+  return {
+    tenantId,
+    publicationId,
+    viewer,
+    tenantFacts: readFacts(),
+    contentExposure: "READABLE",
+    now: READ_NOW,
+    ...overrides,
+  };
 }
 
 function nextSlug(label: string): string {
@@ -263,6 +331,7 @@ async function createPublication(
     priority: "standard",
     visibility: "MEMBERS",
     lifecycle: "draft",
+    audienceMode: "entire_tenant",
     authorOfficeLabel: "Guild Communications Office",
     publishAt: null,
     expiresAt: null,
@@ -328,6 +397,7 @@ async function insertRawPublication(values: {
   priority?: string;
   visibility?: string;
   lifecycle?: string;
+  audienceMode?: string | null;
   authorOfficeLabel?: string | null;
   publishAt?: Date | null;
   expiresAt?: Date | null;
@@ -341,6 +411,7 @@ async function insertRawPublication(values: {
       "priority",
       "visibility",
       "lifecycle",
+      "audience_mode",
       "author_office_label",
       "publish_at",
       "expires_at"
@@ -353,6 +424,7 @@ async function insertRawPublication(values: {
       ${values.priority ?? "standard"},
       ${values.visibility ?? "MEMBERS"},
       ${values.lifecycle ?? "draft"},
+      ${values.audienceMode === undefined ? "entire_tenant" : values.audienceMode},
       ${values.authorOfficeLabel === undefined ? `Synthetic Guild Communications Office` : values.authorOfficeLabel},
       ${values.publishAt ?? null},
       ${values.expiresAt ?? null}
@@ -374,6 +446,9 @@ beforeAll(async () => {
   const contextModule = await import(
     "@/application/context/resolve-request-context"
   );
+  const publicationReadModule = await import(
+    "@/application/content/read-publication"
+  );
 
   databaseHandle = databaseModule.db;
   connectionPool = databaseModule.pool;
@@ -387,6 +462,9 @@ beforeAll(async () => {
   contextService = new contextModule.RequestContextService({
     tenants: tenantRepository,
     memberships: membershipRepository,
+  });
+  readPublicationService = new publicationReadModule.ReadPublicationService({
+    publications: getPublicationRepository(),
   });
 
   const connectionResult = await databaseHandle.execute(sql`
@@ -463,7 +541,8 @@ describe("real Supabase PostgreSQL foundation", () => {
           'publication_type',
           'publication_lifecycle',
           'publication_visibility',
-          'publication_priority'
+          'publication_priority',
+          'publication_audience_mode'
         )
       order by t.typname, e.enumsortorder
     `);
@@ -490,6 +569,9 @@ describe("real Supabase PostgreSQL foundation", () => {
     ]);
     expect(enums.get("publication_visibility")).toEqual([
       ...RESOURCE_VISIBILITIES,
+    ]);
+    expect(enums.get("publication_audience_mode")).toEqual([
+      ...PUBLICATION_AUDIENCE_MODES,
     ]);
 
     const indexResult = await getDatabase().execute(sql`
@@ -519,7 +601,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -541,6 +623,7 @@ describe("real Supabase PostgreSQL foundation", () => {
         priority: "priority",
         visibility: "PUBLIC",
         lifecycle: "published",
+        audienceMode: "targeted",
         authorOfficeLabel: "Guild President's Office",
         publishAt: new Date("2030-01-15T09:30:00.000Z"),
         expiresAt: new Date("2030-02-15T09:30:00.000Z"),
@@ -557,6 +640,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       priority: "priority",
       visibility: "PUBLIC",
       lifecycle: "published",
+      audienceMode: "targeted",
       authorOfficeLabel: "Guild President's Office",
     });
     expect(created.publishAt).toEqual(new Date("2030-01-15T09:30:00.000Z"));
@@ -581,6 +665,7 @@ describe("real Supabase PostgreSQL foundation", () => {
         type: "news",
         title: "Synthetic draft",
         body: "Synthetic draft body",
+        audienceMode: "entire_tenant",
         authorOfficeLabel: "Sports Office",
       }),
       "Publication draft defaults were not returned.",
@@ -593,6 +678,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     const persisted = await getDatabase()
       .select({
         priority: publications.priority,
+        audienceMode: publications.audienceMode,
         authorOfficeLabel: publications.authorOfficeLabel,
         publishAt: publications.publishAt,
         expiresAt: publications.expiresAt,
@@ -601,6 +687,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       .where(eq(publications.id, created.id));
     expect(persisted[0]).toEqual({
       priority: "standard",
+      audienceMode: "entire_tenant",
       authorOfficeLabel: "Sports Office",
       publishAt: null,
       expiresAt: null,
@@ -614,6 +701,7 @@ describe("real Supabase PostgreSQL foundation", () => {
           type: "news",
           title: "Synthetic foreign publication",
           body: "This insert must fail at the Tenant foreign key.",
+          audienceMode: "entire_tenant",
           authorOfficeLabel: "Guild Communications Office",
         }),
       "23503",
@@ -741,6 +829,14 @@ describe("real Supabase PostgreSQL foundation", () => {
       "22P02",
     );
     await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, audienceMode: "invalid" }),
+      "22P02",
+    );
+    await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, audienceMode: null }),
+      "23502",
+    );
+    await expectPostgresCode(
       () =>
         insertRawPublication({
           tenantId: tenant.id,
@@ -815,6 +911,376 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(foreignKey.update_action).toBe("c");
     expect(foreignKey.definition).toContain("ON UPDATE CASCADE");
     expect(foreignKey.definition).toContain("ON DELETE RESTRICT");
+  });
+
+  it("reads a Tenant A Publication through the scoped server service", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-owner") });
+    const membership = await createMembership(tenant.id, {
+      assuranceLevel: "L2",
+      lifecycle: "verified",
+    });
+    const publication = await createPublication(tenant.id, {
+      visibility: "MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      audienceMode: "entire_tenant",
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    const result = await getReadPublicationService().getPublicationForRead(
+      readInput(tenant.id, publication.id, viewer),
+    );
+
+    expect(result).toMatchObject({
+      outcome: "FOUND",
+      publication: { id: publication.id, tenantId: tenant.id },
+    });
+  });
+
+  it("makes foreign and nonexistent service reads equivalent before policy evaluation", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("read-foreign-a") });
+    const tenantB = await createTenant({ slug: nextSlug("read-foreign-b") });
+    const membershipB = await createMembership(tenantB.id);
+    const publicationA = await createPublication(tenantA.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewerB = await membershipViewerFor(tenantB, membershipB);
+
+    const foreign = await getReadPublicationService().getPublicationForRead(
+      readInput(tenantB.id, publicationA.id, viewerB),
+    );
+    const nonexistent =
+      await getReadPublicationService().getPublicationForRead(
+        readInput(tenantB.id, randomUUID(), viewerB),
+      );
+
+    expect(foreign).toEqual({ outcome: "NOT_FOUND" });
+    expect(nonexistent).toEqual({ outcome: "NOT_FOUND" });
+    expect(foreign).toEqual(nonexistent);
+  });
+
+  it("applies the Publication lifecycle and publishAt read matrix", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-lifecycle") });
+    const membership = await createMembership(tenant.id);
+    const viewer = await membershipViewerFor(tenant, membership);
+    const cases = [
+      ["draft", new Date("2026-01-10T12:00:00.000Z"), "DENIED"],
+      ["scheduled", new Date("2026-01-20T12:00:00.000Z"), "DENIED"],
+      ["scheduled", new Date("2026-01-10T12:00:00.000Z"), "DENIED"],
+      ["published", null, "DENIED"],
+      ["published", new Date("2026-01-20T12:00:00.000Z"), "DENIED"],
+      ["published", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
+      ["expired", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
+      ["archived", new Date("2026-01-10T12:00:00.000Z"), "FOUND"],
+    ] as const;
+
+    for (const [lifecycle, publishAt, outcome] of cases) {
+      const publication = await createPublication(tenant.id, {
+        lifecycle,
+        publishAt,
+        expiresAt:
+          lifecycle === "expired"
+            ? new Date("2026-01-11T12:00:00.000Z")
+            : null,
+      });
+      const result = await getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer),
+      );
+
+      expect(result.outcome).toBe(outcome);
+      if (outcome === "DENIED") {
+        expect(result).toEqual({
+          outcome: "DENIED",
+          code: "RESOURCE_NOT_AVAILABLE",
+        });
+        expect(result).not.toHaveProperty("publication");
+      } else {
+        expect(result).toMatchObject({
+          outcome: "FOUND",
+          publication: { id: publication.id },
+        });
+      }
+    }
+  });
+
+  it("denies suppressed content without returning Publication data", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-suppressed") });
+    const membership = await createMembership(tenant.id);
+    const publication = await createPublication(tenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    const result = await getReadPublicationService().getPublicationForRead(
+      readInput(tenant.id, publication.id, viewer, {
+        contentExposure: "SUPPRESSED",
+      }),
+    );
+
+    expect(result).toEqual({
+      outcome: "DENIED",
+      code: "RESOURCE_NOT_AVAILABLE",
+    });
+    expect(result).not.toHaveProperty("publication");
+  });
+
+  it("requires the explicit targeted audience decision and honors its result", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-targeted") });
+    const membership = await createMembership(tenant.id);
+    const publication = await createPublication(tenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      audienceMode: "targeted",
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          audienceDecision: { evaluated: true, eligible: false },
+        }),
+      ),
+    ).resolves.toEqual({
+      outcome: "DENIED",
+      code: "AUDIENCE_INELIGIBLE",
+    });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          audienceDecision: { evaluated: true, eligible: true },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      outcome: "FOUND",
+      publication: { id: publication.id },
+    });
+  });
+
+  it("preserves PUBLIC, membership, and assurance policy outcomes", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-visibility") });
+    const l1Membership = await createMembership(tenant.id, {
+      assuranceLevel: "L1",
+    });
+    const publicPublication = await createPublication(tenant.id, {
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const membersPublication = await createPublication(tenant.id, {
+      visibility: "MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const verifiedPublication = await createPublication(tenant.id, {
+      visibility: "VERIFIED_MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const l1Viewer = await membershipViewerFor(tenant, l1Membership);
+
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publicPublication.id, anonymousViewerFor(tenant.id)),
+      ),
+    ).resolves.toMatchObject({ outcome: "FOUND" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, membersPublication.id, anonymousViewerFor(tenant.id)),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "MEMBERSHIP_REQUIRED" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, verifiedPublication.id, l1Viewer),
+      ),
+    ).resolves.toEqual({
+      outcome: "DENIED",
+      code: "ASSURANCE_INSUFFICIENT",
+    });
+  });
+
+  it("keeps suspended Tenants readable for existing readable content", async () => {
+    const tenant = await createTenant({
+      slug: nextSlug("read-suspended-tenant"),
+      status: "suspended",
+    });
+    const membership = await createMembership(tenant.id);
+    const publication = await createPublication(tenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          tenantFacts: readFacts({ tenantStatus: "suspended" }),
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: "FOUND" });
+  });
+
+  it("requires archived Tenant notice state and preserves ACTIVE versus ENDED", async () => {
+    const tenant = await createTenant({
+      slug: nextSlug("read-archived-tenant"),
+      status: "archived",
+    });
+    const membership = await createMembership(tenant.id);
+    const publication = await createPublication(tenant.id, {
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          tenantFacts: readFacts({
+            tenantStatus: "archived",
+            archiveNoticeState: "ACTIVE",
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: "FOUND" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          tenantFacts: readFacts({
+            tenantStatus: "archived",
+            archiveNoticeState: "ENDED",
+          }),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "TENANT_UNAVAILABLE" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          tenantFacts: readFacts({ tenantStatus: "archived" }),
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  });
+
+  it("preserves stale, participation-suspended, suspended, and on-leave Membership results", async () => {
+    const statuses = [
+      ["stale", true, undefined],
+      ["participation_suspended", true, undefined],
+      ["suspended", false, undefined],
+      ["on_leave", true, true],
+      ["on_leave", false, false],
+    ] as const;
+
+    for (const [membershipStatus, allowed, onLeaveReadEnabled] of statuses) {
+      const tenant = await createTenant({
+        slug: nextSlug(`read-${membershipStatus.replaceAll("_", "-")}`),
+      });
+      const membership = await createMembership(tenant.id, {
+        lifecycle: membershipStatus,
+      });
+      const publication = await createPublication(tenant.id, {
+        lifecycle: "published",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      });
+      const viewer = await membershipViewerFor(tenant, membership);
+      const result = await getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publication.id, viewer, {
+          tenantFacts: readFacts({ onLeaveReadEnabled: onLeaveReadEnabled ?? true }),
+        }),
+      );
+
+      if (allowed) {
+        expect(result).toMatchObject({ outcome: "FOUND" });
+      } else {
+        expect(result).toEqual({
+          outcome: "DENIED",
+          code: "MEMBERSHIP_NOT_ELIGIBLE",
+        });
+      }
+    }
+  });
+
+  it("keeps alumni PUBLIC access configuration-controlled", async () => {
+    const tenant = await createTenant({ slug: nextSlug("read-alumni") });
+    const membership = await createMembership(tenant.id, {
+      lifecycle: "alumni",
+    });
+    const publicPublication = await createPublication(tenant.id, {
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const memberPublication = await createPublication(tenant.id, {
+      visibility: "MEMBERS",
+      lifecycle: "published",
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const viewer = await membershipViewerFor(tenant, membership);
+
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publicPublication.id, viewer, {
+          tenantFacts: readFacts({ alumniPublicReadEnabled: true }),
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: "FOUND" });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, publicPublication.id, viewer, {
+          tenantFacts: readFacts({ alumniPublicReadEnabled: false }),
+        }),
+      ),
+    ).resolves.toEqual({
+      outcome: "DENIED",
+      code: "MEMBERSHIP_NOT_ELIGIBLE",
+    });
+    await expect(
+      getReadPublicationService().getPublicationForRead(
+        readInput(tenant.id, memberPublication.id, viewer),
+      ),
+    ).resolves.toEqual({
+      outcome: "DENIED",
+      code: "MEMBERSHIP_NOT_ELIGIBLE",
+    });
+  });
+
+  it("keeps transferred-out and closed Memberships on PUBLIC-only reads", async () => {
+    for (const lifecycle of ["transferred_out", "closed"] as const) {
+      const tenant = await createTenant({
+        slug: nextSlug(`read-${lifecycle.replaceAll("_", "-")}`),
+      });
+      const membership = await createMembership(tenant.id, { lifecycle });
+      const publicPublication = await createPublication(tenant.id, {
+        visibility: "PUBLIC",
+        lifecycle: "published",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      });
+      const memberPublication = await createPublication(tenant.id, {
+        visibility: "MEMBERS",
+        lifecycle: "published",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      });
+      const viewer = await membershipViewerFor(tenant, membership);
+
+      await expect(
+        getReadPublicationService().getPublicationForRead(
+          readInput(tenant.id, publicPublication.id, viewer),
+        ),
+      ).resolves.toMatchObject({ outcome: "FOUND" });
+      await expect(
+        getReadPublicationService().getPublicationForRead(
+          readInput(tenant.id, memberPublication.id, viewer),
+        ),
+      ).resolves.toEqual({
+        outcome: "DENIED",
+        code: "MEMBERSHIP_NOT_ELIGIBLE",
+      });
+    }
   });
 
   it("accepts every Tenant lifecycle and rejects an invalid enum value", async () => {

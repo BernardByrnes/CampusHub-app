@@ -1,0 +1,2 @@
+CREATE TYPE "public"."publication_audience_mode" AS ENUM('entire_tenant', 'targeted');--> statement-breakpoint
+ALTER TABLE "publications" ADD COLUMN "audience_mode" "publication_audience_mode" NOT NULL;

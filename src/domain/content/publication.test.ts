@@ -4,10 +4,12 @@ import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibilit
 
 import {
   isPublication,
+  parsePublicationAudienceMode,
   parsePublicationLifecycle,
   parsePublicationPriority,
   parsePublicationType,
   PUBLICATION_LIFECYCLES,
+  PUBLICATION_AUDIENCE_MODES,
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
   type Publication,
@@ -22,6 +24,7 @@ const basePublication: Publication = {
   priority: "standard",
   visibility: "MEMBERS",
   lifecycle: "draft",
+  audienceMode: "entire_tenant",
   authorOfficeLabel: "Guild Communications Office",
   publishAt: null,
   expiresAt: null,
@@ -33,6 +36,10 @@ describe("Publication domain", () => {
   it("uses the frozen Publication type, lifecycle, and shared visibility values", () => {
     expect(PUBLICATION_TYPES).toEqual(["notice", "news"]);
     expect(PUBLICATION_PRIORITIES).toEqual(["standard", "priority"]);
+    expect(PUBLICATION_AUDIENCE_MODES).toEqual([
+      "entire_tenant",
+      "targeted",
+    ]);
     expect(PUBLICATION_LIFECYCLES).toEqual([
       "draft",
       "scheduled",
@@ -48,6 +55,7 @@ describe("Publication domain", () => {
     expect(parsePublicationType("notice")).toBe("notice");
     expect(parsePublicationPriority("priority")).toBe("priority");
     expect(parsePublicationLifecycle("published")).toBe("published");
+    expect(parsePublicationAudienceMode("targeted")).toBe("targeted");
   });
 
   it("rejects unknown and prototype-like enum values", () => {
@@ -60,6 +68,9 @@ describe("Publication domain", () => {
     expect(parsePublicationLifecycle("live")).toBeNull();
     expect(parsePublicationLifecycle("constructor")).toBeNull();
     expect(parsePublicationLifecycle("toString")).toBeNull();
+    expect(parsePublicationAudienceMode("all")).toBeNull();
+    expect(parsePublicationAudienceMode("constructor")).toBeNull();
+    expect(parsePublicationAudienceMode("toString")).toBeNull();
   });
 
   it("accepts a valid publication", () => {
@@ -80,6 +91,9 @@ describe("Publication domain", () => {
     expect(isPublication({ ...basePublication, lifecycle: "live" })).toBe(
       false,
     );
+    expect(
+      isPublication({ ...basePublication, audienceMode: "all" }),
+    ).toBe(false);
     expect(isPublication({ ...basePublication, visibility: "PRIVATE" })).toBe(
       false,
     );

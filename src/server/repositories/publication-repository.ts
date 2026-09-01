@@ -4,10 +4,12 @@ import { and, eq } from "drizzle-orm";
 
 import {
   isPublication,
+  parsePublicationAudienceMode,
   parsePublicationLifecycle,
   parsePublicationPriority,
   parsePublicationType,
   type Publication,
+  type PublicationAudienceMode,
   type PublicationLifecycle,
   type PublicationPriority,
   type PublicationType,
@@ -29,6 +31,7 @@ export type CreatePublicationInput = Readonly<{
   priority?: PublicationPriority;
   visibility?: ResourceVisibility;
   lifecycle?: PublicationLifecycle;
+  audienceMode: PublicationAudienceMode;
   authorOfficeLabel: string;
   publishAt?: Date | null;
   expiresAt?: Date | null;
@@ -49,12 +52,14 @@ function toPublication(row: PublicationRow): Publication | null {
   const type = parsePublicationType(row.type);
   const priority = parsePublicationPriority(row.priority);
   const lifecycle = parsePublicationLifecycle(row.lifecycle);
+  const audienceMode = parsePublicationAudienceMode(row.audienceMode);
   const visibility = parseResourceVisibility(row.visibility);
 
   if (
     type === null ||
     priority === null ||
     lifecycle === null ||
+    audienceMode === null ||
     visibility === null
   ) {
     return null;
@@ -69,6 +74,7 @@ function toPublication(row: PublicationRow): Publication | null {
     priority,
     visibility,
     lifecycle,
+    audienceMode,
     authorOfficeLabel: row.authorOfficeLabel,
     publishAt: row.publishAt,
     expiresAt: row.expiresAt,
@@ -104,6 +110,7 @@ export class DrizzlePublicationRepository {
       candidate.lifecycle === undefined
         ? "draft"
         : parsePublicationLifecycle(candidate.lifecycle);
+    const audienceMode = parsePublicationAudienceMode(candidate.audienceMode);
     const visibility =
       candidate.visibility === undefined
         ? "MEMBERS"
@@ -117,6 +124,7 @@ export class DrizzlePublicationRepository {
       type === null ||
       priority === null ||
       lifecycle === null ||
+      audienceMode === null ||
       visibility === null ||
       !isNonEmptyString(candidate.title) ||
       !isNonEmptyString(candidate.body) ||
@@ -137,6 +145,7 @@ export class DrizzlePublicationRepository {
         priority,
         visibility,
         lifecycle,
+        audienceMode,
         authorOfficeLabel: candidate.authorOfficeLabel,
         publishAt,
         expiresAt,

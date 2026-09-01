@@ -19,13 +19,18 @@ import {
   parseResourceVisibility,
   type ResourceVisibility,
 } from "./resource-visibility";
+import {
+  parseArchiveNoticeState,
+  type ArchiveNoticeState,
+} from "./resource-read-facts";
 
 export { RESOURCE_VISIBILITIES, parseResourceVisibility } from "./resource-visibility";
 export type { ResourceVisibility } from "./resource-visibility";
-
-export const ARCHIVE_NOTICE_STATES = ["ACTIVE", "ENDED"] as const;
-
-export type ArchiveNoticeState = (typeof ARCHIVE_NOTICE_STATES)[number];
+export {
+  ARCHIVE_NOTICE_STATES,
+  parseArchiveNoticeState,
+} from "./resource-read-facts";
+export type { ArchiveNoticeState } from "./resource-read-facts";
 
 export const RESOURCE_READ_DENIAL_CODES = [
   "INVALID_INPUT",
@@ -121,15 +126,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-export function parseArchiveNoticeState(
-  value: unknown,
-): ArchiveNoticeState | null {
-  return typeof value === "string" &&
-    (ARCHIVE_NOTICE_STATES as readonly string[]).includes(value)
-    ? (value as ArchiveNoticeState)
-    : null;
 }
 
 function isResourceReadAudience(value: unknown): value is ResourceReadAudience {
