@@ -1,18 +1,30 @@
 import "server-only";
 
-import type { AssuranceLevel } from "@/domain/authorization/assurance-level";
+import type {
+  RequestContextResolution,
+} from "@/domain/authorization/context-policy";
+import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 
 /**
- * A future auth/membership resolver will supply this from server-owned state.
+ * This is the only identity input accepted by the context resolver. A future
+ * authentication/session boundary will produce it from server-owned state.
  * Client headers, query parameters, and form fields are never authoritative.
  */
-export type RequestContext = Readonly<{
-  userId: string;
-  tenantId: string;
-  membershipId: string;
-  assuranceLevel: AssuranceLevel;
+export type AuthenticatedIdentity = Readonly<{
+  identitySubjectId: string;
 }>;
 
+/** A routing hint narrows lookup; it never grants tenant authority. */
+export type TenantHint = Readonly<{
+  tenantId?: string;
+  slug?: string;
+}>;
+
+export type RequestContext = TrustedRequestContext;
+
 export interface RequestContextResolver {
-  resolve(request: Request): Promise<RequestContext | null>;
+  resolve(
+    authenticatedIdentity: AuthenticatedIdentity,
+    tenantHint?: TenantHint,
+  ): Promise<RequestContextResolution>;
 }

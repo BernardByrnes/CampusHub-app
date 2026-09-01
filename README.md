@@ -18,8 +18,48 @@ separate from the canonical static prototype at
 
 Security-sensitive code must stay on the server. Client-supplied tenant,
 membership, assurance, XP, and authorization values are never authoritative.
-The future authentication/membership resolver owns `RequestContext`; no auth
-provider has been selected yet.
+The future authentication/session resolver owns the authenticated identity that
+enters `RequestContext`; no auth provider has been selected yet.
+
+## Tenant and Membership authority
+
+The 8V-B.1 foundation stores only the authoritative Tenant and Membership
+identity/policy fields. Tenant IDs and Membership IDs are generated UUIDs;
+tenant slugs are lower-case URL-safe keys and are not authorization by
+themselves. Tenant timezones are validated IANA identifiers and are the future
+authority for tenant-day boundaries, never the browser timezone.
+
+Tenant lifecycle values are the frozen set `pilot`, `active`, `grace`,
+`suspended`, and `archived`. Normal protected operations are context-actionable
+only in `pilot`, `active`, and `grace`; suspended tenants remain a future
+read-only concern and archived tenants are unavailable. Membership lifecycle
+values are the frozen set `unverified`, `pending_review`, `verified`, `stale`,
+`on_leave`, `alumni`, `transferred_out`, `participation_suspended`, `suspended`,
+and `closed`. The foundation treats `verified` and `on_leave` as actionable
+membership context; the frozen default permits normal participation for
+`on_leave`, while later resource-specific current-enrolment rules may refine
+that decision.
+
+The provider-neutral Membership seam stores an opaque `identitySubjectId` and
+does not create a User table, credentials, sessions, JWTs, or an auth-provider
+foreign key. A trusted RequestContext is produced only after server-side
+identity, tenant, Membership, lifecycle, and assurance validation. A tenant
+hint can select a lookup, but a client tenant ID, membership ID, or assurance
+value can never grant authority. The resolver returns either the complete
+context `{ identitySubjectId, tenantId, membershipId, assuranceLevel,
+membershipStatus }` or a safe code-only denial.
+
+Assurance is the exact closed ladder `L0 — Registered`, `L1 — Weak
+Affiliation`, `L2 — Roster Match`, and `L3 — Strong Institutional Proof`.
+Comparisons use the single domain helper `assuranceAtLeast`; malformed values
+fail closed. Institutional email alone cannot confer L3: the tenant must
+attest identity binding, current enrolment, and reliable revocation.
+
+PostgreSQL native enums, required-field checks, the unique tenant slug index,
+the tenant-plus-identity Membership uniqueness index, and an explicit
+`ON DELETE RESTRICT` Membership foreign key are defined in the reviewed
+`drizzle/0000_young_adam_warlock.sql` migration. No destructive reset command
+is provided.
 
 ## Local setup
 
@@ -57,9 +97,17 @@ npm run db:migrate   Apply Drizzle migrations to PostgreSQL
 npm run db:check     Check Drizzle migration consistency
 ```
 
-There is no `db:push` production workflow. There are no business tables or
-fake starter migrations in 8V-B.0. Playwright E2E setup is reserved for a
-later phase; domain/application tests belong in Vitest.
+There is no `db:push` production workflow. The current migration contains only
+the Tenant and Membership foundation; Poll response, XP, Streak, and content
+tables remain out of scope. Playwright E2E setup is reserved for a later
+phase; domain/application tests belong in Vitest.
+
+`npm audit --omit=dev` currently reports zero production vulnerabilities. The
+full audit still reports four moderate, development-only `esbuild` findings
+through the existing Drizzle Kit 0.31.10 toolchain (`@esbuild-kit`). The
+available forced remediation would downgrade Drizzle Kit to 0.18.1 and is a
+breaking change, so it remains recorded debt; no `npm audit fix --force` was
+run.
 
 ## Prototype relationship
 

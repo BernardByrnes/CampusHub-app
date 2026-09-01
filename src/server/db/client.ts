@@ -4,8 +4,9 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import { getServerEnv } from "@/server/config/env";
+import * as schema from "@/server/db/schema";
 
-type Database = ReturnType<typeof drizzle>;
+type Database = ReturnType<typeof drizzle<typeof schema>>;
 
 type DatabaseContainer = Readonly<{
   db: Database;
@@ -22,7 +23,7 @@ function createDatabase(): DatabaseContainer {
 
   return {
     pool,
-    db: drizzle({ client: pool }),
+    db: drizzle({ client: pool, schema }),
   };
 }
 
@@ -34,3 +35,4 @@ if (getServerEnv().NODE_ENV !== "production") {
 
 export const db = database.db;
 export const pool = database.pool;
+export type CampusHubDatabase = typeof db;

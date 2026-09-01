@@ -9,6 +9,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(projectRoot, "src"),
+      // The production server-only marker remains in source. Unit tests for
+      // server-bound application seams replace only the marker module.
+      "server-only": path.resolve(
+        projectRoot,
+        "node_modules/server-only/empty.js",
+      ),
     },
   },
   test: {
