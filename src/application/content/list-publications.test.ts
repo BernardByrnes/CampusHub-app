@@ -7,6 +7,7 @@ import type { ResourceReadViewer } from "@/domain/authorization/resource-read-po
 import type { Publication } from "@/domain/content/publication";
 import {
   decodePublicationCursor,
+  encodePublicationCursor,
   type PublicationCollectionCandidatePage,
   type PublicationCollectionQuery,
 } from "@/domain/content/publication-collection";
@@ -238,6 +239,42 @@ describe("ListPublicationsService", () => {
       ),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     expect(repository.listPublicationCandidatesForTenant).not.toHaveBeenCalled();
+  });
+
+  it("keeps a cursor from another Tenant inside the requested Tenant scope", async () => {
+    const foreignCursorPublishAt = new Date("2026-01-09T12:00:00.000Z");
+    const foreignCursorPublication = publication(
+      "00000000-0000-4000-8000-000000000301",
+      {
+        tenantId: tenantBetaId,
+        publishAt: foreignCursorPublishAt,
+      },
+    );
+    const foreignCandidate = publication(
+      "00000000-0000-4000-8000-000000000302",
+      { tenantId: tenantBetaId },
+    );
+    const queries: PublicationCollectionQuery[] = [];
+    const { service } = createService(
+      [{ items: [foreignCandidate], hasMoreCandidateRows: false }],
+      undefined,
+      queries,
+    );
+    const cursor = encodePublicationCursor({
+      publishAt: foreignCursorPublishAt,
+      id: foreignCursorPublication.id,
+    });
+
+    await expect(
+      service.listPublications(input(anonymousViewer, { cursor })),
+    ).resolves.toEqual({ outcome: "OK", items: [], nextCursor: null });
+    expect(queries[0]).toMatchObject({
+      tenantId: tenantAlphaId,
+      cursor: {
+        publishAt: foreignCursorPublishAt,
+        id: foreignCursorPublication.id,
+      },
+    });
   });
 
   it("stops after the 150-candidate scan budget", async () => {

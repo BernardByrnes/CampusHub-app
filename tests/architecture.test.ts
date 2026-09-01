@@ -8,6 +8,7 @@ const serverOnlyModules = [
   "src/server/context/request-context.ts",
   "src/server/context/create-request-context-resolver.ts",
   "src/server/db/client.ts",
+  "src/server/tenancy/tenant-surface-registry.ts",
   "src/server/repositories/membership-repository.ts",
   "src/server/repositories/publication-repository.ts",
   "src/server/repositories/tenant-repository.ts",
