@@ -15,13 +15,13 @@ import {
   type TenantLifecycle,
 } from "@/domain/tenancy/tenant";
 
-export const RESOURCE_VISIBILITIES = [
-  "PUBLIC",
-  "MEMBERS",
-  "VERIFIED_MEMBERS",
-] as const;
+import {
+  parseResourceVisibility,
+  type ResourceVisibility,
+} from "./resource-visibility";
 
-export type ResourceVisibility = (typeof RESOURCE_VISIBILITIES)[number];
+export { RESOURCE_VISIBILITIES, parseResourceVisibility } from "./resource-visibility";
+export type { ResourceVisibility } from "./resource-visibility";
 
 export const ARCHIVE_NOTICE_STATES = ["ACTIVE", "ENDED"] as const;
 
@@ -121,15 +121,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-export function parseResourceVisibility(
-  value: unknown,
-): ResourceVisibility | null {
-  return typeof value === "string" &&
-    (RESOURCE_VISIBILITIES as readonly string[]).includes(value)
-    ? (value as ResourceVisibility)
-    : null;
 }
 
 export function parseArchiveNoticeState(

@@ -1,22 +1,33 @@
 import { randomUUID } from "node:crypto";
 
 import { loadEnvConfig } from "@next/env";
-import { and, eq, like, sql } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ASSURANCE_LEVELS } from "@/domain/authorization/assurance-level";
 import { validateRequestContext } from "@/domain/authorization/context-policy";
+import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
+import {
+  PUBLICATION_LIFECYCLES,
+  PUBLICATION_TYPES,
+} from "@/domain/content/publication";
 import { MEMBERSHIP_LIFECYCLE_STATUSES } from "@/domain/membership/membership";
 import { TENANT_LIFECYCLE_STATUSES } from "@/domain/tenancy/tenant";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { memberships } from "@/server/db/schema/membership";
 import type { MembershipRow, NewMembershipRow } from "@/server/db/schema/membership";
+import { publications } from "@/server/db/schema/publication";
+import type {
+  NewPublicationRow,
+  PublicationRow,
+} from "@/server/db/schema/publication";
 import { tenants } from "@/server/db/schema/tenant";
 import type { NewTenantRow, TenantRow } from "@/server/db/schema/tenant";
 import type { Pool } from "pg";
 
 import type { RequestContextService } from "@/application/context/resolve-request-context";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
+import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
 
 const UUID_PATTERN =
@@ -97,10 +108,12 @@ let databaseHandle: CampusHubDatabase | undefined;
 let connectionPool: Pool | undefined;
 let tenantRepository: DrizzleTenantRepository | undefined;
 let membershipRepository: DrizzleMembershipRepository | undefined;
+let publicationRepository: DrizzlePublicationRepository | undefined;
 let contextService: RequestContextService | undefined;
 let serverVersion = "";
 let currentDatabaseName = "";
 let sequence = 0;
+const syntheticTenantIds = new Set<string>();
 
 function getDatabase(): CampusHubDatabase {
   if (!databaseHandle) {
@@ -124,6 +137,14 @@ function getMembershipRepository(): DrizzleMembershipRepository {
   }
 
   return membershipRepository;
+}
+
+function getPublicationRepository(): DrizzlePublicationRepository {
+  if (!publicationRepository) {
+    throw new Error("Publication repository was not initialized.");
+  }
+
+  return publicationRepository;
 }
 
 function getContextService(): RequestContextService {
@@ -201,6 +222,7 @@ async function createTenant(
     throw new Error("Tenant insert returned no row.");
   }
 
+  syntheticTenantIds.add(row.id);
   return row;
 }
 
@@ -223,6 +245,32 @@ async function createMembership(
 
   if (!row) {
     throw new Error("Membership insert returned no row.");
+  }
+
+  return row;
+}
+
+async function createPublication(
+  tenantId: string,
+  overrides: Partial<NewPublicationRow> = {},
+): Promise<PublicationRow> {
+  const values: NewPublicationRow = {
+    tenantId,
+    type: "news",
+    title: `Synthetic Publication ${runPrefix}`,
+    body: `Synthetic publication body ${runPrefix}`,
+    visibility: "MEMBERS",
+    lifecycle: "draft",
+    ...overrides,
+  };
+  const rows = await getDatabase()
+    .insert(publications)
+    .values(values)
+    .returning();
+  const row = rows[0];
+
+  if (!row) {
+    throw new Error("Publication insert returned no row.");
   }
 
   return row;
@@ -267,6 +315,34 @@ async function insertRawMembership(values: {
   `);
 }
 
+async function insertRawPublication(values: {
+  tenantId?: string | null;
+  type?: string;
+  title?: string;
+  body?: string;
+  visibility?: string;
+  lifecycle?: string;
+}): Promise<void> {
+  await getDatabase().execute(sql`
+    insert into "publications" (
+      "tenant_id",
+      "type",
+      "title",
+      "body",
+      "visibility",
+      "lifecycle"
+    )
+    values (
+      ${values.tenantId ?? null},
+      ${values.type ?? "news"},
+      ${values.title ?? `Synthetic Publication ${runPrefix}`},
+      ${values.body ?? `Synthetic publication body ${runPrefix}`},
+      ${values.visibility ?? "MEMBERS"},
+      ${values.lifecycle ?? "draft"}
+    )
+  `);
+}
+
 beforeAll(async () => {
   const databaseModule = await import("@/server/db/client");
   const tenantRepositoryModule = await import(
@@ -274,6 +350,9 @@ beforeAll(async () => {
   );
   const membershipRepositoryModule = await import(
     "@/server/repositories/membership-repository"
+  );
+  const publicationRepositoryModule = await import(
+    "@/server/repositories/publication-repository"
   );
   const contextModule = await import(
     "@/application/context/resolve-request-context"
@@ -286,6 +365,8 @@ beforeAll(async () => {
   );
   membershipRepository =
     new membershipRepositoryModule.DrizzleMembershipRepository(databaseHandle);
+  publicationRepository =
+    new publicationRepositoryModule.DrizzlePublicationRepository(databaseHandle);
   contextService = new contextModule.RequestContextService({
     tenants: tenantRepository,
     memberships: membershipRepository,
@@ -313,6 +394,11 @@ afterAll(async () => {
   }
 
   try {
+    if (syntheticTenantIds.size > 0) {
+      await databaseHandle
+        .delete(publications)
+        .where(inArray(publications.tenantId, [...syntheticTenantIds]));
+    }
     await databaseHandle
       .delete(memberships)
       .where(like(memberships.identitySubjectId, `${runPrefix}%`));
@@ -336,11 +422,12 @@ describe("real Supabase PostgreSQL foundation", () => {
       select table_name
       from information_schema.tables
       where table_schema = 'public'
-        and table_name in ('tenants', 'memberships')
+        and table_name in ('tenants', 'memberships', 'publications')
       order by table_name
     `);
     expect(tableResult.rows.map((row) => String(row.table_name))).toEqual([
       "memberships",
+      "publications",
       "tenants",
     ]);
 
@@ -355,7 +442,10 @@ describe("real Supabase PostgreSQL foundation", () => {
         and t.typname in (
           'tenant_lifecycle',
           'membership_lifecycle',
-          'membership_assurance_level'
+          'membership_assurance_level',
+          'publication_type',
+          'publication_lifecycle',
+          'publication_visibility'
         )
       order by t.typname, e.enumsortorder
     `);
@@ -373,6 +463,13 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(enums.get("membership_assurance_level")).toEqual([
       ...ASSURANCE_LEVELS,
     ]);
+    expect(enums.get("publication_type")).toEqual([...PUBLICATION_TYPES]);
+    expect(enums.get("publication_lifecycle")).toEqual([
+      ...PUBLICATION_LIFECYCLES,
+    ]);
+    expect(enums.get("publication_visibility")).toEqual([
+      ...RESOURCE_VISIBILITIES,
+    ]);
 
     const indexResult = await getDatabase().execute(sql`
       select indexname
@@ -380,12 +477,16 @@ describe("real Supabase PostgreSQL foundation", () => {
       where schemaname = 'public'
         and indexname in (
           'tenants_slug_unique',
-          'memberships_tenant_identity_unique'
+          'memberships_tenant_identity_unique',
+          'publications_tenant_id_id',
+          'publications_tenant_lifecycle'
         )
       order by indexname
     `);
     expect(indexResult.rows.map((row) => String(row.indexname))).toEqual([
       "memberships_tenant_identity_unique",
+      "publications_tenant_id_id",
+      "publications_tenant_lifecycle",
       "tenants_slug_unique",
     ]);
 
@@ -397,7 +498,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(1);
+    ).toBe(2);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -407,6 +508,230 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(tenant.id).toMatch(UUID_PATTERN);
     expect(membership.id).toMatch(UUID_PATTERN);
     expect(tenant.id).not.toBe(membership.id);
+  });
+
+  it("generates a Publication UUID and round-trips exact fields", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-round-trip") });
+    const created = requireValue(
+      await getPublicationRepository().createPublication(tenant.id, {
+        type: "notice",
+        title: "Synthetic notice",
+        body: "Synthetic notice body",
+        visibility: "PUBLIC",
+        lifecycle: "published",
+      }),
+      "Publication repository did not return the inserted row.",
+    );
+
+    expect(created.id).toMatch(UUID_PATTERN);
+    expect(created).toMatchObject({
+      tenantId: tenant.id,
+      type: "notice",
+      title: "Synthetic notice",
+      body: "Synthetic notice body",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+    });
+    expect(created.createdAt).toBeInstanceOf(Date);
+    expect(created.updatedAt).toBeInstanceOf(Date);
+
+    const read = requireValue(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        created.id,
+      ),
+      "Publication repository did not return the round-tripped row.",
+    );
+    expect(read).toEqual(created);
+  });
+
+  it("rejects a Publication referencing a nonexistent Tenant", async () => {
+    await expectPostgresCode(
+      () =>
+        getPublicationRepository().createPublication(randomUUID(), {
+          type: "news",
+          title: "Synthetic foreign publication",
+          body: "This insert must fail at the Tenant foreign key.",
+        }),
+      "23503",
+    );
+  });
+
+  it("returns a Tenant A Publication within Tenant A scope", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("publication-owner") });
+    const publication = await createPublication(tenantA.id, {
+      title: "Tenant A publication",
+      body: "Tenant A publication body",
+    });
+
+    const read = requireValue(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantA.id,
+        publication.id,
+      ),
+      "Tenant A could not read its own Publication.",
+    );
+    expect(read).toMatchObject({
+      id: publication.id,
+      tenantId: tenantA.id,
+      title: "Tenant A publication",
+    });
+  });
+
+  it("makes foreign and nonexistent Publication lookups equivalent", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("publication-foreign-a") });
+    const tenantB = await createTenant({ slug: nextSlug("publication-foreign-b") });
+    const publication = await createPublication(tenantA.id);
+
+    const foreign = await getPublicationRepository().findPublicationByIdForTenant(
+      tenantB.id,
+      publication.id,
+    );
+    const nonexistent =
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantB.id,
+        randomUUID(),
+      );
+
+    expect(foreign).toBeNull();
+    expect(nonexistent).toBeNull();
+    expect(foreign).toEqual(nonexistent);
+  });
+
+  it("returns only the requested Publication for multiple rows in one Tenant", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-multiple") });
+    const first = await createPublication(tenant.id, {
+      title: "First Publication",
+      body: "First Publication body",
+    });
+    const second = await createPublication(tenant.id, {
+      title: "Second Publication",
+      body: "Second Publication body",
+    });
+
+    const readFirst = requireValue(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        first.id,
+      ),
+      "First Publication was not readable.",
+    );
+    const readSecond = requireValue(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        second.id,
+      ),
+      "Second Publication was not readable.",
+    );
+
+    expect(readFirst.id).toBe(first.id);
+    expect(readFirst.title).toBe("First Publication");
+    expect(readSecond.id).toBe(second.id);
+    expect(readSecond.title).toBe("Second Publication");
+  });
+
+  it("isolates Publication rows across multiple Tenants", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("publication-isolation-a") });
+    const tenantB = await createTenant({ slug: nextSlug("publication-isolation-b") });
+    const publicationA = await createPublication(tenantA.id, {
+      title: "Tenant A isolated Publication",
+    });
+    const publicationB = await createPublication(tenantB.id, {
+      title: "Tenant B isolated Publication",
+    });
+
+    expect(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantA.id,
+        publicationA.id,
+      ),
+    ).toMatchObject({ id: publicationA.id, tenantId: tenantA.id });
+    expect(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantA.id,
+        publicationB.id,
+      ),
+    ).toBeNull();
+    expect(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantB.id,
+        publicationB.id,
+      ),
+    ).toMatchObject({ id: publicationB.id, tenantId: tenantB.id });
+    expect(
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenantB.id,
+        publicationA.id,
+      ),
+    ).toBeNull();
+  });
+
+  it("enforces Publication enum, nonempty, and required-Tenant constraints", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-constraints") });
+
+    await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, type: "invalid" }),
+      "22P02",
+    );
+    await expectPostgresCode(
+      () =>
+        insertRawPublication({
+          tenantId: tenant.id,
+          lifecycle: "invalid",
+        }),
+      "22P02",
+    );
+    await expectPostgresCode(
+      () =>
+        insertRawPublication({
+          tenantId: tenant.id,
+          visibility: "PRIVATE",
+        }),
+      "22P02",
+    );
+    await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, title: "   " }),
+      "23514",
+    );
+    await expectPostgresCode(
+      () => insertRawPublication({ tenantId: tenant.id, body: "" }),
+      "23514",
+    );
+    await expectPostgresCode(() => insertRawPublication({}), "23502");
+  });
+
+  it("preserves Publication ownership with ON DELETE RESTRICT metadata", async () => {
+    const tenant = await createTenant({ slug: nextSlug("publication-restrict") });
+    const publication = await createPublication(tenant.id);
+
+    await expectPostgresCode(
+      () => getDatabase().delete(tenants).where(eq(tenants.id, tenant.id)),
+      "23503",
+    );
+
+    const publicationAfterDelete = await getDatabase()
+      .select({ id: publications.id })
+      .from(publications)
+      .where(eq(publications.id, publication.id));
+    expect(publicationAfterDelete).toHaveLength(1);
+
+    const foreignKeyResult = await getDatabase().execute(sql`
+      select
+        confdeltype as delete_action,
+        confupdtype as update_action,
+        pg_get_constraintdef(oid) as definition
+      from pg_constraint
+      where conname = 'publications_tenant_id_tenants_id_fk'
+    `);
+    const foreignKey = foreignKeyResult.rows[0] as {
+      delete_action: string;
+      update_action: string;
+      definition: string;
+    };
+    expect(foreignKey.delete_action).toBe("r");
+    expect(foreignKey.update_action).toBe("c");
+    expect(foreignKey.definition).toContain("ON UPDATE CASCADE");
+    expect(foreignKey.definition).toContain("ON DELETE RESTRICT");
   });
 
   it("accepts every Tenant lifecycle and rejects an invalid enum value", async () => {
