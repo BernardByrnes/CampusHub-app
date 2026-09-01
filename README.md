@@ -30,13 +30,18 @@ themselves. Tenant timezones are validated IANA identifiers and are the future
 authority for tenant-day boundaries, never the browser timezone.
 
 Tenant lifecycle values are the frozen set `pilot`, `active`, `grace`,
-`suspended`, and `archived`. Normal protected operations are context-actionable
-only in `pilot`, `active`, and `grace`; suspended tenants remain a future
-read-only concern and archived tenants are unavailable. Membership lifecycle
-values are the frozen set `unverified`, `pending_review`, `verified`, `stale`,
-`on_leave`, `alumni`, `transferred_out`, `participation_suspended`, `suspended`,
-and `closed`. The foundation treats `verified` and `on_leave` as actionable
-membership context; the frozen default permits normal participation for
+`suspended`, and `archived`. Membership lifecycle values are the frozen set
+`unverified`, `pending_review`, `verified`, `stale`, `on_leave`, `alumni`,
+`transferred_out`, `participation_suspended`, `suspended`, and `closed`.
+Lifecycle values are authoritative facts, not global authorization decisions.
+The trusted-context resolver accepts every recognized value and preserves it
+for operation-specific policies to evaluate later. Those policies must decide
+read access, participation, publishing, polls, voice, notifications, jobs,
+administration, and export independently. For example, a future read policy
+may allow a suspended tenant to see existing published content read-only;
+`stale` and `participation_suspended` membership facts may retain read access
+while participation is blocked; and archived access or export remains a
+separate policy decision. The frozen default permits normal participation for
 `on_leave`, while later resource-specific current-enrolment rules may refine
 that decision.
 
@@ -44,10 +49,13 @@ The provider-neutral Membership seam stores an opaque `identitySubjectId` and
 does not create a User table, credentials, sessions, JWTs, or an auth-provider
 foreign key. A trusted RequestContext is produced only after server-side
 identity, tenant, Membership, lifecycle, and assurance validation. A tenant
-hint can select a lookup, but a client tenant ID, membership ID, or assurance
-value can never grant authority. The resolver returns either the complete
-context `{ identitySubjectId, tenantId, membershipId, assuranceLevel,
-membershipStatus }` or a safe code-only denial.
+hint can select a lookup, but a client tenant ID, membership ID, lifecycle, or
+assurance value can never grant authority. The resolver returns either the
+complete trusted fact snapshot `{ identitySubjectId, tenantId, tenantStatus,
+membershipId, assuranceLevel, membershipStatus }` or a safe code-only
+resolution failure. This snapshot is not an authorization grant and is never
+partial; operation-specific policies evaluate its facts before permitting an
+operation.
 
 Assurance is the exact closed ladder `L0 — Registered`, `L1 — Weak
 Affiliation`, `L2 — Roster Match`, and `L3 — Strong Institutional Proof`.

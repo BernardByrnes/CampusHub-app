@@ -17,13 +17,8 @@ export type MembershipLifecycle = (typeof MEMBERSHIP_LIFECYCLE_STATUSES)[number]
 export type MembershipStatus = MembershipLifecycle;
 export const MEMBERSHIP_STATUSES = MEMBERSHIP_LIFECYCLE_STATUSES;
 
-/**
- * `verified` is current and fresh. The frozen authority preserves normal
- * participation defaults for `on_leave`; resource-specific current-enrolment
- * rules may refine that later. All other lifecycle states fail closed for a
- * protected context.
- */
-export const MEMBERSHIP_PROTECTED_OPERATION_LIFECYCLES = [
+/** Future operation policies may use these as a default participation set. */
+export const MEMBERSHIP_DEFAULT_PARTICIPATION_LIFECYCLES = [
   "verified",
   "on_leave",
 ] as const satisfies readonly MembershipLifecycle[];
@@ -49,10 +44,18 @@ export function parseMembershipLifecycle(value: unknown): MembershipLifecycle | 
     : null;
 }
 
-export function isMembershipLifecycleActionable(value: unknown): boolean {
+/**
+ * Narrow future participation-policy helper. It does not validate trusted
+ * context and does not decide access to any specific resource or operation.
+ */
+export function membershipDefaultParticipationEligible(
+  value: unknown,
+): boolean {
   return (
     typeof value === "string" &&
-    (MEMBERSHIP_PROTECTED_OPERATION_LIFECYCLES as readonly string[]).includes(value)
+    (MEMBERSHIP_DEFAULT_PARTICIPATION_LIFECYCLES as readonly string[]).includes(
+      value,
+    )
   );
 }
 

@@ -2,14 +2,9 @@ import "server-only";
 
 import { parseAssuranceLevel } from "./assurance-level";
 import type { TrustedRequestContext } from "./trusted-request-context";
-import {
-  isTenant,
-  isTenantLifecycleOperationalForProtectedActions,
-  type Tenant,
-} from "@/domain/tenancy/tenant";
+import { isTenant, type Tenant } from "@/domain/tenancy/tenant";
 import {
   isMembership,
-  isMembershipLifecycleActionable,
   parseMembershipLifecycle,
   type Membership,
 } from "@/domain/membership/membership";
@@ -18,18 +13,19 @@ export const CONTEXT_FAILURE_CODES = [
   "IDENTITY_REQUIRED",
   "TENANT_REQUIRED",
   "TENANT_UNAVAILABLE",
-  "TENANT_INACTIVE",
+  "INVALID_TENANT",
   "MEMBERSHIP_REQUIRED",
-  "MEMBERSHIP_INACTIVE",
+  "INVALID_MEMBERSHIP",
   "INVALID_ASSURANCE",
   "CONTEXT_MISMATCH",
 ] as const;
 
 export type ContextFailureCode = (typeof CONTEXT_FAILURE_CODES)[number];
 
+/** A resolution result, not an operation-authorization decision. */
 export type RequestContextResolution =
-  | Readonly<{ allowed: true; context: TrustedRequestContext }>
-  | Readonly<{ allowed: false; code: ContextFailureCode }>;
+  | Readonly<{ resolved: true; context: TrustedRequestContext }>
+  | Readonly<{ resolved: false; code: ContextFailureCode }>;
 
 export type ContextValidationInput = Readonly<{
   identitySubjectId: unknown;
@@ -38,17 +34,22 @@ export type ContextValidationInput = Readonly<{
 }>;
 
 function denied(code: ContextFailureCode): RequestContextResolution {
-  return { allowed: false, code };
+  return { resolved: false, code };
 }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 /**
  * Validates all trust-boundary joins before a context can become trusted.
- * This function returns either a complete context or a code-only denial; it
- * never returns a partially validated object.
+ * This function returns either a complete fact snapshot or a code-only
+ * resolution failure; it never returns a partially validated object and it
+ * does not decide whether any operation is authorized.
  */
 export function validateRequestContext(
   input: ContextValidationInput,
@@ -62,22 +63,31 @@ export function validateRequestContext(
   }
 
   if (!isTenant(input.tenant)) {
-    return denied("TENANT_UNAVAILABLE");
-  }
-
-  if (!isTenantLifecycleOperationalForProtectedActions(input.tenant.status)) {
-    return denied("TENANT_INACTIVE");
+    return denied("INVALID_TENANT");
   }
 
   if (input.membership === null || input.membership === undefined) {
     return denied("MEMBERSHIP_REQUIRED");
   }
 
+  if (!isRecord(input.membership)) {
+    return denied("INVALID_MEMBERSHIP");
+  }
+
+  const assuranceLevel = parseAssuranceLevel(input.membership.assuranceLevel);
+  if (assuranceLevel === null) {
+    return denied("INVALID_ASSURANCE");
+  }
+
+  const membershipStatus = parseMembershipLifecycle(
+    input.membership.lifecycle,
+  );
+  if (membershipStatus === null) {
+    return denied("INVALID_MEMBERSHIP");
+  }
+
   if (!isMembership(input.membership)) {
-    const candidate = input.membership as Record<string, unknown>;
-    return parseAssuranceLevel(candidate.assuranceLevel) === null
-      ? denied("INVALID_ASSURANCE")
-      : denied("MEMBERSHIP_INACTIVE");
+    return denied("INVALID_MEMBERSHIP");
   }
 
   if (
@@ -87,24 +97,12 @@ export function validateRequestContext(
     return denied("CONTEXT_MISMATCH");
   }
 
-  const assuranceLevel = parseAssuranceLevel(input.membership.assuranceLevel);
-  if (assuranceLevel === null) {
-    return denied("INVALID_ASSURANCE");
-  }
-
-  const membershipStatus = parseMembershipLifecycle(input.membership.lifecycle);
-  if (
-    membershipStatus === null ||
-    !isMembershipLifecycleActionable(membershipStatus)
-  ) {
-    return denied("MEMBERSHIP_INACTIVE");
-  }
-
   return {
-    allowed: true,
+    resolved: true,
     context: {
       identitySubjectId: input.identitySubjectId,
       tenantId: input.tenant.id,
+      tenantStatus: input.tenant.status,
       membershipId: input.membership.id,
       assuranceLevel,
       membershipStatus,

@@ -28,7 +28,7 @@ type TenantLookup =
 
 type TenantHintDecision =
   | Readonly<{ lookup: TenantLookup }>
-  | Readonly<{ denied: ContextFailureCode }>;
+  | Readonly<{ failure: ContextFailureCode }>;
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -36,7 +36,7 @@ function nonEmptyString(value: unknown): value is string {
 
 function selectTenantLookup(hint: unknown): TenantHintDecision {
   if (typeof hint !== "object" || hint === null) {
-    return { denied: "TENANT_REQUIRED" };
+    return { failure: "TENANT_REQUIRED" };
   }
 
   const candidate = hint as Record<string, unknown>;
@@ -45,7 +45,7 @@ function selectTenantLookup(hint: unknown): TenantHintDecision {
 
   if (hasTenantId === hasSlug) {
     return {
-      denied: hasTenantId ? "CONTEXT_MISMATCH" : "TENANT_REQUIRED",
+      failure: hasTenantId ? "CONTEXT_MISMATCH" : "TENANT_REQUIRED",
     };
   }
 
@@ -74,12 +74,12 @@ export class RequestContextService implements RequestContextResolver {
         : null;
 
     if (!nonEmptyString(identitySubjectId)) {
-      return { allowed: false, code: "IDENTITY_REQUIRED" };
+      return { resolved: false, code: "IDENTITY_REQUIRED" };
     }
 
     const tenantHintDecision = selectTenantLookup(tenantHint);
-    if ("denied" in tenantHintDecision) {
-      return { allowed: false, code: tenantHintDecision.denied };
+    if ("failure" in tenantHintDecision) {
+      return { resolved: false, code: tenantHintDecision.failure };
     }
 
     const tenant =
@@ -92,7 +92,7 @@ export class RequestContextService implements RequestContextResolver {
           );
 
     if (tenant === null) {
-      return { allowed: false, code: "TENANT_UNAVAILABLE" };
+      return { resolved: false, code: "TENANT_UNAVAILABLE" };
     }
 
     const membership =

@@ -4,7 +4,7 @@ import { parseAssuranceLevel } from "@/domain/authorization/assurance-level";
 
 import {
   isMembership,
-  isMembershipLifecycleActionable,
+  membershipDefaultParticipationEligible,
   MEMBERSHIP_LIFECYCLE_STATUSES,
   parseMembershipLifecycle,
   type Membership,
@@ -54,13 +54,13 @@ describe("Membership domain", () => {
     expect(isMembership({ ...baseMembership, assuranceLevel: "L4" })).toBe(false);
   });
 
-  it("documents the protected-context lifecycle decision", () => {
-    expect(isMembershipLifecycleActionable("verified")).toBe(true);
-    expect(isMembershipLifecycleActionable("on_leave")).toBe(true);
-    expect(isMembershipLifecycleActionable("stale")).toBe(false);
-    expect(isMembershipLifecycleActionable("participation_suspended")).toBe(
+  it("keeps default participation classification narrow for future policies", () => {
+    expect(membershipDefaultParticipationEligible("verified")).toBe(true);
+    expect(membershipDefaultParticipationEligible("on_leave")).toBe(true);
+    expect(membershipDefaultParticipationEligible("stale")).toBe(false);
+    expect(membershipDefaultParticipationEligible("participation_suspended")).toBe(
       false,
     );
-    expect(isMembershipLifecycleActionable("closed")).toBe(false);
+    expect(membershipDefaultParticipationEligible("closed")).toBe(false);
   });
 });

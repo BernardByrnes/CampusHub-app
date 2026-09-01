@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { Membership } from "@/domain/membership/membership";
-import type { Tenant } from "@/domain/tenancy/tenant";
+import {
+  MEMBERSHIP_LIFECYCLE_STATUSES,
+  type Membership,
+} from "@/domain/membership/membership";
+import {
+  TENANT_LIFECYCLE_STATUSES,
+  type Tenant,
+} from "@/domain/tenancy/tenant";
 
 import { validateRequestContext } from "./context-policy";
 
@@ -37,10 +43,11 @@ function resolve(overrides: Partial<Parameters<typeof validateRequestContext>[0]
 describe("trusted request-context validation", () => {
   it("returns only a complete trusted context for matching records", () => {
     expect(resolve()).toEqual({
-      allowed: true,
+      resolved: true,
       context: {
         identitySubjectId: "identity-a",
         tenantId: "tenant-alpha",
+        tenantStatus: "active",
         membershipId: "membership-alpha-a",
         assuranceLevel: "L2",
         membershipStatus: "verified",
@@ -48,79 +55,90 @@ describe("trusted request-context validation", () => {
     });
   });
 
-  it("denies an inactive tenant before issuing context", () => {
-    expect(resolve({ tenant: { ...tenantAlpha, status: "suspended" } })).toEqual({
-      allowed: false,
-      code: "TENANT_INACTIVE",
-    });
-    expect(resolve({ tenant: { ...tenantAlpha, status: "archived" } })).toEqual({
-      allowed: false,
-      code: "TENANT_INACTIVE",
-    });
+  it("resolves every recognized tenant lifecycle as a trusted fact", () => {
+    for (const status of TENANT_LIFECYCLE_STATUSES) {
+      expect(
+        resolve({ tenant: { ...tenantAlpha, status } }),
+      ).toEqual({
+        resolved: true,
+        context: {
+          identitySubjectId: "identity-a",
+          tenantId: "tenant-alpha",
+          tenantStatus: status,
+          membershipId: "membership-alpha-a",
+          assuranceLevel: "L2",
+          membershipStatus: "verified",
+        },
+      });
+    }
   });
 
   it("denies absent, foreign-tenant, and foreign-identity memberships", () => {
     expect(resolve({ membership: null })).toEqual({
-      allowed: false,
+      resolved: false,
       code: "MEMBERSHIP_REQUIRED",
     });
     expect(
       resolve({
         membership: { ...membershipAlpha, tenantId: "tenant-beta" },
       }),
-    ).toEqual({ allowed: false, code: "CONTEXT_MISMATCH" });
+    ).toEqual({ resolved: false, code: "CONTEXT_MISMATCH" });
     expect(
       resolve({
         identitySubjectId: "identity-b",
       }),
-    ).toEqual({ allowed: false, code: "CONTEXT_MISMATCH" });
+    ).toEqual({ resolved: false, code: "CONTEXT_MISMATCH" });
   });
 
-  it("denies malformed assurance and lifecycle values", () => {
+  it("fails closed for malformed tenant, assurance, and lifecycle values", () => {
+    expect(
+      resolve({ tenant: { ...tenantAlpha, status: "unknown" } }),
+    ).toEqual({ resolved: false, code: "INVALID_TENANT" });
+    expect(
+      resolve({ tenant: { ...tenantAlpha, status: "constructor" } }),
+    ).toEqual({ resolved: false, code: "INVALID_TENANT" });
     expect(
       resolve({
         membership: { ...membershipAlpha, assuranceLevel: "L4" },
       }),
-    ).toEqual({ allowed: false, code: "INVALID_ASSURANCE" });
+    ).toEqual({ resolved: false, code: "INVALID_ASSURANCE" });
     expect(
       resolve({
         membership: { ...membershipAlpha, lifecycle: "unknown" },
       }),
-    ).toEqual({ allowed: false, code: "MEMBERSHIP_INACTIVE" });
+    ).toEqual({ resolved: false, code: "INVALID_MEMBERSHIP" });
+    expect(
+      resolve({
+        membership: { ...membershipAlpha, lifecycle: "toString" },
+      }),
+    ).toEqual({ resolved: false, code: "INVALID_MEMBERSHIP" });
   });
 
-  it("denies non-actionable membership states and accepts on-leave per frozen default", () => {
-    for (const lifecycle of [
-      "unverified",
-      "pending_review",
-      "stale",
-      "alumni",
-      "transferred_out",
-      "participation_suspended",
-      "suspended",
-      "closed",
-    ] as const) {
-      expect(resolve({ membership: { ...membershipAlpha, lifecycle } })).toEqual({
-        allowed: false,
-        code: "MEMBERSHIP_INACTIVE",
+  it("resolves every recognized membership lifecycle as a trusted fact", () => {
+    for (const lifecycle of MEMBERSHIP_LIFECYCLE_STATUSES) {
+      expect(
+        resolve({ membership: { ...membershipAlpha, lifecycle } }),
+      ).toEqual({
+        resolved: true,
+        context: {
+          identitySubjectId: "identity-a",
+          tenantId: "tenant-alpha",
+          tenantStatus: "active",
+          membershipId: "membership-alpha-a",
+          assuranceLevel: "L2",
+          membershipStatus: lifecycle,
+        },
       });
     }
-
-    expect(
-      resolve({ membership: { ...membershipAlpha, lifecycle: "on_leave" } }),
-    ).toEqual({
-      allowed: true,
-      context: expect.objectContaining({ membershipStatus: "on_leave" }),
-    });
   });
 
   it("fails closed without identity or tenant and never returns partial context", () => {
     expect(resolve({ identitySubjectId: "" })).toEqual({
-      allowed: false,
+      resolved: false,
       code: "IDENTITY_REQUIRED",
     });
     expect(resolve({ tenant: null })).toEqual({
-      allowed: false,
+      resolved: false,
       code: "TENANT_UNAVAILABLE",
     });
   });

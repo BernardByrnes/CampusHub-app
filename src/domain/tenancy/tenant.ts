@@ -10,8 +10,8 @@ export type TenantLifecycle = (typeof TENANT_LIFECYCLE_STATUSES)[number];
 export type TenantStatus = TenantLifecycle;
 export const TENANT_STATUSES = TENANT_LIFECYCLE_STATUSES;
 
-/** The frozen authority permits full student operations in these states. */
-export const TENANT_PROTECTED_OPERATION_STATUSES = [
+/** Future operation policies may grant full functionality in these states. */
+export const TENANT_FULL_FUNCTIONALITY_STATUSES = [
   "pilot",
   "active",
   "grace",
@@ -60,12 +60,16 @@ export function isValidIanaTimezone(value: unknown): value is string {
   }
 }
 
-export function isTenantLifecycleOperationalForProtectedActions(
+/**
+ * Narrow future operation-policy helper. It does not validate trusted
+ * context and does not decide access to any specific resource or operation.
+ */
+export function tenantHasFullFunctionality(
   value: unknown,
-): value is (typeof TENANT_PROTECTED_OPERATION_STATUSES)[number] {
+): value is (typeof TENANT_FULL_FUNCTIONALITY_STATUSES)[number] {
   return (
     typeof value === "string" &&
-    (TENANT_PROTECTED_OPERATION_STATUSES as readonly string[]).includes(value)
+    (TENANT_FULL_FUNCTIONALITY_STATUSES as readonly string[]).includes(value)
   );
 }
 

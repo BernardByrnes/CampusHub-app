@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   isTenant,
-  isTenantLifecycleOperationalForProtectedActions,
   isValidIanaTimezone,
   isValidTenantSlug,
   parseTenantLifecycle,
   TENANT_LIFECYCLE_STATUSES,
+  tenantHasFullFunctionality,
   type Tenant,
 } from "./tenant";
 
@@ -44,19 +44,13 @@ describe("Tenant domain", () => {
     expect(isValidIanaTimezone(" Africa/Kampala")).toBe(false);
   });
 
-  it("treats only full-operation tenant states as protected-actionable", () => {
-    expect(isTenantLifecycleOperationalForProtectedActions("pilot")).toBe(true);
-    expect(isTenantLifecycleOperationalForProtectedActions("active")).toBe(true);
-    expect(isTenantLifecycleOperationalForProtectedActions("grace")).toBe(true);
-    expect(isTenantLifecycleOperationalForProtectedActions("suspended")).toBe(
-      false,
-    );
-    expect(isTenantLifecycleOperationalForProtectedActions("archived")).toBe(
-      false,
-    );
-    expect(isTenantLifecycleOperationalForProtectedActions("unknown")).toBe(
-      false,
-    );
+  it("keeps full-functionality classification narrow for future policies", () => {
+    expect(tenantHasFullFunctionality("pilot")).toBe(true);
+    expect(tenantHasFullFunctionality("active")).toBe(true);
+    expect(tenantHasFullFunctionality("grace")).toBe(true);
+    expect(tenantHasFullFunctionality("suspended")).toBe(false);
+    expect(tenantHasFullFunctionality("archived")).toBe(false);
+    expect(tenantHasFullFunctionality("unknown")).toBe(false);
   });
 
   it("rejects malformed tenants", () => {

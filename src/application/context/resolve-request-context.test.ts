@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { Membership } from "@/domain/membership/membership";
-import type { Tenant } from "@/domain/tenancy/tenant";
+import {
+  MEMBERSHIP_LIFECYCLE_STATUSES,
+  type Membership,
+} from "@/domain/membership/membership";
+import {
+  TENANT_LIFECYCLE_STATUSES,
+  type Tenant,
+} from "@/domain/tenancy/tenant";
 
 import {
   RequestContextService,
@@ -54,10 +60,11 @@ describe("RequestContextService", () => {
     );
 
     expect(result).toEqual({
-      allowed: true,
+      resolved: true,
       context: {
         identitySubjectId: "identity-a",
         tenantId: "tenant-alpha",
+        tenantStatus: "active",
         membershipId: "membership-alpha-a",
         assuranceLevel: "L2",
         membershipStatus: "verified",
@@ -68,14 +75,14 @@ describe("RequestContextService", () => {
   it("returns safe denials when tenant selection or membership resolution is absent", async () => {
     await expect(
       serviceFor().resolveRequestContext({ identitySubjectId: "identity-a" }),
-    ).resolves.toEqual({ allowed: false, code: "TENANT_REQUIRED" });
+    ).resolves.toEqual({ resolved: false, code: "TENANT_REQUIRED" });
 
     await expect(
       serviceFor(tenantAlpha, null).resolveRequestContext(
         { identitySubjectId: "identity-a" },
         { tenantId: "tenant-alpha" },
       ),
-    ).resolves.toEqual({ allowed: false, code: "MEMBERSHIP_REQUIRED" });
+    ).resolves.toEqual({ resolved: false, code: "MEMBERSHIP_REQUIRED" });
   });
 
   it("does not accept two competing client tenant hints", async () => {
@@ -84,6 +91,48 @@ describe("RequestContextService", () => {
         { identitySubjectId: "identity-a" },
         { tenantId: "tenant-alpha", slug: "tenant-alpha" },
       ),
-    ).resolves.toEqual({ allowed: false, code: "CONTEXT_MISMATCH" });
+    ).resolves.toEqual({ resolved: false, code: "CONTEXT_MISMATCH" });
+  });
+
+  it("resolves every recognized tenant lifecycle without deciding access", async () => {
+    for (const status of TENANT_LIFECYCLE_STATUSES) {
+      await expect(
+        serviceFor({ ...tenantAlpha, status }).resolveRequestContext(
+          { identitySubjectId: "identity-a" },
+          { tenantId: "tenant-alpha" },
+        ),
+      ).resolves.toEqual({
+        resolved: true,
+        context: {
+          identitySubjectId: "identity-a",
+          tenantId: "tenant-alpha",
+          tenantStatus: status,
+          membershipId: "membership-alpha-a",
+          assuranceLevel: "L2",
+          membershipStatus: "verified",
+        },
+      });
+    }
+  });
+
+  it("resolves every recognized membership lifecycle without deciding participation", async () => {
+    for (const lifecycle of MEMBERSHIP_LIFECYCLE_STATUSES) {
+      await expect(
+        serviceFor(tenantAlpha, { ...membershipAlpha, lifecycle }).resolveRequestContext(
+          { identitySubjectId: "identity-a" },
+          { tenantId: "tenant-alpha" },
+        ),
+      ).resolves.toEqual({
+        resolved: true,
+        context: {
+          identitySubjectId: "identity-a",
+          tenantId: "tenant-alpha",
+          tenantStatus: "active",
+          membershipId: "membership-alpha-a",
+          assuranceLevel: "L2",
+          membershipStatus: lifecycle,
+        },
+      });
+    }
   });
 });
