@@ -3,6 +3,10 @@ import path from "node:path";
 
 import * as ts from "typescript";
 
+import {
+  REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS,
+} from "@/server/tenancy/tenant-surface-registry";
+
 export const GOVERNED_SOURCE_EXTENSIONS = [
   ".ts",
   ".tsx",
@@ -43,8 +47,6 @@ const HTTP_ROUTE_OPERATIONS = new Set([
 const TEST_OR_SPEC_FILENAME =
   /(?:^|[._-])(test|spec|e2e)(?:[._-]|$)/i;
 const TEST_OR_SPEC_DIRECTORY = /^(?:__tests__|tests?|specs?)$/i;
-const CALLABLE_NAME_HINT =
-  /(?:service|handler|route|repository|repo|worker|job|controller|resolver|operation|command|usecase|cache|notification|search|media|backup|restore|processor|executor|action|callback|create|read|write|execute|run|handle|fetch|load|list|find|save|update|delete|publish|resolve|parse|process|send|sync|build|make)/i;
 
 export type DiscoveredTenantOperation = Readonly<{
   implementationPath: string;
@@ -370,8 +372,35 @@ function isCallableExpression(expression: ts.Expression): boolean {
   return ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped);
 }
 
-function looksPotentiallyCallableName(name: string): boolean {
-  return CALLABLE_NAME_HINT.test(name);
+function astFormForExpression(expression: ts.Expression): string {
+  return ts.SyntaxKind[unwrapExpression(expression).kind];
+}
+
+function isReviewedNonCallableExport(
+  implementationPath: string,
+  exportName: string,
+  expression: ts.Expression,
+): boolean {
+  const expectedAstForm = astFormForExpression(expression);
+  return REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS.some(
+    (contract) =>
+      contract.implementationPath === implementationPath &&
+      contract.exportName === exportName &&
+      contract.expectedAstForm === expectedAstForm,
+  );
+}
+
+function isStaticallyNonCallableExpression(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  return (
+    ts.isArrayLiteralExpression(unwrapped) ||
+    ts.isLiteralExpression(unwrapped) ||
+    unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+    unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+    unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+    (ts.isIdentifier(unwrapped) &&
+      ["Infinity", "NaN", "undefined"].includes(unwrapped.text))
+  );
 }
 
 function addOperation(
@@ -397,6 +426,123 @@ function addUnsupportedOperationForm(
   description: string,
 ): void {
   unsupported.push({ implementationPath, description });
+}
+
+function addUnresolvedExposedValue(
+  implementationPath: string,
+  exportName: string,
+  expression: ts.Expression,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+  description: string,
+): void {
+  if (isReviewedNonCallableExport(implementationPath, exportName, expression)) {
+    return;
+  }
+
+  addUnsupportedOperationForm(
+    unsupported,
+    implementationPath,
+    `${description}; unresolved ${astFormForExpression(expression)} is not an approved non-callable export`,
+  );
+}
+
+function recordExposedExpression(
+  implementationPath: string,
+  prefix: string,
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, BindingDeclaration>,
+  discovered: DiscoveredTenantOperation[],
+  unsupported: DiscoveredUnsupportedOperationForm[],
+  visitedExpressions = new Set<ts.Node>(),
+): void {
+  const unwrapped = unwrapExpression(expression);
+
+  if (isReviewedNonCallableExport(implementationPath, prefix, unwrapped)) {
+    return;
+  }
+
+  if (isCallableExpression(unwrapped)) {
+    if (visitedExpressions.has(unwrapped)) {
+      return;
+    }
+    visitedExpressions.add(unwrapped);
+    addOperation(discovered, implementationPath, prefix, "exported_function");
+    return;
+  }
+
+  if (ts.isClassExpression(unwrapped)) {
+    if (visitedExpressions.has(unwrapped)) {
+      return;
+    }
+    visitedExpressions.add(unwrapped);
+    discoverClassOperations(
+      implementationPath,
+      unwrapped,
+      prefix,
+      bindings,
+      discovered,
+      unsupported,
+      visitedExpressions,
+    );
+    return;
+  }
+
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    discoverObjectOperations(
+      implementationPath,
+      unwrapped,
+      prefix,
+      bindings,
+      discovered,
+      unsupported,
+      visitedExpressions,
+    );
+    return;
+  }
+
+  if (ts.isIdentifier(unwrapped)) {
+    if (visitedExpressions.has(unwrapped)) {
+      return;
+    }
+    visitedExpressions.add(unwrapped);
+    const resolved = resolveBinding(unwrapped.text, bindings);
+    if (resolved === undefined) {
+      addUnresolvedExposedValue(
+        implementationPath,
+        prefix,
+        unwrapped,
+        unsupported,
+        `exported/public value ${prefix} cannot be resolved to a known AST value`,
+      );
+      return;
+    }
+    recordResolvedValue(
+      implementationPath,
+      prefix,
+      resolved,
+      bindings,
+      discovered,
+      unsupported,
+      visitedExpressions,
+    );
+    return;
+  }
+
+  if (isStaticallyNonCallableExpression(unwrapped)) {
+    return;
+  }
+
+  if (visitedExpressions.has(unwrapped)) {
+    return;
+  }
+  visitedExpressions.add(unwrapped);
+  addUnresolvedExposedValue(
+    implementationPath,
+    prefix,
+    unwrapped,
+    unsupported,
+    `exported/public value ${prefix} is not statically proven non-callable`,
+  );
 }
 
 function recordResolvedValue(
@@ -430,41 +576,15 @@ function recordResolvedValue(
     return;
   }
 
-  const expression = unwrapExpression(resolved);
-  if (visitedExpressions.has(expression)) {
-    return;
-  }
-  visitedExpressions.add(expression);
-
-  if (isCallableExpression(expression)) {
-    addOperation(discovered, implementationPath, prefix, "exported_function");
-    return;
-  }
-
-  if (ts.isObjectLiteralExpression(expression)) {
-    discoverObjectOperations(
-      implementationPath,
-      expression,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    return;
-  }
-
-  if (ts.isClassExpression(expression)) {
-    discoverClassOperations(
-      implementationPath,
-      expression,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-  }
+  recordExposedExpression(
+    implementationPath,
+    prefix,
+    resolved,
+    bindings,
+    discovered,
+    unsupported,
+    visitedExpressions,
+  );
 }
 
 function recordExportedValue(
@@ -476,76 +596,15 @@ function recordExportedValue(
   unsupported: DiscoveredUnsupportedOperationForm[],
   visitedExpressions = new Set<ts.Node>(),
 ): void {
-  const unwrapped = unwrapExpression(expression);
-
-  if (ts.isIdentifier(unwrapped)) {
-    recordResolvedValue(
-      implementationPath,
-      prefix,
-      resolveBinding(unwrapped.text, bindings),
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    if (
-      !discovered.some(
-        (operation) =>
-          operation.implementationPath === implementationPath &&
-          operation.operation === prefix,
-      ) &&
-      looksPotentiallyCallableName(prefix)
-    ) {
-      addUnsupportedOperationForm(
-        unsupported,
-        implementationPath,
-        `exported ${prefix} binding cannot be resolved to a callable AST form`,
-      );
-    }
-    return;
-  }
-
-  if (
-    isCallableExpression(unwrapped) ||
-    ts.isFunctionExpression(unwrapped)
-  ) {
-    addOperation(discovered, implementationPath, prefix, "exported_function");
-    return;
-  }
-
-  if (ts.isObjectLiteralExpression(unwrapped)) {
-    discoverObjectOperations(
-      implementationPath,
-      unwrapped,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    return;
-  }
-
-  if (ts.isClassExpression(unwrapped)) {
-    discoverClassOperations(
-      implementationPath,
-      unwrapped,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    return;
-  }
-
-  if (ts.isCallExpression(unwrapped) && looksPotentiallyCallableName(prefix)) {
-    addUnsupportedOperationForm(
-      unsupported,
-      implementationPath,
-      `exported ${prefix} factory call has no statically discoverable callable target`,
-    );
-  }
+  recordExposedExpression(
+    implementationPath,
+    prefix,
+    expression,
+    bindings,
+    discovered,
+    unsupported,
+    visitedExpressions,
+  );
 }
 
 function discoverClassOperations(
@@ -565,14 +624,23 @@ function discoverClassOperations(
       continue;
     }
 
-    const memberName = propertyNameText(
-      "name" in member ? member.name : undefined,
-    );
-    if (memberName === null) {
-      continue;
-    }
-
-    if (ts.isMethodDeclaration(member)) {
+    if (
+      ts.isMethodDeclaration(member) ||
+      ts.isGetAccessorDeclaration(member) ||
+      ts.isSetAccessorDeclaration(member)
+    ) {
+      if (ts.isPrivateIdentifier(member.name)) {
+        continue;
+      }
+      const memberName = propertyNameText(member.name);
+      if (memberName === null) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `public class callable member in ${classIdentity} has an unresolved computed name`,
+        );
+        continue;
+      }
       if (member.body === undefined) {
         continue;
       }
@@ -585,51 +653,42 @@ function discoverClassOperations(
       continue;
     }
 
-    if (!ts.isPropertyDeclaration(member) || member.initializer === undefined) {
-      if (
-        ts.isPropertyDeclaration(member) &&
-        member.type !== undefined &&
-        ts.isFunctionTypeNode(member.type)
-      ) {
-        addUnsupportedOperationForm(
-          unsupported,
-          implementationPath,
-          `class field ${classIdentity}.${memberName} has a callable type without a discoverable initializer`,
-        );
-      }
+    if (!ts.isPropertyDeclaration(member)) {
+      continue;
+    }
+
+    if (ts.isPrivateIdentifier(member.name)) {
+      continue;
+    }
+    const memberName = propertyNameText(member.name);
+    if (memberName === null) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `public class field in ${classIdentity} has an unresolved computed name`,
+      );
       continue;
     }
 
     const operation = `${classIdentity}.${memberName}`;
-    const initializer = unwrapExpression(member.initializer);
-    if (isCallableExpression(initializer)) {
-      addOperation(discovered, implementationPath, operation, "class_method");
-      continue;
-    }
-
-    if (ts.isIdentifier(initializer)) {
-      const resolved = resolveBinding(initializer.text, bindings);
-      if (resolved !== undefined) {
-        recordResolvedValue(
-          implementationPath,
-          operation,
-          resolved,
-          bindings,
-          discovered,
-          unsupported,
-          visitedExpressions,
-        );
-        continue;
-      }
-    }
-
-    if (ts.isCallExpression(initializer) && looksPotentiallyCallableName(memberName)) {
+    if (member.initializer === undefined) {
       addUnsupportedOperationForm(
         unsupported,
         implementationPath,
-        `class field ${operation} is initialized by an unresolved factory call`,
+        `public class field ${operation} has no initializer that proves its value is non-callable`,
       );
+      continue;
     }
+
+    recordExposedExpression(
+      implementationPath,
+      operation,
+      member.initializer,
+      bindings,
+      discovered,
+      unsupported,
+      visitedExpressions,
+    );
   }
 }
 
@@ -642,61 +701,15 @@ function recordObjectMemberValue(
   unsupported: DiscoveredUnsupportedOperationForm[],
   visitedExpressions: Set<ts.Node>,
 ): void {
-  const unwrapped = unwrapExpression(value);
-  if (ts.isIdentifier(unwrapped)) {
-    const resolved = resolveBinding(unwrapped.text, bindings);
-    if (resolved !== undefined) {
-      recordResolvedValue(
-        implementationPath,
-        prefix,
-        resolved,
-        bindings,
-        discovered,
-        unsupported,
-        visitedExpressions,
-      );
-      return;
-    }
-  }
-
-  if (isCallableExpression(unwrapped)) {
-    addOperation(discovered, implementationPath, prefix, "exported_function");
-    return;
-  }
-
-  if (ts.isObjectLiteralExpression(unwrapped)) {
-    discoverObjectOperations(
-      implementationPath,
-      unwrapped,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    return;
-  }
-
-  if (ts.isClassExpression(unwrapped)) {
-    discoverClassOperations(
-      implementationPath,
-      unwrapped,
-      prefix,
-      bindings,
-      discovered,
-      unsupported,
-      visitedExpressions,
-    );
-    return;
-  }
-
-  if (ts.isCallExpression(unwrapped) && looksPotentiallyCallableName(prefix)) {
-    addUnsupportedOperationForm(
-      unsupported,
-      implementationPath,
-      `exported object member ${prefix} is initialized by an unresolved factory call`,
-    );
-  }
+  recordExposedExpression(
+    implementationPath,
+    prefix,
+    value,
+    bindings,
+    discovered,
+    unsupported,
+    visitedExpressions,
+  );
 }
 
 function discoverObjectOperations(
@@ -714,12 +727,22 @@ function discoverObjectOperations(
   visitedExpressions.add(objectLiteral);
 
   for (const property of objectLiteral.properties) {
-    if (ts.isMethodDeclaration(property)) {
+    if (
+      ts.isMethodDeclaration(property) ||
+      ts.isGetAccessorDeclaration(property) ||
+      ts.isSetAccessorDeclaration(property)
+    ) {
       if (property.body === undefined) {
         continue;
       }
       const memberName = propertyNameText(property.name);
-      if (memberName !== null) {
+      if (memberName === null) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `exported object ${prefix} has a callable member with an unresolved computed name`,
+        );
+      } else {
         addOperation(
           discovered,
           implementationPath,
@@ -732,7 +755,13 @@ function discoverObjectOperations(
 
     if (ts.isPropertyAssignment(property)) {
       const memberName = propertyNameText(property.name);
-      if (memberName !== null) {
+      if (memberName === null) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `exported object ${prefix} has a public property with an unresolved computed name`,
+        );
+      } else {
         recordObjectMemberValue(
           implementationPath,
           `${prefix}.${memberName}`,
@@ -914,7 +943,6 @@ function analyzeSource(
         const initializer = unwrapExpression(declaration.initializer);
         if (HTTP_ROUTE_OPERATIONS.has(operation) && normalizedPath.startsWith("src/app/api/")) {
           addOperation(discovered, normalizedPath, operation, "exported_function");
-          continue;
         }
         recordExportedValue(
           normalizedPath,
@@ -964,7 +992,6 @@ function analyzeSource(
 
           if (HTTP_ROUTE_OPERATIONS.has(exportedName) && normalizedPath.startsWith("src/app/api/")) {
             addOperation(discovered, normalizedPath, exportedName, "exported_function");
-            continue;
           }
 
           if (resolved !== undefined) {
@@ -976,11 +1003,11 @@ function analyzeSource(
               discovered,
               unsupported,
             );
-          } else if (looksPotentiallyCallableName(exportedName)) {
+          } else {
             addUnsupportedOperationForm(
               unsupported,
               normalizedPath,
-              `exported alias ${exportedName} cannot be resolved to a callable AST form`,
+              `exported alias ${exportedName} cannot be resolved to a known AST value`,
             );
           }
         }

@@ -358,23 +358,117 @@ describe("Tenant isolation governance registry", () => {
     });
   });
 
-  it("fails closed on an unresolved exported callable factory form", () => {
-    const implementationPath = "src/server/services/factory-service.ts";
+  it("fails closed for unresolved callable factories regardless of the exposed name", () => {
+    const cases = [
+      {
+        implementationPath: "src/server/services/direct-factory.ts",
+        sourceText: "export const x = makeService();",
+        exposedName: "x",
+      },
+      {
+        implementationPath: "src/server/services/aliased-factory.ts",
+        sourceText: "const x = makeService(); export { x };",
+        exposedName: "x",
+      },
+      {
+        implementationPath: "src/server/services/default-factory.ts",
+        sourceText: "export default makeService();",
+        exposedName: "default",
+      },
+      {
+        implementationPath: "src/server/services/object-factory.ts",
+        sourceText: "export const holder = { x: makeService() };",
+        exposedName: "holder.x",
+      },
+      {
+        implementationPath: "src/server/services/class-field-factory.ts",
+        sourceText: "export class Example { public x = makeService(); }",
+        exposedName: "Example.x",
+      },
+      {
+        implementationPath: "src/server/services/bind-factory.ts",
+        sourceText: "export const x = existingFunction.bind(null);",
+        exposedName: "x",
+      },
+      {
+        implementationPath: "src/server/services/new-factory.ts",
+        sourceText: "export const x = new Service();",
+        exposedName: "x",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        testCase.implementationPath,
+        testCase.sourceText,
+      );
+
+      expect(unsupported.length).toBeGreaterThan(0);
+      const errors = validateTenantSurfaceRegistry(
+        fixtureInput({
+          discoveredTenantModels: [],
+          governedImplementationPaths: [testCase.implementationPath],
+          discoveredUnsupportedOperationForms: unsupported,
+        }),
+      );
+      expect(
+        errors.some(
+          (error) =>
+            error.startsWith(
+              `unsupported governed callable form: ${testCase.implementationPath}:`,
+            ) && error.includes(testCase.exposedName),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("requires an exact reviewed path/name/form for legitimate non-callable factories", () => {
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/tenant.ts",
+        "export const tenants = pgTable(\"tenants\", {});",
+      ),
+    ).toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/other.ts",
+        "export const tenants = pgTable(\"tenants\", {});",
+      ),
+    ).not.toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/tenant.ts",
+        "export const x = pgTable(\"tenants\", {});",
+      ),
+    ).not.toEqual([]);
+  });
+
+  it("does not let an existing governed file declaration authorize a new callable", () => {
+    const implementationPath =
+      "src/application/content/publication-read-resolvers.ts";
+    const existingEntry = tenantSurfaceRegistry.find(
+      (entry) => entry.id === "publication.authorization.resolvers",
+    );
+    if (existingEntry === undefined) {
+      throw new Error("expected the existing Publication resolver registry entry");
+    }
+
     const unsupported = discoverUnsupportedOperationFormsFromSource(
       implementationPath,
-      `export const service = makeService();`,
+      "export const x = makeService();",
     );
-
-    expect(unsupported).toHaveLength(1);
     const errors = validateTenantSurfaceRegistry(
       fixtureInput({
+        registry: [existingEntry],
         discoveredTenantModels: [],
         governedImplementationPaths: [implementationPath],
         discoveredUnsupportedOperationForms: unsupported,
+        isolationProbeIds: new Set(["publication.direct"]),
       }),
     );
-    expect(errors).toContain(
-      "unsupported governed callable form: src/server/services/factory-service.ts: exported service factory call has no statically discoverable callable target",
+
+    expect(errors.some((error) => error.includes("unsupported governed callable form"))).toBe(
+      true,
     );
   });
 

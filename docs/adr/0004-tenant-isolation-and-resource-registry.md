@@ -162,7 +162,10 @@ The A2 gate includes:
   export, static dynamic-import, and static `require` forms; test-to-test
   imports remain permitted;
 - a fail-closed unsupported-callable-form check for exported or class/object
-  callable factories that cannot be resolved to a known AST target;
+  callable factories that cannot be resolved to a known AST target; callable
+  safety is never inferred from an export/member name, and legitimate
+  non-callable factory outputs require an exact reviewed path/name/AST-form
+  contract;
 - recursive discovery and explicit declaration of every `drizzle/**/*.sql`
   migration plus the current migration head;
 - a registry entry for every discovered model, operation, and governed path;

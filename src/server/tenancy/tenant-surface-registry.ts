@@ -129,6 +129,84 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   >
 >;
 
+/**
+ * These are reviewed non-callable export contracts. They allow the AST gate
+ * to recognize infrastructure/schema values produced by known factories
+ * without granting a free-form exemption to a new export.
+ */
+export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
+  {
+    implementationPath: "src/server/db/client.ts",
+    exportName: "db",
+    expectedAstForm: "PropertyAccessExpression",
+  },
+  {
+    implementationPath: "src/server/db/client.ts",
+    exportName: "pool",
+    expectedAstForm: "PropertyAccessExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/tenant.ts",
+    exportName: "tenantLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/tenant.ts",
+    exportName: "tenants",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/membership.ts",
+    exportName: "membershipAssuranceLevelEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/membership.ts",
+    exportName: "membershipLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/membership.ts",
+    exportName: "memberships",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationTypeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationPriorityEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationVisibilityEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAudienceModeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publications",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/config/env-schema.ts",
+    exportName: "serverEnvSchema",
+    expectedAstForm: "CallExpression",
+  },
+] as const;
+
 export type TenantSurfaceRegistryEntry = Readonly<{
   id: string;
   category: TenantSurfaceCategory;

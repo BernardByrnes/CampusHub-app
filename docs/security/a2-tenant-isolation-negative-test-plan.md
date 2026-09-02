@@ -48,7 +48,9 @@ discovery, and recursive migration discovery. It validates:
 9. every `GLOBAL_NON_TENANT` entry is on the explicit reviewed allowlist and
    matches its exact category/path/operation contract;
 10. unresolved exported/class/object callable factories fail the gate rather
-    than being silently omitted;
+    than being silently omitted; callable safety is never inferred from a
+    name, and non-callable factory exceptions bind exactly to a reviewed
+    implementation path, export/member name, and AST form;
 11. production imports into excluded test/spec/e2e paths fail the gate while
     test-to-test imports remain allowed; and
 12. the focused simulation suite fails for missing registry entries, missing
