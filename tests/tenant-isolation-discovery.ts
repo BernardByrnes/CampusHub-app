@@ -483,7 +483,16 @@ function isReviewedNonCallableReExport(
 function isReviewedNonOperationalConstructor(
   implementationPath: string,
   classIdentity: string,
+  constructor: ts.ConstructorDeclaration | undefined,
 ): boolean {
+  if (constructor === undefined || constructor.body === undefined) {
+    return false;
+  }
+
+  if (constructor.body.statements.length !== 0) {
+    return false;
+  }
+
   return REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS.some(
     (contract) =>
       contract.implementationPath === implementationPath &&
@@ -727,7 +736,11 @@ function discoverClassOperations(
   if (
     includeConstructor &&
     isConstructible &&
-    !isReviewedNonOperationalConstructor(implementationPath, classIdentity)
+    !isReviewedNonOperationalConstructor(
+      implementationPath,
+      classIdentity,
+      constructor,
+    )
   ) {
     addOperation(
       discovered,
@@ -1008,6 +1021,64 @@ function commonJsExportTarget(expression: ts.Expression): CommonJsExportTarget {
   }
 
   return { isExportSurface: false, operation: null };
+}
+
+function isCommonJsExportSurfaceExpression(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  return (
+    (ts.isIdentifier(unwrapped) && unwrapped.text === "exports") ||
+    commonJsExportTarget(unwrapped).isExportSurface
+  );
+}
+
+function containsCommonJsExportSurface(node: ts.Node): boolean {
+  if (ts.isExpression(node) && isCommonJsExportSurfaceExpression(node)) {
+    return true;
+  }
+
+  let found = false;
+  ts.forEachChild(node, (child) => {
+    if (!found && containsCommonJsExportSurface(child)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function discoverCommonJsExportObjectEscapes(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer !== undefined &&
+      containsCommonJsExportSurface(node.initializer)
+    ) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        "CommonJS export object escapes into an alias or composite value whose runtime effect is not provably safe",
+      );
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      (containsCommonJsExportSurface(node.expression) ||
+        node.arguments.some(containsCommonJsExportSurface))
+    ) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        "CommonJS export object is passed to an unrecognised call or mutation mechanism",
+      );
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  sourceFile.forEachChild(visit);
 }
 
 function collectCommonJsExportedBindingNames(
@@ -1412,6 +1483,11 @@ function analyzeSource(
     ts.forEachChild(node, visitAssignments);
   };
   sourceFile.forEachChild(visitAssignments);
+  discoverCommonJsExportObjectEscapes(
+    normalizedPath,
+    sourceFile,
+    unsupported,
+  );
 
   const uniqueOperations = new Map<string, DiscoveredTenantOperation>();
   for (const operation of discovered) {

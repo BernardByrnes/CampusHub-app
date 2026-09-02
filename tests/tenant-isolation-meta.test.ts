@@ -511,6 +511,82 @@ describe("Tenant isolation governance registry", () => {
     });
   });
 
+  it("fails closed when CommonJS export objects reach unknown call or mutation APIs", () => {
+    const cases = [
+      "Object.assign(module.exports, { x: makeService() });",
+      "Object.assign(exports, { x: makeService() });",
+      `Object.defineProperty(exports, "x", {
+         value: makeService(),
+       });`,
+      `Object.defineProperty(module.exports, "x", {
+         value: makeService(),
+       });`,
+      `Object.defineProperties(exports, {
+         x: { value: makeService() },
+       });`,
+      `Object.defineProperties(module.exports, {
+         x: { value: makeService() },
+       });`,
+      "Reflect.set(exports, \"x\", makeService());",
+      "mutateExports(module.exports);",
+      "const out = module.exports; out.x = makeService();",
+      'const out = exports; out["x"] = makeService();',
+    ];
+
+    for (const [index, sourceText] of cases.entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-escape-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length + unsupported.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("only exempts an exact reviewed DI constructor with an empty body", () => {
+    const implementationPath = "src/application/content/create-publication.ts";
+    const emptyBodySource = `
+      export class CreatePublicationService {
+        public constructor(
+          private readonly dependencies: Dependencies,
+        ) {}
+      }
+    `;
+    const executableBodySource = `
+      export class CreatePublicationService {
+        public constructor(
+          private readonly dependencies: Dependencies,
+        ) {
+          performTenantSensitiveWork();
+        }
+      }
+    `;
+
+    expect(
+      discoverOperationsFromSource(implementationPath, emptyBodySource),
+    ).toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        emptyBodySource,
+      ),
+    ).toEqual([]);
+
+    expect(
+      discoverOperationsFromSource(implementationPath, executableBodySource),
+    ).toContainEqual({
+      implementationPath,
+      operation: "CreatePublicationService.constructor",
+      kind: "class_method",
+    });
+  });
+
   it("does not collapse distinct export names that share one callable binding", () => {
     const operations = discoverOperationsFromSource(
       "src/server/services/shared-binding.ts",

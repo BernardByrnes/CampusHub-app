@@ -234,8 +234,9 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
 /**
  * Existing exported service/repository constructors are dependency-injection
  * construction details rather than independently governed operations. These
- * exact path/class contracts preserve that reviewed surface while ensuring a
- * newly exported constructor is discovered as a callable operation.
+ * exact path/class contracts preserve that reviewed surface only when the
+ * constructor body is empty; a newly executable constructor is discovered as
+ * a callable operation.
  */
 export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
   {
