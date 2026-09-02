@@ -549,6 +549,83 @@ describe("Tenant isolation governance registry", () => {
     }
   });
 
+  it("accounts for CommonJS export-object references outside direct assignments", () => {
+    const escapeCases = [
+      "let out; out = module.exports;",
+      "let out; out = exports;",
+      "const holder = {}; holder.out = module.exports;",
+      "const holder = {}; holder.out = exports;",
+      "function getExports() { return module.exports; }",
+      "function getExports() { return exports; }",
+    ];
+
+    for (const [index, sourceText] of escapeCases.entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-reference-escape-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length + unsupported.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps direct CommonJS assignments governed without generic escape findings", () => {
+    const directAssignments = [
+      "module.exports = () => true;",
+      "module.exports.x = () => true;",
+      'module.exports["x"] = () => true;',
+      "exports.x = () => true;",
+      'exports["x"] = () => true;',
+    ];
+
+    for (const [index, sourceText] of directAssignments.entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-direct-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length).toBeGreaterThan(0);
+      expect(unsupported).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description:
+              "CommonJS export object reference is not part of a recognised direct export assignment",
+          }),
+        ]),
+      );
+    }
+
+    for (const [index, sourceText] of [
+      "module.exports[key] = () => true;",
+      "exports[key] = () => true;",
+    ].entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-computed-direct-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length + unsupported.length).toBeGreaterThan(0);
+    }
+  });
+
   it("only exempts an exact reviewed DI constructor with an empty body", () => {
     const implementationPath = "src/application/content/create-publication.ts";
     const emptyBodySource = `

@@ -1023,62 +1023,57 @@ function commonJsExportTarget(expression: ts.Expression): CommonJsExportTarget {
   return { isExportSurface: false, operation: null };
 }
 
-function isCommonJsExportSurfaceExpression(expression: ts.Expression): boolean {
-  const unwrapped = unwrapExpression(expression);
-  return (
-    (ts.isIdentifier(unwrapped) && unwrapped.text === "exports") ||
-    commonJsExportTarget(unwrapped).isExportSurface
-  );
-}
-
-function containsCommonJsExportSurface(node: ts.Node): boolean {
-  if (ts.isExpression(node) && isCommonJsExportSurfaceExpression(node)) {
-    return true;
+function isCommonJsExportObjectReference(node: ts.Node): boolean {
+  if (
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node)
+  ) {
+    return isModuleExportsExpression(node);
   }
 
-  let found = false;
-  ts.forEachChild(node, (child) => {
-    if (!found && containsCommonJsExportSurface(child)) {
-      found = true;
-    }
-  });
-  return found;
+  return ts.isIdentifier(node) && node.text === "exports";
 }
 
-function discoverCommonJsExportObjectEscapes(
+function discoverCommonJsExportSurfaceReferences(
   implementationPath: string,
   sourceFile: ts.SourceFile,
   unsupported: DiscoveredUnsupportedOperationForm[],
 ): void {
-  const visit = (node: ts.Node): void => {
+  const recognisedDirectLhsReferences = new Set<ts.Node>();
+  const collectRecognisedDirectLhsReferences = (node: ts.Node): void => {
     if (
-      ts.isVariableDeclaration(node) &&
-      node.initializer !== undefined &&
-      containsCommonJsExportSurface(node.initializer)
+      ts.isBinaryExpression(node) &&
+      isAssignmentOperator(node.operatorToken.kind) &&
+      commonJsExportTarget(node.left).isExportSurface
     ) {
-      addUnsupportedOperationForm(
-        unsupported,
-        implementationPath,
-        "CommonJS export object escapes into an alias or composite value whose runtime effect is not provably safe",
-      );
+      const collectReference = (lhsNode: ts.Node): void => {
+        if (isCommonJsExportObjectReference(lhsNode)) {
+          recognisedDirectLhsReferences.add(lhsNode);
+        }
+        ts.forEachChild(lhsNode, collectReference);
+      };
+      collectReference(node.left);
     }
-
-    if (
-      ts.isCallExpression(node) &&
-      (containsCommonJsExportSurface(node.expression) ||
-        node.arguments.some(containsCommonJsExportSurface))
-    ) {
-      addUnsupportedOperationForm(
-        unsupported,
-        implementationPath,
-        "CommonJS export object is passed to an unrecognised call or mutation mechanism",
-      );
-    }
-
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, collectRecognisedDirectLhsReferences);
   };
 
-  sourceFile.forEachChild(visit);
+  sourceFile.forEachChild(collectRecognisedDirectLhsReferences);
+
+  const visitReference = (node: ts.Node): void => {
+    if (
+      isCommonJsExportObjectReference(node) &&
+      !recognisedDirectLhsReferences.has(node)
+    ) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        "CommonJS export object reference is not part of a recognised direct export assignment",
+      );
+    }
+    ts.forEachChild(node, visitReference);
+  };
+
+  sourceFile.forEachChild(visitReference);
 }
 
 function collectCommonJsExportedBindingNames(
@@ -1483,7 +1478,7 @@ function analyzeSource(
     ts.forEachChild(node, visitAssignments);
   };
   sourceFile.forEachChild(visitAssignments);
-  discoverCommonJsExportObjectEscapes(
+  discoverCommonJsExportSurfaceReferences(
     normalizedPath,
     sourceFile,
     unsupported,
