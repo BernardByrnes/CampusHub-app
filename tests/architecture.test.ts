@@ -221,6 +221,148 @@ describe("server-only architecture boundary", () => {
     ).toBe(false);
   });
 
+  it("covers template and module.require loaders while failing closed for unresolved loaders", () => {
+    const violations = findProductionImportBoundaryViolationsFromSources([
+      {
+        relativePath: "src/server/services/loader-matrix.ts",
+        sourceText: [
+          'const requiredRoot = require("../../../tests/loader-require-root.test");',
+          'const requiredInSrc = require("../tests/loader-require-in-src.test");',
+          'const templateRequiredRoot = require(`../../../tests/loader-template-require-root.test`);',
+          'const templateRequiredInSrc = require(`../tests/loader-template-require-in-src.test`);',
+          'const dynamicRoot = import("../../../tests/loader-dynamic-root.test");',
+          'const dynamicInSrc = import(`../tests/loader-dynamic-in-src.test`);',
+          'const moduleRequiredRoot = module.require("../../../tests/loader-module-require-root.test");',
+          'const moduleRequiredInSrc = module.require(`../tests/loader-module-require-in-src.test`);',
+          'const moduleElementRoot = module["require"]("../../../tests/loader-module-element-root.test");',
+          'const moduleElementInSrc = module[`require`](`../tests/loader-module-element-in-src.test`);',
+          'const unresolvedStatic = require("../tests/missing-loader");',
+          'const unresolvedRequire = require(`../../../tests/${name}`);',
+          'const unresolvedDynamic = import(`../tests/${name}`);',
+          'const unresolvedModuleRequire = module.require(loaderPath);',
+          'import "some-package";',
+          'require("some-package");',
+          'require(`some-template-package`);',
+          'import("some-dynamic-package");',
+          'module.require("some-module-package");',
+          'module["require"](`some-element-package`);',
+        ].join("\n"),
+      },
+      ...[
+        "tests/loader-require-root.test.ts",
+        "src/server/tests/loader-require-in-src.test.ts",
+        "tests/loader-template-require-root.test.ts",
+        "src/server/tests/loader-template-require-in-src.test.ts",
+        "tests/loader-dynamic-root.test.ts",
+        "src/server/tests/loader-dynamic-in-src.test.ts",
+        "tests/loader-module-require-root.test.ts",
+        "src/server/tests/loader-module-require-in-src.test.ts",
+        "tests/loader-module-element-root.test.ts",
+        "src/server/tests/loader-module-element-in-src.test.ts",
+      ].map((relativePath) => ({
+        relativePath,
+        sourceText: "export const fixture = true;",
+      })),
+    ]);
+
+    const resolvedBoundaryViolations = violations.filter(
+      (violation) => violation.kind === undefined,
+    );
+    expect(resolvedBoundaryViolations).toEqual(
+      expect.arrayContaining([
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../../../tests/loader-require-root.test",
+          resolvedPath: "tests/loader-require-root.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/loader-require-in-src.test",
+          resolvedPath: "src/server/tests/loader-require-in-src.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../../../tests/loader-template-require-root.test",
+          resolvedPath: "tests/loader-template-require-root.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/loader-template-require-in-src.test",
+          resolvedPath: "src/server/tests/loader-template-require-in-src.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../../../tests/loader-dynamic-root.test",
+          resolvedPath: "tests/loader-dynamic-root.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/loader-dynamic-in-src.test",
+          resolvedPath: "src/server/tests/loader-dynamic-in-src.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../../../tests/loader-module-require-root.test",
+          resolvedPath: "tests/loader-module-require-root.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/loader-module-require-in-src.test",
+          resolvedPath: "src/server/tests/loader-module-require-in-src.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../../../tests/loader-module-element-root.test",
+          resolvedPath: "tests/loader-module-element-root.test.ts",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/loader-module-element-in-src.test",
+          resolvedPath: "src/server/tests/loader-module-element-in-src.test.ts",
+        },
+      ]),
+    );
+    expect(resolvedBoundaryViolations).toHaveLength(10);
+
+    const unresolvedLoaderViolations = violations.filter(
+      (violation) => violation.kind === "unresolved_loader",
+    );
+    expect(unresolvedLoaderViolations).toEqual(
+      expect.arrayContaining([
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "../tests/missing-loader",
+          resolvedPath: "<unresolved local loader>",
+          kind: "unresolved_loader",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "<non-static require loader argument>",
+          resolvedPath: "<unresolved local loader>",
+          kind: "unresolved_loader",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "<non-static dynamic-import loader argument>",
+          resolvedPath: "<unresolved local loader>",
+          kind: "unresolved_loader",
+        },
+        {
+          fromPath: "src/server/services/loader-matrix.ts",
+          specifier: "<non-static module-require loader argument>",
+          resolvedPath: "<unresolved local loader>",
+          kind: "unresolved_loader",
+        },
+      ]),
+    );
+    expect(unresolvedLoaderViolations).toHaveLength(4);
+    expect(
+      violations.some((violation) =>
+        violation.specifier.includes("some-package"),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps Publication reads tenant-scoped", () => {
     const source = readFileSync(
       path.join(

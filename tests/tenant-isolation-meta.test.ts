@@ -662,6 +662,166 @@ describe("Tenant isolation governance registry", () => {
       operation: "CreatePublicationService.constructor",
       kind: "class_method",
     });
+
+    const defaultInitializerSource = `
+      export class CreatePublicationService {
+        public constructor(
+          private readonly dependencies: Dependencies = defaultDependencies,
+        ) {}
+      }
+    `;
+    expect(
+      discoverOperationsFromSource(
+        implementationPath,
+        defaultInitializerSource,
+      ),
+    ).toContainEqual({
+      implementationPath,
+      operation: "CreatePublicationService.constructor",
+      kind: "class_method",
+    });
+  });
+
+  it("fails closed for executable static initialization blocks, including multiple blocks", () => {
+    const singleBlockSource = `
+      export class StaticBlockService {
+        static {
+          performInitialization();
+        }
+      }
+    `;
+    const multipleBlockSource = `
+      export class StaticBlockService {
+        static { performFirstInitialization(); }
+        static { performSecondInitialization(); }
+      }
+    `;
+
+    for (const [index, sourceText] of [
+      singleBlockSource,
+      multipleBlockSource,
+    ].entries()) {
+      const implementationPath =
+        `src/server/services/static-block-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(unsupported).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description: expect.stringContaining(
+              "exported class StaticBlockService has an executable static initialization block",
+            ),
+          }),
+        ]),
+      );
+    }
+
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/services/static-block-multiple.ts",
+        multipleBlockSource,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("fails closed when exported bindings are passed to mutation or unknown calls", () => {
+    const cases = [
+      "export const holder = {}; Object.assign(holder, { x: makeService() });",
+      `export const holder = {}; Object.defineProperty(holder, "x", {
+         value: makeService(),
+       });`,
+      "export const holder = {}; Reflect.set(holder, \"x\", makeService());",
+      "export const holder = {}; mutate(holder);",
+      "export const holder = {}; mutate({ holder });",
+      "export const holder = []; mutate(holder);",
+    ];
+
+    for (const [index, sourceText] of cases.entries()) {
+      const implementationPath =
+        `src/server/services/esm-exported-binding-escape-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(unsupported).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description: expect.stringContaining(
+              "exported binding(s) holder are passed to a call",
+            ),
+          }),
+        ]),
+      );
+    }
+
+    const existingGovernedPath =
+      "src/application/content/publication-read-resolvers.ts";
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        existingGovernedPath,
+        "export const holder = {}; Object.assign(holder, { x: makeService() });",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          implementationPath: existingGovernedPath,
+          description: expect.stringContaining(
+            "exported binding(s) holder are passed to a call",
+          ),
+        }),
+      ]),
+    );
+  });
+
+  it("accounts for static CommonJS template members and fails closed on computed templates", () => {
+    const directAssignments = [
+      "module[`exports`] = () => true;",
+      "module[`exports`].x = () => true;",
+      "module[`exports`][`x`] = () => true;",
+      "exports[`x`] = () => true;",
+    ];
+
+    for (const [index, sourceText] of directAssignments.entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-template-direct-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length).toBeGreaterThan(0);
+      expect(unsupported).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description:
+              "CommonJS export object reference is not part of a recognised direct export assignment",
+          }),
+        ]),
+      );
+    }
+
+    for (const [index, sourceText] of [
+      "module[`exp${name}`] = () => true;",
+      "module[`exports${name}`].x = () => true;",
+      "exports[`x${name}`] = () => true;",
+    ].entries()) {
+      const implementationPath =
+        `src/server/services/commonjs-template-computed-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(unsupported.length).toBeGreaterThan(0);
+    }
   });
 
   it("does not collapse distinct export names that share one callable binding", () => {

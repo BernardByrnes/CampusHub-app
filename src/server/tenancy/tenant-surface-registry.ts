@@ -70,6 +70,9 @@ export const APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS = [
   "global.health.route",
   "global.health.service",
   "global.database.client",
+  "global.membership-repository.constructor",
+  "global.publication-repository.constructor",
+  "global.tenant-repository.constructor",
   "global.schema.barrel",
   "global.env.reader",
   "global.env.schema",
@@ -94,6 +97,21 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   "global.database.client": {
     category: "infrastructure",
     implementationPath: "src/server/db/client.ts",
+  },
+  "global.membership-repository.constructor": {
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/membership-repository.ts",
+    operation: "DrizzleMembershipRepository.constructor",
+  },
+  "global.publication-repository.constructor": {
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    operation: "DrizzlePublicationRepository.constructor",
+  },
+  "global.tenant-repository.constructor": {
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    operation: "DrizzleTenantRepository.constructor",
   },
   "global.schema.barrel": {
     category: "infrastructure",
@@ -204,6 +222,16 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     implementationPath: "src/server/config/env-schema.ts",
     exportName: "serverEnvSchema",
     expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    exportName: "TENANT_SURFACE_CATEGORIES",
+    expectedAstForm: "ArrayLiteralExpression",
+  },
+  {
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    exportName: "TENANT_SCOPE_CLASSIFICATIONS",
+    expectedAstForm: "ArrayLiteralExpression",
   },
 ] as const;
 
@@ -529,6 +557,39 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Connection infrastructure performs no resource query by itself.",
     requiredNegativeTestIds: [],
     globalExemptionReason: "The connection pool is shared infrastructure; every resource query remains scoped in its repository.",
+  },
+  {
+    id: "global.membership-repository.constructor",
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/membership-repository.ts",
+    surface: "DrizzleMembershipRepository constructor dependency wiring",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
+    operation: "DrizzleMembershipRepository.constructor",
+  },
+  {
+    id: "global.publication-repository.constructor",
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface: "DrizzlePublicationRepository constructor dependency wiring",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
+    operation: "DrizzlePublicationRepository.constructor",
+  },
+  {
+    id: "global.tenant-repository.constructor",
+    category: "infrastructure",
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    surface: "DrizzleTenantRepository constructor dependency wiring",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
+    operation: "DrizzleTenantRepository.constructor",
   },
   {
     id: "global.schema.barrel",

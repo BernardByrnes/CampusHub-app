@@ -70,6 +70,7 @@ export type ProductionImportBoundaryViolation = Readonly<{
   fromPath: string;
   specifier: string;
   resolvedPath: string;
+  kind?: "unresolved_loader";
 }>;
 
 function normalizeRepositoryPath(relativePath: string): string {
@@ -493,6 +494,10 @@ function isReviewedNonOperationalConstructor(
     return false;
   }
 
+  if (constructor.parameters.some((parameter) => parameter.initializer !== undefined)) {
+    return false;
+  }
+
   return REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS.some(
     (contract) =>
       contract.implementationPath === implementationPath &&
@@ -750,11 +755,20 @@ function discoverClassOperations(
     );
   }
 
-  for (const member of classDeclaration.members) {
+  for (const [memberIndex, member] of classDeclaration.members.entries()) {
     if (
       hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
       hasModifier(member, ts.SyntaxKind.ProtectedKeyword)
     ) {
+      continue;
+    }
+
+    if (includeConstructor && ts.isClassStaticBlockDeclaration(member)) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `exported class ${classIdentity} has an executable static initialization block #${memberIndex + 1}`,
+      );
       continue;
     }
 
@@ -962,6 +976,17 @@ function discoverObjectOperations(
   }
 }
 
+function staticStringValue(node: ts.Node | undefined): string | null {
+  if (node === undefined) {
+    return null;
+  }
+
+  const expression = ts.isExpression(node) ? unwrapExpression(node) : node;
+  return ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)
+    ? expression.text
+    : null;
+}
+
 function isModuleExportsExpression(expression: ts.Expression): boolean {
   const unwrapped = unwrapExpression(expression);
   if (ts.isPropertyAccessExpression(unwrapped)) {
@@ -975,8 +1000,7 @@ function isModuleExportsExpression(expression: ts.Expression): boolean {
     return (
       ts.isIdentifier(unwrapped.expression) &&
       unwrapped.expression.text === "module" &&
-      ts.isStringLiteral(unwrapped.argumentExpression) &&
-      unwrapped.argumentExpression.text === "exports"
+      staticStringValue(unwrapped.argumentExpression) === "exports"
     );
   }
   return false;
@@ -1014,7 +1038,11 @@ function commonJsExportTarget(expression: ts.Expression): CommonJsExportTarget {
     }
 
     const argument = unwrapped.argumentExpression;
-    if (ts.isStringLiteral(argument) || ts.isNumericLiteral(argument)) {
+    const staticMemberName = staticStringValue(argument);
+    if (staticMemberName !== null) {
+      return { isExportSurface: true, operation: staticMemberName };
+    }
+    if (ts.isNumericLiteral(argument)) {
       return { isExportSurface: true, operation: argument.text };
     }
     return { isExportSurface: true, operation: null };
@@ -1024,11 +1052,21 @@ function commonJsExportTarget(expression: ts.Expression): CommonJsExportTarget {
 }
 
 function isCommonJsExportObjectReference(node: ts.Node): boolean {
-  if (
-    ts.isPropertyAccessExpression(node) ||
-    ts.isElementAccessExpression(node)
-  ) {
+  if (ts.isPropertyAccessExpression(node)) {
     return isModuleExportsExpression(node);
+  }
+
+  if (ts.isElementAccessExpression(node)) {
+    if (isModuleExportsExpression(node)) {
+      return true;
+    }
+
+    const base = unwrapExpression(node.expression);
+    return (
+      ts.isIdentifier(base) &&
+      base.text === "module" &&
+      staticStringValue(node.argumentExpression) === null
+    );
   }
 
   return ts.isIdentifier(node) && node.text === "exports";
@@ -1074,6 +1112,139 @@ function discoverCommonJsExportSurfaceReferences(
   };
 
   sourceFile.forEachChild(visitReference);
+}
+
+function isRuntimeIdentifierReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+    (ts.isPropertyAssignment(parent) && parent.name === node) ||
+    (ts.isMethodDeclaration(parent) && parent.name === node) ||
+    (ts.isGetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isSetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isParameter(parent) && parent.name === node) ||
+    (ts.isBindingElement(parent) &&
+      (parent.name === node || parent.propertyName === node)) ||
+    ts.isTypeNode(parent)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function containsExportedBindingReference(
+  node: ts.Node,
+  exportedBindings: ExportedBindingNames,
+): string[] {
+  const names = new Set<string>();
+  const visit = (current: ts.Node): void => {
+    if (
+      ts.isIdentifier(current) &&
+      exportedBindings.has(current.text) &&
+      isRuntimeIdentifierReference(current)
+    ) {
+      names.add(current.text);
+    }
+    ts.forEachChild(current, visit);
+  };
+
+  visit(node);
+  return [...names];
+}
+
+function isKnownMutationCall(node: ts.CallExpression): boolean {
+  const callee = unwrapExpression(node.expression);
+  if (!ts.isPropertyAccessExpression(callee)) {
+    return false;
+  }
+
+  const base = unwrapExpression(callee.expression);
+  if (!ts.isIdentifier(base)) {
+    return false;
+  }
+
+  return (
+    (base.text === "Object" &&
+      ["assign", "defineProperty", "defineProperties"].includes(
+        callee.name.text,
+      )) ||
+    (base.text === "Reflect" && callee.name.text === "set")
+  );
+}
+
+function isReviewedOrStaticallyNonCallableBinding(
+  implementationPath: string,
+  localName: string,
+  exportedBindings: ExportedBindingNames,
+  bindings: ReadonlyMap<string, BindingDeclaration>,
+): boolean {
+  const binding = bindings.get(localName);
+  if (
+    binding === undefined ||
+    ts.isClassDeclaration(binding) ||
+    ts.isFunctionDeclaration(binding) ||
+    binding.initializer === undefined
+  ) {
+    return false;
+  }
+
+  return (
+    exportedBindings.get(localName)?.some((exportName) =>
+      isReviewedNonCallableExport(
+        implementationPath,
+        exportName,
+        binding.initializer!,
+      ),
+    ) ?? false
+  );
+}
+
+function discoverExportedBindingCallEscapes(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  exportedBindings: ExportedBindingNames,
+  bindings: ReadonlyMap<string, BindingDeclaration>,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const escapedNames = new Set<string>();
+      const knownMutationCall = isKnownMutationCall(node);
+      for (const argument of node.arguments) {
+        for (const name of containsExportedBindingReference(
+          argument,
+          exportedBindings,
+        )) {
+          if (
+            !knownMutationCall &&
+            isReviewedOrStaticallyNonCallableBinding(
+              implementationPath,
+              name,
+              exportedBindings,
+              bindings,
+            )
+          ) {
+            continue;
+          }
+          escapedNames.add(name);
+        }
+      }
+
+      if (escapedNames.size > 0) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `exported binding(s) ${[...escapedNames].sort().join(", ")} are passed to a call whose mutation effects are not statically proven safe`,
+        );
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  sourceFile.forEachChild(visit);
 }
 
 function collectCommonJsExportedBindingNames(
@@ -1478,6 +1649,13 @@ function analyzeSource(
     ts.forEachChild(node, visitAssignments);
   };
   sourceFile.forEachChild(visitAssignments);
+  discoverExportedBindingCallEscapes(
+    normalizedPath,
+    sourceFile,
+    exportedBindings,
+    bindings,
+    unsupported,
+  );
   discoverCommonJsExportSurfaceReferences(
     normalizedPath,
     sourceFile,
@@ -1743,47 +1921,134 @@ function resolveImportSpecifier(
   return null;
 }
 
+type ModuleSpecifierReference = Readonly<{
+  specifier: string | null;
+  kind:
+    | "import"
+    | "export"
+    | "import-equals"
+    | "import-type"
+    | "dynamic-import"
+    | "require"
+    | "module-require";
+}>;
+
+function isModuleRequireCall(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    const base = unwrapExpression(unwrapped.expression);
+    return (
+      ts.isIdentifier(base) &&
+      base.text === "module" &&
+      unwrapped.name.text === "require"
+    );
+  }
+
+  if (ts.isElementAccessExpression(unwrapped)) {
+    const base = unwrapExpression(unwrapped.expression);
+    return (
+      ts.isIdentifier(base) &&
+      base.text === "module" &&
+      staticStringValue(unwrapped.argumentExpression) === "require"
+    );
+  }
+
+  return false;
+}
+
+function isUnknownModuleMemberCall(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  const base = ts.isElementAccessExpression(unwrapped)
+    ? unwrapExpression(unwrapped.expression)
+    : null;
+  return (
+    ts.isElementAccessExpression(unwrapped) &&
+    base !== null &&
+    ts.isIdentifier(base) &&
+    base.text === "module" &&
+    staticStringValue(unwrapped.argumentExpression) === null
+  );
+}
+
+/**
+ * Keep non-static loader references with a null specifier so they cannot
+ * silently pass the production-to-test boundary check.
+ */
 function collectStaticModuleSpecifiers(
   sourceFile: ts.SourceFile,
-): string[] {
-  const specifiers: string[] = [];
-  const addSpecifier = (expression: ts.Expression | undefined): void => {
-    if (expression !== undefined && ts.isStringLiteral(expression)) {
-      specifiers.push(expression.text);
-    }
+): ModuleSpecifierReference[] {
+  const references: ModuleSpecifierReference[] = [];
+  const addReference = (
+    node: ts.Node | undefined,
+    kind: ModuleSpecifierReference["kind"],
+  ): void => {
+    references.push({ specifier: staticStringValue(node), kind });
   };
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node)) {
-      addSpecifier(node.moduleSpecifier);
+      addReference(node.moduleSpecifier, "import");
     } else if (ts.isExportDeclaration(node)) {
-      addSpecifier(node.moduleSpecifier);
+      if (node.moduleSpecifier !== undefined) {
+        addReference(node.moduleSpecifier, "export");
+      }
     } else if (
       ts.isImportEqualsDeclaration(node) &&
       ts.isExternalModuleReference(node.moduleReference)
     ) {
-      addSpecifier(node.moduleReference.expression);
+      addReference(node.moduleReference.expression, "import-equals");
     } else if (ts.isImportTypeNode(node)) {
       if (ts.isLiteralTypeNode(node.argument)) {
-        addSpecifier(node.argument.literal);
+        addReference(node.argument.literal, "import-type");
       }
     } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        addSpecifier(node.arguments[0]);
+      let kind: ModuleSpecifierReference["kind"] | null = null;
+      const callee = unwrapExpression(node.expression);
+      if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+        kind = "dynamic-import";
+      } else if (ts.isIdentifier(callee) && callee.text === "require") {
+        kind = "require";
       } else if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "require"
+        isModuleRequireCall(callee) ||
+        isUnknownModuleMemberCall(callee)
       ) {
-        addSpecifier(node.arguments[0]);
+        kind = "module-require";
+      }
+
+      if (kind !== null) {
+        addReference(node.arguments[0], kind);
       }
     }
 
     ts.forEachChild(node, visit);
   };
 
-  visit(sourceFile);
-  return [...new Set(specifiers)];
+  sourceFile.forEachChild(visit);
+  return references;
 }
+
+function hasRepositoryLocalSpecifierCandidate(
+  fromPath: string,
+  specifier: string,
+  aliases: readonly LocalPathAlias[],
+): boolean {
+  const candidates = specifier.startsWith("./") || specifier.startsWith("../")
+    ? [
+        path.posix.normalize(
+          path.posix.join(path.posix.dirname(fromPath), specifier),
+        ),
+      ]
+    : aliasCandidates(specifier, aliases);
+  return candidates.some((candidate) => {
+    const extension = path.posix.extname(candidate).toLowerCase();
+    return (
+      isRepositoryRelativePath(candidate) &&
+      ![".css", ".less", ".sass", ".scss", ".styl"].includes(extension)
+    );
+  });
+}
+
+const UNRESOLVED_LOCAL_LOADER_PATH = "<unresolved local loader>";
 
 export function findProductionImportBoundaryViolationsFromSources(
   sourceFiles: readonly SourceFileForImportBoundary[],
@@ -1811,7 +2076,18 @@ export function findProductionImportBoundaryViolationsFromSources(
       true,
       scriptKindForPath(sourceFile.relativePath),
     );
-    for (const specifier of collectStaticModuleSpecifiers(parsed)) {
+    for (const reference of collectStaticModuleSpecifiers(parsed)) {
+      if (reference.specifier === null) {
+        violations.push({
+          fromPath: sourceFile.relativePath,
+          specifier: `<non-static ${reference.kind} loader argument>`,
+          resolvedPath: UNRESOLVED_LOCAL_LOADER_PATH,
+          kind: "unresolved_loader",
+        });
+        continue;
+      }
+
+      const specifier = reference.specifier;
       const resolvedPath = resolveImportSpecifier(
         sourceFile.relativePath,
         specifier,
@@ -1827,6 +2103,20 @@ export function findProductionImportBoundaryViolationsFromSources(
           specifier,
           resolvedPath,
         });
+      } else if (
+        resolvedPath === null &&
+        hasRepositoryLocalSpecifierCandidate(
+          sourceFile.relativePath,
+          specifier,
+          aliases,
+        )
+      ) {
+        violations.push({
+          fromPath: sourceFile.relativePath,
+          specifier,
+          resolvedPath: UNRESOLVED_LOCAL_LOADER_PATH,
+          kind: "unresolved_loader",
+        });
       }
     }
   }
@@ -1834,7 +2124,7 @@ export function findProductionImportBoundaryViolationsFromSources(
   const unique = new Map<string, ProductionImportBoundaryViolation>();
   for (const violation of violations) {
     unique.set(
-      `${violation.fromPath}#${violation.specifier}#${violation.resolvedPath}`,
+      `${violation.fromPath}#${violation.specifier}#${violation.resolvedPath}#${violation.kind ?? "boundary"}`,
       violation,
     );
   }
