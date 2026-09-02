@@ -31,20 +31,35 @@ Statuses mean:
 `tests/tenant-isolation-meta.test.ts` performs structural discovery of Drizzle
 tables, filesystem discovery of every non-test implementation file under the
 complete governed production roots/extensions, TypeScript AST operation
+discovery, the reviewed global allowlist, production import-boundary
 discovery, and recursive migration discovery. It validates:
 
 1. every discovered Tenant-owned model is registered;
 2. every governed implementation path is registered;
-3. every discovered public operation and route handler is registered;
+3. every discovered public operation and route handler is registered across
+   public class methods (including static methods, overload implementations,
+   and callable class fields), exported object methods/properties, direct and
+   aliased route exports, and named/anonymous default classes;
 4. every scoped registry entry has an executable probe ID;
 5. stable registry IDs are unique;
 6. the legal category/scope matrix is enforced;
 7. declared implementation paths exist;
 8. migration history and head match every discovered SQL migration; and
-9. the focused simulation suite fails for missing registry entries, missing
-   probes, duplicate IDs, illegal classifications, missing paths, existing
-   future surfaces, undeclared operations, migration drift, and undeclared
-   discovered models.
+9. every `GLOBAL_NON_TENANT` entry is on the explicit reviewed allowlist and
+   matches its exact category/path/operation contract;
+10. unresolved exported/class/object callable factories fail the gate rather
+    than being silently omitted;
+11. production imports into excluded test/spec/e2e paths fail the gate while
+    test-to-test imports remain allowed; and
+12. the focused simulation suite fails for missing registry entries, missing
+    probes, duplicate IDs, illegal classifications, missing paths, existing
+    future surfaces, undeclared operations, falsely-global Publication/job/
+    route/cache entries, migration drift, and undeclared discovered models.
+
+The import-boundary scan covers static relative and `@/` alias imports,
+re-exports, static dynamic imports, and static `require` calls. It does not
+resolve computed/template imports, generated or runtime-loaded modules, or
+package aliases beyond the reviewed `@/` mapping.
 
 The registry is metadata only. The meta-test does not grant authorization or
 perform a PostgreSQL query.
@@ -111,7 +126,10 @@ PostgreSQL collection evidence remains in
   head `drizzle/0004_right_whizzer.sql`.
 
 These exemptions are limited to infrastructure/liveness/schema metadata and
-do not authorize global resource queries.
+do not authorize global resource queries. The registry validator requires each
+entry to appear in the explicit reviewed allowlist with its exact category,
+implementation path, and operation; a plausible free-form reason cannot
+suppress Tenant probes.
 
 ## Future governed categories
 
@@ -161,8 +179,9 @@ implementation.
 ## Required review decisions
 
 Independent security review must inspect the registry inventory, schema
-discovery assumptions, negative probes, no-RLS decision, global exemptions,
-future obligations, and security-event boundary. Any finding must be remediated
-before A2 can be treated as complete. A4 is separately approved with
+discovery assumptions, callable-form and import-boundary assumptions, negative
+probes, no-RLS decision, global exemptions, future obligations, and
+security-event boundary. Any finding must be remediated before A2 can be
+treated as complete. A4 is separately approved with
 nonblocking future obligations in ADR 0005. B.2.4 remains blocked and must not
 begin from this packet alone.

@@ -62,6 +62,73 @@ export const TENANT_SCOPE_MATRIX = {
   >
 >;
 
+/**
+ * A global classification is a reviewed exception, not a free-form escape
+ * hatch. New global surfaces must be independently reviewed and added here.
+ */
+export const APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS = [
+  "global.health.route",
+  "global.health.service",
+  "global.database.client",
+  "global.schema.barrel",
+  "global.env.reader",
+  "global.env.schema",
+  "global.tenancy.registry",
+  "global.migrations",
+] as const;
+
+export type ApprovedGlobalNonTenantSurfaceId =
+  (typeof APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS)[number];
+
+export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
+  "global.health.route": {
+    category: "route",
+    implementationPath: "src/app/api/health/route.ts",
+    operation: "GET",
+  },
+  "global.health.service": {
+    category: "application_service",
+    implementationPath: "src/application/system/get-health.ts",
+    operation: "getHealth",
+  },
+  "global.database.client": {
+    category: "infrastructure",
+    implementationPath: "src/server/db/client.ts",
+  },
+  "global.schema.barrel": {
+    category: "infrastructure",
+    implementationPath: "src/server/db/schema/index.ts",
+  },
+  "global.env.reader": {
+    category: "infrastructure",
+    implementationPath: "src/server/config/env.ts",
+    operation: "getServerEnv",
+  },
+  "global.env.schema": {
+    category: "infrastructure",
+    implementationPath: "src/server/config/env-schema.ts",
+    operation: "parseServerEnv",
+  },
+  "global.tenancy.registry": {
+    category: "infrastructure",
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    operation: "validateTenantSurfaceRegistry",
+  },
+  "global.migrations": {
+    category: "migration",
+    implementationPath: "drizzle/0004_right_whizzer.sql",
+  },
+} as const satisfies Readonly<
+  Record<
+    ApprovedGlobalNonTenantSurfaceId,
+    Readonly<{
+      category: TenantSurfaceCategory;
+      implementationPath: string;
+      operation?: string;
+    }>
+  >
+>;
+
 export type TenantSurfaceRegistryEntry = Readonly<{
   id: string;
   category: TenantSurfaceCategory;
@@ -83,6 +150,17 @@ export type DiscoveredTenantOperation = Readonly<{
   implementationPath: string;
   operation: string;
   kind: "class_method" | "exported_function" | "route_handler";
+}>;
+
+export type DiscoveredUnsupportedOperationForm = Readonly<{
+  implementationPath: string;
+  description: string;
+}>;
+
+export type ProductionImportBoundaryViolation = Readonly<{
+  fromPath: string;
+  specifier: string;
+  resolvedPath: string;
 }>;
 
 /**
@@ -408,6 +486,8 @@ export type RegistryValidationInput = Readonly<{
   discoveredTenantModels: readonly DiscoveredTenantModel[];
   governedImplementationPaths: readonly string[];
   discoveredOperations: readonly DiscoveredTenantOperation[];
+  discoveredUnsupportedOperationForms: readonly DiscoveredUnsupportedOperationForm[];
+  productionImportBoundaryViolations: readonly ProductionImportBoundaryViolation[];
   discoveredMigrationPaths: readonly string[];
   implementationPathExists: (implementationPath: string) => boolean;
   isolationProbeIds: ReadonlySet<string>;
@@ -519,6 +599,29 @@ function isApprovedTenantRootContract(
       entry.operation === contract.operation &&
       (!("databaseObjectName" in contract) ||
         entry.databaseObjectName === contract.databaseObjectName),
+  );
+}
+
+function isApprovedGlobalNonTenantContract(
+  entry: TenantSurfaceRegistryEntry,
+): boolean {
+  if (
+    !APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS.includes(
+      entry.id as ApprovedGlobalNonTenantSurfaceId,
+    )
+  ) {
+    return false;
+  }
+
+  const contract =
+    APPROVED_GLOBAL_NON_TENANT_CONTRACTS[
+      entry.id as ApprovedGlobalNonTenantSurfaceId
+    ];
+  return (
+    entry.category === contract.category &&
+    entry.implementationPath === contract.implementationPath &&
+    entry.operation ===
+      ("operation" in contract ? contract.operation : undefined)
   );
 }
 
@@ -634,6 +737,19 @@ export function validateTenantSurfaceRegistry(
           `GLOBAL_NON_TENANT entry lacks a specific exemption reason: ${entry.id}`,
         );
       }
+      if (
+        !APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS.includes(
+          entry.id as ApprovedGlobalNonTenantSurfaceId,
+        )
+      ) {
+        errors.push(
+          `GLOBAL_NON_TENANT entry is not on the reviewed allowlist: ${entry.id}`,
+        );
+      } else if (!isApprovedGlobalNonTenantContract(entry)) {
+        errors.push(
+          `GLOBAL_NON_TENANT entry does not match its reviewed contract: ${entry.id}`,
+        );
+      }
       if (entry.requiredNegativeTestIds.length > 0) {
         errors.push(`GLOBAL_NON_TENANT entry has a negative-test obligation: ${entry.id}`);
       }
@@ -664,6 +780,18 @@ export function validateTenantSurfaceRegistry(
     if (!entriesByPath.has(implementationPath)) {
       errors.push(`governed surface is undeclared: ${implementationPath}`);
     }
+  }
+
+  for (const unsupportedForm of input.discoveredUnsupportedOperationForms) {
+    errors.push(
+      `unsupported governed callable form: ${unsupportedForm.implementationPath}: ${unsupportedForm.description}`,
+    );
+  }
+
+  for (const violation of input.productionImportBoundaryViolations) {
+    errors.push(
+      `production import crosses excluded test/spec boundary: ${violation.fromPath} -> ${violation.specifier} (${violation.resolvedPath})`,
+    );
   }
 
   for (const discoveredOperation of input.discoveredOperations) {

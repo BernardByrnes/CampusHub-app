@@ -3,6 +3,11 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  findProductionImportBoundaryViolations,
+  findProductionImportBoundaryViolationsFromSources,
+} from "./tenant-isolation-discovery";
+
 const serverOnlyModules = [
   "src/server/config/env.ts",
   "src/server/context/request-context.ts",
@@ -31,6 +36,77 @@ describe("server-only architecture boundary", () => {
       const source = readFileSync(path.join(process.cwd(), relativePath), "utf8");
       expect(source).toContain('import "server-only"');
     }
+  });
+
+  it("rejects production imports into excluded test/spec paths while permitting test-to-test imports", () => {
+    expect(findProductionImportBoundaryViolations(process.cwd())).toEqual([]);
+
+    const violations = findProductionImportBoundaryViolationsFromSources([
+      {
+        relativePath: "src/server/service.ts",
+        sourceText: `
+          import "./tests/live-tenant-service";
+          import "./fixtures/helper.test-helper";
+          import "@/server/fixtures/helper.spec";
+          import "./jobs/process.e2e";
+          import "./fixtures/allowed";
+        `,
+      },
+      {
+        relativePath: "src/server/tests/live-tenant-service.ts",
+        sourceText: "export const liveTenantService = true;",
+      },
+      {
+        relativePath: "src/server/fixtures/helper.test-helper.ts",
+        sourceText: "export const testHelper = true;",
+      },
+      {
+        relativePath: "src/server/fixtures/helper.spec.ts",
+        sourceText: "export const specHelper = true;",
+      },
+      {
+        relativePath: "src/server/jobs/process.e2e.ts",
+        sourceText: "export const e2eProcess = true;",
+      },
+      {
+        relativePath: "src/server/fixtures/allowed.ts",
+        sourceText: "export const allowed = true;",
+      },
+      {
+        relativePath: "src/server/repositories/repository.test.ts",
+        sourceText: `import "./repository.test-helper";`,
+      },
+      {
+        relativePath: "src/server/repositories/repository.test-helper.ts",
+        sourceText: "export const repositoryTestHelper = true;",
+      },
+    ]);
+
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        {
+          fromPath: "src/server/service.ts",
+          specifier: "./tests/live-tenant-service",
+          resolvedPath: "src/server/tests/live-tenant-service.ts",
+        },
+        {
+          fromPath: "src/server/service.ts",
+          specifier: "./fixtures/helper.test-helper",
+          resolvedPath: "src/server/fixtures/helper.test-helper.ts",
+        },
+        {
+          fromPath: "src/server/service.ts",
+          specifier: "@/server/fixtures/helper.spec",
+          resolvedPath: "src/server/fixtures/helper.spec.ts",
+        },
+        {
+          fromPath: "src/server/service.ts",
+          specifier: "./jobs/process.e2e",
+          resolvedPath: "src/server/jobs/process.e2e.ts",
+        },
+      ]),
+    );
+    expect(violations).toHaveLength(4);
   });
 
   it("keeps Publication reads tenant-scoped", () => {

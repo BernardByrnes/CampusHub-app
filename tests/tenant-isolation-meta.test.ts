@@ -16,9 +16,12 @@ import {
   discoverGovernedImplementationPaths,
   discoverGovernedImplementationPathsFromRelativePaths,
   discoverGovernedOperations,
+  discoverGovernedUnsupportedOperationForms,
   discoverMigrationPaths,
   discoverMigrationPathsFromRelativePaths,
   discoverOperationsFromSource,
+  discoverUnsupportedOperationFormsFromSource,
+  findProductionImportBoundaryViolations,
 } from "./tenant-isolation-discovery";
 import { tenantIsolationProbeRegistry } from "./tenant-isolation-probes";
 
@@ -82,6 +85,13 @@ function currentRegistryValidationInput(): RegistryValidationInput {
       repositoryRoot,
       governedImplementationPaths,
     ),
+    discoveredUnsupportedOperationForms:
+      discoverGovernedUnsupportedOperationForms(
+        repositoryRoot,
+        governedImplementationPaths,
+      ),
+    productionImportBoundaryViolations:
+      findProductionImportBoundaryViolations(repositoryRoot),
     discoveredMigrationPaths: discoverMigrationPaths(repositoryRoot),
     implementationPathExists: (implementationPath) =>
       existsSync(path.join(repositoryRoot, implementationPath)),
@@ -119,6 +129,8 @@ function fixtureInput(
     ],
     governedImplementationPaths: ["src/fixture.ts"],
     discoveredOperations: [],
+    discoveredUnsupportedOperationForms: [],
+    productionImportBoundaryViolations: [],
     discoveredMigrationPaths: [],
     implementationPathExists: () => true,
     isolationProbeIds: new Set(["fixture.probe"]),
@@ -223,6 +235,146 @@ describe("Tenant isolation governance registry", () => {
     );
     expect(errors).toContain(
       "governed surface is undeclared: src/app/api/admin/route.ts",
+    );
+  });
+
+  it("discovers common callable export forms and requires each operation declaration", () => {
+    const fixtures = [
+      {
+        implementationPath: "src/server/services/class-fields.ts",
+        category: "application_service" as const,
+        sourceText: `
+          export class FieldService {
+            public classField = async () => true;
+            public static staticField = () => true;
+            public overloaded(value: string): boolean;
+            public overloaded(value: unknown) { return Boolean(value); }
+            private hidden = () => false;
+          }
+        `,
+      },
+      {
+        implementationPath: "src/server/services/exported-object.ts",
+        category: "application_service" as const,
+        sourceText: `
+          export const service = {
+            create() { return true; },
+            read: () => true,
+          };
+        `,
+      },
+      {
+        implementationPath: "src/app/api/aliases/route.ts",
+        category: "route" as const,
+        sourceText: `
+          const postHandler = () => new Response();
+          function getHandler() { return new Response(); }
+          export { postHandler as POST, getHandler as GET };
+        `,
+      },
+      {
+        implementationPath: "src/server/services/anonymous-default.ts",
+        category: "application_service" as const,
+        sourceText: `
+          export default class {
+            public execute() { return true; }
+          }
+        `,
+      },
+    ];
+
+    for (const [fixtureIndex, fixture] of fixtures.entries()) {
+      const discoveredOperations = discoverOperationsFromSource(
+        fixture.implementationPath,
+        fixture.sourceText,
+      );
+      expect(discoveredOperations.length).toBeGreaterThan(0);
+
+      const registry = discoveredOperations.map((operation, operationIndex) =>
+        fixtureEntry({
+          id: `callable.fixture.${fixtureIndex}.${operationIndex}`,
+          category: fixture.category,
+          implementationPath: fixture.implementationPath,
+          operation: operation.operation,
+          databaseObjectName: undefined,
+        }),
+      );
+      const input = fixtureInput({
+        registry,
+        discoveredTenantModels: [],
+        governedImplementationPaths: [fixture.implementationPath],
+        discoveredOperations,
+        implementationPathExists: () => true,
+      });
+
+      expect(validateTenantSurfaceRegistry(input)).toEqual([]);
+
+      for (const operation of discoveredOperations) {
+        const errors = validateTenantSurfaceRegistry({
+          ...input,
+          registry: registry.filter(
+            (entry) => entry.operation !== operation.operation,
+          ),
+        });
+        expect(errors).toContain(
+          `governed operation is undeclared: ${fixture.implementationPath}#${operation.operation}`,
+        );
+      }
+    }
+
+    expect(
+      discoverOperationsFromSource(
+        "src/server/services/class-fields.ts",
+        fixtures[0].sourceText,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "FieldService.classField" }),
+        expect.objectContaining({ operation: "FieldService.staticField" }),
+        expect.objectContaining({ operation: "FieldService.overloaded" }),
+      ]),
+    );
+    expect(
+      discoverOperationsFromSource(
+        "src/app/api/aliases/route.ts",
+        fixtures[2].sourceText,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "GET", kind: "route_handler" }),
+        expect.objectContaining({ operation: "POST", kind: "route_handler" }),
+      ]),
+    );
+    expect(
+      discoverOperationsFromSource(
+        "src/server/services/anonymous-default.ts",
+        fixtures[3].sourceText,
+      ),
+    ).toContainEqual({
+      implementationPath: "src/server/services/anonymous-default.ts",
+      operation:
+        "default@src/server/services/anonymous-default.ts.execute",
+      kind: "class_method",
+    });
+  });
+
+  it("fails closed on an unresolved exported callable factory form", () => {
+    const implementationPath = "src/server/services/factory-service.ts";
+    const unsupported = discoverUnsupportedOperationFormsFromSource(
+      implementationPath,
+      `export const service = makeService();`,
+    );
+
+    expect(unsupported).toHaveLength(1);
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        discoveredTenantModels: [],
+        governedImplementationPaths: [implementationPath],
+        discoveredUnsupportedOperationForms: unsupported,
+      }),
+    );
+    expect(errors).toContain(
+      "unsupported governed callable form: src/server/services/factory-service.ts: exported service factory call has no statically discoverable callable target",
     );
   });
 
@@ -396,6 +548,81 @@ describe("Tenant isolation governance registry", () => {
 
     expect(errors).toContain(
       "GLOBAL_NON_TENANT entry lacks a specific exemption reason: fixture.model",
+    );
+  });
+
+  it("rejects plausible falsely-global Publication, Job, Route, and Cache entries", () => {
+    const falselyGlobalEntries = [
+      fixtureEntry({
+        id: "publication.create",
+        category: "application_service",
+        implementationPath: "src/application/content/create-publication.ts",
+        surface: "CreatePublicationService.createPublication",
+        tenantScope: "GLOBAL_NON_TENANT",
+        operation: "CreatePublicationService.createPublication",
+        requiredNegativeTestIds: [],
+        globalExemptionReason:
+          "A publication writer is treated as global for a shared process service.",
+      }),
+      fixtureEntry({
+        id: "global.fake.job",
+        category: "job",
+        implementationPath: "src/server/jobs/fake-job.ts",
+        surface: "fake Tenant job",
+        tenantScope: "GLOBAL_NON_TENANT",
+        requiredNegativeTestIds: [],
+        globalExemptionReason:
+          "This scheduled job runs globally and therefore needs no Tenant context.",
+      }),
+      fixtureEntry({
+        id: "global.fake.route",
+        category: "route",
+        implementationPath: "src/app/api/fake/route.ts",
+        surface: "POST /api/fake",
+        tenantScope: "GLOBAL_NON_TENANT",
+        operation: "POST",
+        requiredNegativeTestIds: [],
+        globalExemptionReason:
+          "This route is globally reachable and returns a process-level response.",
+      }),
+      fixtureEntry({
+        id: "global.fake.cache",
+        category: "cache",
+        implementationPath: "src/server/cache/fake-cache.ts",
+        surface: "fake cache",
+        tenantScope: "GLOBAL_NON_TENANT",
+        requiredNegativeTestIds: [],
+        globalExemptionReason:
+          "This cache is shared process infrastructure and is therefore global.",
+      }),
+    ];
+
+    for (const entry of falselyGlobalEntries) {
+      const errors = validateTenantSurfaceRegistry(
+        fixtureInput({ registry: [entry] }),
+      );
+      expect(errors).toContain(
+        `GLOBAL_NON_TENANT entry is not on the reviewed allowlist: ${entry.id}`,
+      );
+    }
+
+    const tamperedReviewedEntry = fixtureEntry({
+      id: "global.health.route",
+      category: "route",
+      implementationPath: "src/app/api/fake/route.ts",
+      surface: "POST /api/fake",
+      tenantScope: "GLOBAL_NON_TENANT",
+      operation: "POST",
+      requiredNegativeTestIds: [],
+      globalExemptionReason:
+        "This route is globally reachable and returns a process-level response.",
+    });
+    expect(
+      validateTenantSurfaceRegistry(
+        fixtureInput({ registry: [tamperedReviewedEntry] }),
+      ),
+    ).toContain(
+      "GLOBAL_NON_TENANT entry does not match its reviewed contract: global.health.route",
     );
   });
 

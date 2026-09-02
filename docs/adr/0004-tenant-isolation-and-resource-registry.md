@@ -150,22 +150,39 @@ The A2 gate includes:
   `.cts`, `.mjs`, and `.cjs`, including complete `src/server/**`,
   `src/application/**`, `src/app/api/**`, and the single-file middleware/proxy
   boundary, with explicit test/spec exclusion;
-- TypeScript AST discovery of public class methods, exported functions, and
-  route handlers, with operation-level registry metadata;
+- TypeScript AST discovery of public class methods (including static methods,
+  overload implementations, and callable class fields), exported functions,
+  exported object methods/properties, direct and aliased route handlers, and
+  named or anonymous default classes, with operation-level registry metadata;
+- an explicit reviewed `GLOBAL_NON_TENANT` allowlist with exact category,
+  implementation-path, and operation contracts; a free-form exemption reason
+  cannot make a Tenant-sensitive surface global;
+- an AST import-boundary check that rejects production imports into excluded
+  test/spec/e2e directories or filenames, including relative, `@/` alias,
+  export, static dynamic-import, and static `require` forms; test-to-test
+  imports remain permitted;
+- a fail-closed unsupported-callable-form check for exported or class/object
+  callable factories that cannot be resolved to a known AST target;
 - recursive discovery and explicit declaration of every `drizzle/**/*.sql`
   migration plus the current migration head;
 - a registry entry for every discovered model, operation, and governed path;
 - an isolation probe for every `TENANT_SCOPED` registry entry;
 - executable simulations for missing entries, missing probes, duplicate IDs,
   invalid category/scope declarations, missing implementation paths, future
-  implementations, undeclared operations, migration drift, and undeclared
+  implementations, undeclared operations across the supported callable forms,
+  unsupported callable factories, falsely-global Publication/job/route/cache
+  entries, production-to-test imports, migration drift, and undeclared
   discovered models;
 - unit, integration, typecheck, lint, build, database-schema check, and
   whitespace checks as reported in the implementation handoff.
 
 The meta-test is intentionally designed to fail CI when a governed surface is
-added without registry metadata or when a Tenant-owned model is added without a
-scope declaration.
+added without registry metadata, when a Tenant-owned model is added without a
+scope declaration, when a new global exception is not reviewed into the
+allowlist, when a callable export cannot be discovered safely, or when
+production imports an excluded test/spec path. The import scan is static: it
+does not claim to resolve computed/template imports, generated modules,
+runtime-loaded modules, or package aliases beyond the reviewed `@/` mapping.
 
 ## R. Registry and meta-test architecture
 
@@ -226,7 +243,7 @@ operations. The reserved categories `jobs`, `exports`, `search`, `cache`,
 
 ## Review boundary and recommendation
 
-The A2.1 remediation is ready to be handed to independent security re-review
+The A2.2 remediation is ready to be handed to independent security re-review
 after the reported quality gates pass. This ADR remains explicitly proposed
 and unapproved; it records no A2 approval. A4 is separately approved with
 nonblocking future obligations in ADR 0005. B.2.4 must not begin until A2 is
