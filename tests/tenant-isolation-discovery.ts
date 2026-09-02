@@ -4,7 +4,9 @@ import path from "node:path";
 import * as ts from "typescript";
 
 import {
+  REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS,
   REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS,
+  REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS,
 } from "@/server/tenancy/tenant-surface-registry";
 
 export const GOVERNED_SOURCE_EXTENSIONS = [
@@ -139,6 +141,7 @@ function collectFilesRecursively(
   relativeDirectory: string,
   predicate: (relativePath: string) => boolean,
   collected: string[],
+  excludedDirectories: ReadonlySet<string> = new Set<string>(),
 ): void {
   const absoluteDirectory = path.join(repositoryRoot, relativeDirectory);
   if (!existsSync(absoluteDirectory)) {
@@ -151,11 +154,15 @@ function collectFilesRecursively(
     );
 
     if (entry.isDirectory()) {
+      if (excludedDirectories.has(entry.name)) {
+        continue;
+      }
       collectFilesRecursively(
         repositoryRoot,
         relativeEntryPath,
         predicate,
         collected,
+        excludedDirectories,
       );
       continue;
     }
@@ -339,6 +346,76 @@ function createTopLevelBindings(
   return bindings;
 }
 
+type ExportedBindingNames = ReadonlyMap<string, readonly string[]>;
+
+function addExportedBindingName(
+  bindings: Map<string, string[]>,
+  localName: string,
+  exportedName: string,
+): void {
+  const names = bindings.get(localName) ?? [];
+  if (!names.includes(exportedName)) {
+    names.push(exportedName);
+    bindings.set(localName, names);
+  }
+}
+
+function collectExportedBindingNames(
+  sourceFile: ts.SourceFile,
+): Map<string, string[]> {
+  const bindings = new Map<string, string[]>();
+
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isVariableStatement(statement) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+    ) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) {
+          addExportedBindingName(
+            bindings,
+            declaration.name.text,
+            declaration.name.text,
+          );
+        }
+      }
+      continue;
+    }
+
+    if (
+      ts.isExportDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      statement.moduleSpecifier === undefined &&
+      statement.exportClause !== undefined &&
+      ts.isNamedExports(statement.exportClause)
+    ) {
+      for (const specifier of statement.exportClause.elements) {
+        if (specifier.isTypeOnly) {
+          continue;
+        }
+        const exportedName = specifier.name.text;
+        const localName = specifier.propertyName?.text ?? exportedName;
+        if (localName !== "default") {
+          addExportedBindingName(bindings, localName, exportedName);
+        }
+      }
+    }
+
+    if (
+      ts.isExportAssignment(statement) &&
+      ts.isIdentifier(statement.expression)
+    ) {
+      addExportedBindingName(
+        bindings,
+        statement.expression.text,
+        "default",
+      );
+    }
+  }
+
+  return bindings;
+}
+
 function resolveBinding(
   name: string,
   bindings: ReadonlyMap<string, BindingDeclaration>,
@@ -387,6 +464,30 @@ function isReviewedNonCallableExport(
       contract.implementationPath === implementationPath &&
       contract.exportName === exportName &&
       contract.expectedAstForm === expectedAstForm,
+  );
+}
+
+function isReviewedNonCallableReExport(
+  implementationPath: string,
+  moduleSpecifier: string,
+  exportForm: string,
+): boolean {
+  return REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS.some(
+    (contract) =>
+      contract.implementationPath === implementationPath &&
+      contract.moduleSpecifier === moduleSpecifier &&
+      contract.exportForm === exportForm,
+  );
+}
+
+function isReviewedNonOperationalConstructor(
+  implementationPath: string,
+  classIdentity: string,
+): boolean {
+  return REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS.some(
+    (contract) =>
+      contract.implementationPath === implementationPath &&
+      contract.classIdentity === classIdentity,
   );
 }
 
@@ -462,10 +563,6 @@ function recordExposedExpression(
   }
 
   if (isCallableExpression(unwrapped)) {
-    if (visitedExpressions.has(unwrapped)) {
-      return;
-    }
-    visitedExpressions.add(unwrapped);
     addOperation(discovered, implementationPath, prefix, "exported_function");
     return;
   }
@@ -474,7 +571,8 @@ function recordExposedExpression(
     if (visitedExpressions.has(unwrapped)) {
       return;
     }
-    visitedExpressions.add(unwrapped);
+    const nextVisitedExpressions = new Set(visitedExpressions);
+    nextVisitedExpressions.add(unwrapped);
     discoverClassOperations(
       implementationPath,
       unwrapped,
@@ -482,7 +580,8 @@ function recordExposedExpression(
       bindings,
       discovered,
       unsupported,
-      visitedExpressions,
+      nextVisitedExpressions,
+      true,
     );
     return;
   }
@@ -504,7 +603,8 @@ function recordExposedExpression(
     if (visitedExpressions.has(unwrapped)) {
       return;
     }
-    visitedExpressions.add(unwrapped);
+    const nextVisitedExpressions = new Set(visitedExpressions);
+    nextVisitedExpressions.add(unwrapped);
     const resolved = resolveBinding(unwrapped.text, bindings);
     if (resolved === undefined) {
       addUnresolvedExposedValue(
@@ -523,7 +623,7 @@ function recordExposedExpression(
       bindings,
       discovered,
       unsupported,
-      visitedExpressions,
+      nextVisitedExpressions,
     );
     return;
   }
@@ -535,7 +635,6 @@ function recordExposedExpression(
   if (visitedExpressions.has(unwrapped)) {
     return;
   }
-  visitedExpressions.add(unwrapped);
   addUnresolvedExposedValue(
     implementationPath,
     prefix,
@@ -572,6 +671,7 @@ function recordResolvedValue(
       discovered,
       unsupported,
       visitedExpressions,
+      true,
     );
     return;
   }
@@ -615,7 +715,28 @@ function discoverClassOperations(
   discovered: DiscoveredTenantOperation[],
   unsupported: DiscoveredUnsupportedOperationForm[],
   visitedExpressions = new Set<ts.Node>(),
+  includeConstructor = false,
 ): void {
+  const constructor = classDeclaration.members.find((member) =>
+    ts.isConstructorDeclaration(member),
+  );
+  const isConstructible =
+    constructor === undefined ||
+    (!hasModifier(constructor, ts.SyntaxKind.PrivateKeyword) &&
+      !hasModifier(constructor, ts.SyntaxKind.ProtectedKeyword));
+  if (
+    includeConstructor &&
+    isConstructible &&
+    !isReviewedNonOperationalConstructor(implementationPath, classIdentity)
+  ) {
+    addOperation(
+      discovered,
+      implementationPath,
+      `${classIdentity}.constructor`,
+      "class_method",
+    );
+  }
+
   for (const member of classDeclaration.members) {
     if (
       hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
@@ -724,7 +845,8 @@ function discoverObjectOperations(
   if (visitedExpressions.has(objectLiteral)) {
     return;
   }
-  visitedExpressions.add(objectLiteral);
+  const nextVisitedExpressions = new Set(visitedExpressions);
+  nextVisitedExpressions.add(objectLiteral);
 
   for (const property of objectLiteral.properties) {
     if (
@@ -769,7 +891,7 @@ function discoverObjectOperations(
           bindings,
           discovered,
           unsupported,
-          visitedExpressions,
+          nextVisitedExpressions,
         );
       }
       continue;
@@ -784,7 +906,7 @@ function discoverObjectOperations(
         bindings,
         discovered,
         unsupported,
-        visitedExpressions,
+        nextVisitedExpressions,
       );
       continue;
     }
@@ -801,7 +923,7 @@ function discoverObjectOperations(
             bindings,
             discovered,
             unsupported,
-            visitedExpressions,
+            nextVisitedExpressions,
           );
           continue;
         }
@@ -814,7 +936,7 @@ function discoverObjectOperations(
           bindings,
           discovered,
           unsupported,
-          visitedExpressions,
+          nextVisitedExpressions,
         );
         continue;
       }
@@ -828,32 +950,200 @@ function discoverObjectOperations(
 }
 
 function isModuleExportsExpression(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    return (
+      ts.isIdentifier(unwrapped.expression) &&
+      unwrapped.expression.text === "module" &&
+      unwrapped.name.text === "exports"
+    );
+  }
+  if (ts.isElementAccessExpression(unwrapped)) {
+    return (
+      ts.isIdentifier(unwrapped.expression) &&
+      unwrapped.expression.text === "module" &&
+      ts.isStringLiteral(unwrapped.argumentExpression) &&
+      unwrapped.argumentExpression.text === "exports"
+    );
+  }
+  return false;
+}
+
+type CommonJsExportTarget = Readonly<{
+  isExportSurface: boolean;
+  operation: string | null;
+}>;
+
+function commonJsExportTarget(expression: ts.Expression): CommonJsExportTarget {
+  const unwrapped = unwrapExpression(expression);
+  if (isModuleExportsExpression(unwrapped)) {
+    return { isExportSurface: true, operation: "default" };
+  }
+
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    const base = unwrapExpression(unwrapped.expression);
+    if (ts.isIdentifier(base) && base.text === "exports") {
+      return { isExportSurface: true, operation: unwrapped.name.text };
+    }
+    if (isModuleExportsExpression(base)) {
+      return { isExportSurface: true, operation: unwrapped.name.text };
+    }
+    return { isExportSurface: false, operation: null };
+  }
+
+  if (ts.isElementAccessExpression(unwrapped)) {
+    const base = unwrapExpression(unwrapped.expression);
+    const isExportsObject =
+      (ts.isIdentifier(base) && base.text === "exports") ||
+      isModuleExportsExpression(base);
+    if (!isExportsObject) {
+      return { isExportSurface: false, operation: null };
+    }
+
+    const argument = unwrapped.argumentExpression;
+    if (ts.isStringLiteral(argument) || ts.isNumericLiteral(argument)) {
+      return { isExportSurface: true, operation: argument.text };
+    }
+    return { isExportSurface: true, operation: null };
+  }
+
+  return { isExportSurface: false, operation: null };
+}
+
+function collectCommonJsExportedBindingNames(
+  sourceFile: ts.SourceFile,
+  bindings: Map<string, string[]>,
+): void {
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      isAssignmentOperator(node.operatorToken.kind) &&
+      commonJsExportTarget(node.left).operation === "default"
+    ) {
+      const right = unwrapExpression(node.right);
+      if (ts.isIdentifier(right)) {
+        addExportedBindingName(bindings, right.text, "default");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  sourceFile.forEachChild(visit);
+}
+
+function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return (
-    ts.isPropertyAccessExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === "module" &&
-    expression.name.text === "exports"
+    kind >= ts.SyntaxKind.FirstAssignment &&
+    kind <= ts.SyntaxKind.LastAssignment
   );
 }
 
-function commonJsExportOperation(
+type ExportedMemberTarget = Readonly<{
+  localName: string;
+  memberName: string | null;
+  computed: boolean;
+}>;
+
+function exportedMemberTarget(
   expression: ts.Expression,
-): string | null {
-  if (!ts.isPropertyAccessExpression(expression)) {
-    return null;
-  }
-  if (
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === "exports"
-  ) {
-    return expression.name.text;
-  }
-  if (ts.isPropertyAccessExpression(expression.expression)) {
-    return isModuleExportsExpression(expression.expression)
-      ? expression.name.text
+): ExportedMemberTarget | null {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    const base = unwrapExpression(unwrapped.expression);
+    return ts.isIdentifier(base)
+      ? {
+          localName: base.text,
+          memberName: unwrapped.name.text,
+          computed: false,
+        }
       : null;
   }
-  return null;
+
+  if (!ts.isElementAccessExpression(unwrapped)) {
+    return null;
+  }
+
+  const base = unwrapExpression(unwrapped.expression);
+  if (!ts.isIdentifier(base)) {
+    return null;
+  }
+
+  const argument = unwrapped.argumentExpression;
+  if (ts.isStringLiteral(argument) || ts.isNumericLiteral(argument)) {
+    return {
+      localName: base.text,
+      memberName: argument.text,
+      computed: false,
+    };
+  }
+
+  return {
+    localName: base.text,
+    memberName: null,
+    computed: true,
+  };
+}
+
+function discoverExportedBindingMutation(
+  implementationPath: string,
+  assignment: ts.BinaryExpression,
+  exportedBindings: ExportedBindingNames,
+  bindings: ReadonlyMap<string, BindingDeclaration>,
+  discovered: DiscoveredTenantOperation[],
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  if (!isAssignmentOperator(assignment.operatorToken.kind)) {
+    return;
+  }
+
+  const left = unwrapExpression(assignment.left);
+  if (ts.isIdentifier(left)) {
+    const exportNames = exportedBindings.get(left.text);
+    if (exportNames === undefined) {
+      return;
+    }
+    for (const exportName of exportNames) {
+      recordExportedValue(
+        implementationPath,
+        exportName,
+        assignment.right,
+        bindings,
+        discovered,
+        unsupported,
+      );
+    }
+    return;
+  }
+
+  const target = exportedMemberTarget(left);
+  if (target === null) {
+    return;
+  }
+
+  const exportNames = exportedBindings.get(target.localName);
+  if (exportNames === undefined) {
+    return;
+  }
+
+  for (const exportName of exportNames) {
+    if (target.computed || target.memberName === null) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `exported object ${exportName} has a computed late mutation that cannot be resolved safely`,
+      );
+      continue;
+    }
+
+    recordExposedExpression(
+      implementationPath,
+      `${exportName}.${target.memberName}`,
+      assignment.right,
+      bindings,
+      discovered,
+      unsupported,
+    );
+  }
 }
 
 function discoverCommonJsAssignment(
@@ -863,21 +1153,36 @@ function discoverCommonJsAssignment(
   discovered: DiscoveredTenantOperation[],
   unsupported: DiscoveredUnsupportedOperationForm[],
 ): void {
-  if (assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+  if (!isAssignmentOperator(assignment.operatorToken.kind)) {
     return;
   }
 
-  const left = unwrapExpression(assignment.left as ts.Expression);
-  const operation = isModuleExportsExpression(left)
-    ? "default"
-    : commonJsExportOperation(left);
-  if (operation === null) {
+  const target = commonJsExportTarget(assignment.left);
+  if (!target.isExportSurface) {
+    return;
+  }
+
+  if (target.operation === null) {
+    addUnsupportedOperationForm(
+      unsupported,
+      implementationPath,
+      "CommonJS export has an unresolved computed member name",
+    );
+    return;
+  }
+
+  if (assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    addUnsupportedOperationForm(
+      unsupported,
+      implementationPath,
+      `CommonJS export ${target.operation} uses a non-simple assignment operator`,
+    );
     return;
   }
 
   recordExportedValue(
     implementationPath,
-    operation,
+    target.operation,
     assignment.right,
     bindings,
     discovered,
@@ -901,6 +1206,8 @@ function analyzeSource(
     scriptKindForPath(normalizedPath),
   );
   const bindings = createTopLevelBindings(sourceFile);
+  const exportedBindings = collectExportedBindingNames(sourceFile);
+  collectCommonJsExportedBindingNames(sourceFile, exportedBindings);
   const discovered: DiscoveredTenantOperation[] = [];
   const unsupported: DiscoveredUnsupportedOperationForm[] = [];
 
@@ -926,6 +1233,8 @@ function analyzeSource(
           bindings,
           discovered,
           unsupported,
+          new Set<ts.Node>(),
+          hasModifier(statement, ts.SyntaxKind.ExportKeyword),
         );
       }
     }
@@ -935,7 +1244,21 @@ function analyzeSource(
       hasModifier(statement, ts.SyntaxKind.ExportKeyword)
     ) {
       for (const declaration of statement.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) {
+        if (!ts.isIdentifier(declaration.name)) {
+          addUnsupportedOperationForm(
+            unsupported,
+            normalizedPath,
+            `exported destructured binding ${declaration.name.getText(sourceFile)} has no complete runtime export resolution`,
+          );
+          continue;
+        }
+
+        if (declaration.initializer === undefined) {
+          addUnsupportedOperationForm(
+            unsupported,
+            normalizedPath,
+            `exported binding ${declaration.name.text} has no initializer that proves its value is non-callable`,
+          );
           continue;
         }
 
@@ -977,8 +1300,39 @@ function analyzeSource(
       }
     }
 
-    if (ts.isExportDeclaration(statement) && statement.exportClause !== undefined) {
-      if (!statement.isTypeOnly && ts.isNamedExports(statement.exportClause)) {
+    if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
+      if (statement.exportClause === undefined) {
+        const moduleSpecifier = statement.moduleSpecifier;
+        if (
+          moduleSpecifier !== undefined &&
+          ts.isStringLiteral(moduleSpecifier) &&
+          isReviewedNonCallableReExport(
+            normalizedPath,
+            moduleSpecifier.text,
+            "ExportAllDeclaration",
+          )
+        ) {
+          continue;
+        }
+
+        addUnsupportedOperationForm(
+          unsupported,
+          normalizedPath,
+          `wildcard re-export ${moduleSpecifier?.getText(sourceFile) ?? "<missing module>"} is not an exact reviewed non-callable re-export`,
+        );
+        continue;
+      }
+
+      if (ts.isNamespaceExport(statement.exportClause)) {
+        addUnsupportedOperationForm(
+          unsupported,
+          normalizedPath,
+          `namespace re-export ${statement.exportClause.name.text} is not an approved runtime export surface`,
+        );
+        continue;
+      }
+
+      if (ts.isNamedExports(statement.exportClause)) {
         for (const specifier of statement.exportClause.elements) {
           if (specifier.isTypeOnly) {
             continue;
@@ -1014,16 +1368,50 @@ function analyzeSource(
       }
     }
 
-    if (ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression)) {
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+    ) {
+      addUnsupportedOperationForm(
+        unsupported,
+        normalizedPath,
+        `exported import-equals binding ${statement.name.text} is not an approved runtime export surface`,
+      );
+    }
+
+    if (
+      (ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement)) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+    ) {
+      addUnsupportedOperationForm(
+        unsupported,
+        normalizedPath,
+        `exported ${ts.isEnumDeclaration(statement) ? "enum" : "namespace/module"} ${statement.name.text} requires explicit runtime export review`,
+      );
+    }
+  }
+
+  const visitAssignments = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       discoverCommonJsAssignment(
         normalizedPath,
-        statement.expression,
+        node,
+        bindings,
+        discovered,
+        unsupported,
+      );
+      discoverExportedBindingMutation(
+        normalizedPath,
+        node,
+        exportedBindings,
         bindings,
         discovered,
         unsupported,
       );
     }
-  }
+    ts.forEachChild(node, visitAssignments);
+  };
+  sourceFile.forEachChild(visitAssignments);
 
   const uniqueOperations = new Map<string, DiscoveredTenantOperation>();
   for (const operation of discovered) {
@@ -1120,35 +1508,126 @@ export function discoverGovernedUnsupportedOperationForms(
 
 function discoverSourcePaths(repositoryRoot: string): string[] {
   const discovered: string[] = [];
+  const excludedDirectories = new Set([
+    ".git",
+    ".next",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "out",
+  ]);
   collectFilesRecursively(
     repositoryRoot,
-    "src",
+    "",
     (relativePath) => hasAllowedSourceExtension(relativePath),
     discovered,
+    excludedDirectories,
   );
   return [...new Set(discovered)].sort();
 }
 
-function resolveImportSpecifier(
-  fromPath: string,
+type LocalPathAlias = Readonly<{
+  pattern: string;
+  targets: readonly string[];
+  baseUrl: string;
+}>;
+
+const DEFAULT_LOCAL_PATH_ALIASES: readonly LocalPathAlias[] = [
+  { pattern: "@/*", targets: ["src/*"], baseUrl: "" },
+];
+
+function loadLocalPathAliases(repositoryRoot: string): LocalPathAlias[] {
+  const configPath = path.join(repositoryRoot, "tsconfig.json");
+  if (!existsSync(configPath)) {
+    return [...DEFAULT_LOCAL_PATH_ALIASES];
+  }
+
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (configFile.error !== undefined) {
+    return [...DEFAULT_LOCAL_PATH_ALIASES];
+  }
+
+  const parsed = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    repositoryRoot,
+  );
+  const configuredPaths = parsed.options.paths ?? {};
+  const baseUrl = parsed.options.baseUrl
+    ? normalizeRepositoryPath(path.relative(repositoryRoot, parsed.options.baseUrl))
+    : "";
+  const aliases: LocalPathAlias[] = Object.entries(configuredPaths).map(
+    ([pattern, targets]) => ({
+      pattern,
+      targets: targets.map((target) => normalizeRepositoryPath(target)),
+      baseUrl,
+    }),
+  );
+
+  for (const defaultAlias of DEFAULT_LOCAL_PATH_ALIASES) {
+    if (!aliases.some((alias) => alias.pattern === defaultAlias.pattern)) {
+      aliases.push(defaultAlias);
+    }
+  }
+  return aliases;
+}
+
+function aliasCandidates(
   specifier: string,
-  knownPaths: ReadonlySet<string>,
-): string | null {
-  let candidate: string;
-  if (specifier.startsWith("@/")) {
-    candidate = `src/${specifier.slice(2)}`;
-  } else if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    candidate = path.posix.normalize(
-      path.posix.join(path.posix.dirname(fromPath), specifier),
-    );
-  } else {
-    return null;
+  aliases: readonly LocalPathAlias[],
+): string[] {
+  const candidates: string[] = [];
+
+  for (const alias of aliases) {
+    const wildcardIndex = alias.pattern.indexOf("*");
+    let replacement: string | null = null;
+    if (wildcardIndex === -1) {
+      if (specifier === alias.pattern) {
+        replacement = "";
+      }
+    } else {
+      const prefix = alias.pattern.slice(0, wildcardIndex);
+      const suffix = alias.pattern.slice(wildcardIndex + 1);
+      if (
+        specifier.startsWith(prefix) &&
+        specifier.endsWith(suffix) &&
+        specifier.length >= prefix.length + suffix.length
+      ) {
+        replacement = specifier.slice(
+          prefix.length,
+          specifier.length - suffix.length,
+        );
+      }
+    }
+
+    if (replacement === null) {
+      continue;
+    }
+
+    for (const target of alias.targets) {
+      candidates.push(
+        path.posix.normalize(
+          path.posix.join(alias.baseUrl, target.replace("*", replacement)),
+        ),
+      );
+    }
   }
 
-  if (candidate.startsWith("../") || candidate === "..") {
-    return null;
-  }
+  return candidates;
+}
 
+function isRepositoryRelativePath(relativePath: string): boolean {
+  const normalized = path.posix.normalize(relativePath);
+  return (
+    normalized !== ".." &&
+    !normalized.startsWith("../") &&
+    !path.posix.isAbsolute(normalized) &&
+    !path.win32.isAbsolute(normalized)
+  );
+}
+
+function sourcePathCandidates(candidate: string): string[] {
   const extension = path.posix.extname(candidate).toLowerCase();
   const candidates = new Set<string>([candidate]);
   const base = GOVERNED_EXTENSION_SET.has(extension)
@@ -1162,11 +1641,32 @@ function resolveImportSpecifier(
     candidates.add(`${base}.ts`);
     candidates.add(`${base}.tsx`);
   }
+  return [...candidates];
+}
 
-  for (const resolved of candidates) {
-    const normalized = normalizeRepositoryPath(resolved);
-    if (knownPaths.has(normalized)) {
-      return normalized;
+function resolveImportSpecifier(
+  fromPath: string,
+  specifier: string,
+  knownPaths: ReadonlySet<string>,
+  aliases: readonly LocalPathAlias[] = DEFAULT_LOCAL_PATH_ALIASES,
+): string | null {
+  const candidates = specifier.startsWith("./") || specifier.startsWith("../")
+    ? [
+        path.posix.normalize(
+          path.posix.join(path.posix.dirname(fromPath), specifier),
+        ),
+      ]
+    : aliasCandidates(specifier, aliases);
+
+  for (const candidate of candidates) {
+    if (!isRepositoryRelativePath(candidate)) {
+      continue;
+    }
+    for (const resolved of sourcePathCandidates(candidate)) {
+      const normalized = normalizeRepositoryPath(resolved);
+      if (isRepositoryRelativePath(normalized) && knownPaths.has(normalized)) {
+        return normalized;
+      }
     }
   }
   return null;
@@ -1187,6 +1687,11 @@ function collectStaticModuleSpecifiers(
       addSpecifier(node.moduleSpecifier);
     } else if (ts.isExportDeclaration(node)) {
       addSpecifier(node.moduleSpecifier);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      addSpecifier(node.moduleReference.expression);
     } else if (ts.isImportTypeNode(node)) {
       if (ts.isLiteralTypeNode(node.argument)) {
         addSpecifier(node.argument.literal);
@@ -1211,6 +1716,7 @@ function collectStaticModuleSpecifiers(
 
 export function findProductionImportBoundaryViolationsFromSources(
   sourceFiles: readonly SourceFileForImportBoundary[],
+  options: Readonly<{ aliases?: readonly LocalPathAlias[] }> = {},
 ): ProductionImportBoundaryViolation[] {
   const normalizedSourceFiles = sourceFiles.map((sourceFile) => ({
     relativePath: normalizeRepositoryPath(sourceFile.relativePath),
@@ -1219,6 +1725,7 @@ export function findProductionImportBoundaryViolationsFromSources(
   const knownPaths = new Set(
     normalizedSourceFiles.map((sourceFile) => sourceFile.relativePath),
   );
+  const aliases = options.aliases ?? DEFAULT_LOCAL_PATH_ALIASES;
   const violations: ProductionImportBoundaryViolation[] = [];
 
   for (const sourceFile of normalizedSourceFiles) {
@@ -1238,6 +1745,7 @@ export function findProductionImportBoundaryViolationsFromSources(
         sourceFile.relativePath,
         specifier,
         knownPaths,
+        aliases,
       );
       if (
         resolvedPath !== null &&
@@ -1273,5 +1781,7 @@ export function findProductionImportBoundaryViolations(
     relativePath,
     sourceText: readFileSync(path.join(repositoryRoot, relativePath), "utf8"),
   }));
-  return findProductionImportBoundaryViolationsFromSources(sourceFiles);
+  return findProductionImportBoundaryViolationsFromSources(sourceFiles, {
+    aliases: loadLocalPathAliases(repositoryRoot),
+  });
 }

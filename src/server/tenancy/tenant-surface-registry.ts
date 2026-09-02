@@ -207,6 +207,67 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   },
 ] as const;
 
+/**
+ * These are exact schema-barrel re-export contracts. A wildcard re-export is
+ * non-callable only because each currently reviewed barrel edge is limited to
+ * the corresponding schema module. A new wildcard or namespace re-export is
+ * therefore still rejected by the AST gate until it is reviewed explicitly.
+ */
+export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./membership",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./publication",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./tenant",
+    exportForm: "ExportAllDeclaration",
+  },
+] as const;
+
+/**
+ * Existing exported service/repository constructors are dependency-injection
+ * construction details rather than independently governed operations. These
+ * exact path/class contracts preserve that reviewed surface while ensuring a
+ * newly exported constructor is discovered as a callable operation.
+ */
+export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
+  {
+    implementationPath: "src/application/context/resolve-request-context.ts",
+    classIdentity: "RequestContextService",
+  },
+  {
+    implementationPath: "src/application/content/create-publication.ts",
+    classIdentity: "CreatePublicationService",
+  },
+  {
+    implementationPath: "src/application/content/list-publications.ts",
+    classIdentity: "ListPublicationsService",
+  },
+  {
+    implementationPath: "src/application/content/read-publication.ts",
+    classIdentity: "ReadPublicationService",
+  },
+  {
+    implementationPath: "src/server/repositories/membership-repository.ts",
+    classIdentity: "DrizzleMembershipRepository",
+  },
+  {
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    classIdentity: "DrizzlePublicationRepository",
+  },
+  {
+    implementationPath: "src/server/repositories/tenant-repository.ts",
+    classIdentity: "DrizzleTenantRepository",
+  },
+] as const;
+
 export type TenantSurfaceRegistryEntry = Readonly<{
   id: string;
   category: TenantSurfaceCategory;

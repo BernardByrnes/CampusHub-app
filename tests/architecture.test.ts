@@ -109,6 +109,118 @@ describe("server-only architecture boundary", () => {
     expect(violations).toHaveLength(4);
   });
 
+  it("resolves repository-root tests and every static local import form fail closed", () => {
+    const violations = findProductionImportBoundaryViolationsFromSources([
+      {
+        relativePath: "src/server/services/example.ts",
+        sourceText: `
+          import "../../../tests/root.test-helper";
+          import "../tests/in-src.test";
+          import "@/server/fixtures/alias.spec";
+          import "../jobs/process.e2e";
+          import helper = require("../../../tests/import-equals.test");
+          const dynamic = import("../../../tests/dynamic.test");
+          const required = require("../../../tests/require.test");
+          export { helper } from "../../../tests/reexport.test";
+          import "../../../../tests/escape.test";
+        `,
+      },
+      {
+        relativePath: "tests/root.test-helper.ts",
+        sourceText: "export const rootHelper = true;",
+      },
+      {
+        relativePath: "src/server/tests/in-src.test.ts",
+        sourceText: "export const inSrcTest = true;",
+      },
+      {
+        relativePath: "src/server/fixtures/alias.spec.ts",
+        sourceText: "export const aliasSpec = true;",
+      },
+      {
+        relativePath: "src/server/jobs/process.e2e.ts",
+        sourceText: "export const e2eProcess = true;",
+      },
+      {
+        relativePath: "tests/import-equals.test.ts",
+        sourceText: "export const importEquals = true;",
+      },
+      {
+        relativePath: "tests/dynamic.test.ts",
+        sourceText: "export const dynamic = true;",
+      },
+      {
+        relativePath: "tests/require.test.ts",
+        sourceText: "export const required = true;",
+      },
+      {
+        relativePath: "tests/reexport.test.ts",
+        sourceText: "export const helper = true;",
+      },
+      {
+        relativePath: "tests/escape.test.ts",
+        sourceText: "export const escape = true;",
+      },
+      {
+        relativePath: "tests/test-to-test.test.ts",
+        sourceText: 'import "./root.test-helper";',
+      },
+    ]);
+
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../../../tests/root.test-helper",
+          resolvedPath: "tests/root.test-helper.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../tests/in-src.test",
+          resolvedPath: "src/server/tests/in-src.test.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "@/server/fixtures/alias.spec",
+          resolvedPath: "src/server/fixtures/alias.spec.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../jobs/process.e2e",
+          resolvedPath: "src/server/jobs/process.e2e.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../../../tests/import-equals.test",
+          resolvedPath: "tests/import-equals.test.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../../../tests/dynamic.test",
+          resolvedPath: "tests/dynamic.test.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../../../tests/require.test",
+          resolvedPath: "tests/require.test.ts",
+        },
+        {
+          fromPath: "src/server/services/example.ts",
+          specifier: "../../../tests/reexport.test",
+          resolvedPath: "tests/reexport.test.ts",
+        },
+      ]),
+    );
+    expect(violations).toHaveLength(8);
+    expect(
+      violations.some(
+        (violation) =>
+          violation.specifier === "../../../../tests/escape.test" ||
+          violation.resolvedPath.startsWith("../"),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps Publication reads tenant-scoped", () => {
     const source = readFileSync(
       path.join(

@@ -422,6 +422,112 @@ describe("Tenant isolation governance registry", () => {
     }
   });
 
+  it("accounts for every mandatory runtime export surface form", () => {
+    const cases = [
+      {
+        implementationPath: "src/server/services/destructured-object.ts",
+        sourceText: "export const { x } = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/destructured-array.ts",
+        sourceText: "export const [x] = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/exported-late-binding.ts",
+        sourceText: "export let x; x = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/named-late-binding.ts",
+        sourceText: "let x; export { x }; x = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/wildcard-reexport.ts",
+        sourceText: 'export * from "./service";',
+      },
+      {
+        implementationPath: "src/server/services/namespace-reexport.ts",
+        sourceText: 'export * as service from "./service";',
+      },
+      {
+        implementationPath: "src/server/services/constructor-only.ts",
+        sourceText: "export class Dangerous { constructor() {} }",
+      },
+      {
+        implementationPath: "src/server/services/object-late-dot.ts",
+        sourceText: "export const holder = {}; holder.x = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/object-late-element.ts",
+        sourceText: 'export const holder = {}; holder["x"] = makeService();',
+      },
+      {
+        implementationPath: "src/server/services/object-late-computed.ts",
+        sourceText: "export const holder = {}; holder[key] = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/commonjs-dot-module.ts",
+        sourceText: "module.exports.x = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/commonjs-element-module.ts",
+        sourceText: 'module.exports["x"] = makeService();',
+      },
+      {
+        implementationPath: "src/server/services/commonjs-dot-exports.ts",
+        sourceText: "exports.x = makeService();",
+      },
+      {
+        implementationPath: "src/server/services/commonjs-element-exports.ts",
+        sourceText: 'exports["x"] = makeService();',
+      },
+      {
+        implementationPath: "src/server/services/commonjs-computed.ts",
+        sourceText: "module.exports[key] = makeService();",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const operations = discoverOperationsFromSource(
+        testCase.implementationPath,
+        testCase.sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        testCase.implementationPath,
+        testCase.sourceText,
+      );
+
+      expect(operations.length + unsupported.length).toBeGreaterThan(0);
+    }
+
+    expect(
+      discoverOperationsFromSource(
+        "src/server/services/constructor-only.ts",
+        "export class Dangerous { constructor() {} }",
+      ),
+    ).toContainEqual({
+      implementationPath: "src/server/services/constructor-only.ts",
+      operation: "Dangerous.constructor",
+      kind: "class_method",
+    });
+  });
+
+  it("does not collapse distinct export names that share one callable binding", () => {
+    const operations = discoverOperationsFromSource(
+      "src/server/services/shared-binding.ts",
+      `
+        const handler = () => true;
+        export { handler as first, handler as second };
+      `,
+    );
+
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "first" }),
+        expect.objectContaining({ operation: "second" }),
+      ]),
+    );
+  });
+
   it("requires an exact reviewed path/name/form for legitimate non-callable factories", () => {
     expect(
       discoverUnsupportedOperationFormsFromSource(
@@ -443,6 +549,27 @@ describe("Tenant isolation governance registry", () => {
     ).not.toEqual([]);
   });
 
+  it("keeps schema wildcard re-exports exact and rejects new wildcard or namespace edges", () => {
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/index.ts",
+        'export * from "./membership";',
+      ),
+    ).toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/index.ts",
+        'export * from "./new-service";',
+      ),
+    ).not.toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/db/schema/index.ts",
+        'export * as service from "./membership";',
+      ),
+    ).not.toEqual([]);
+  });
+
   it("does not let an existing governed file declaration authorize a new callable", () => {
     const implementationPath =
       "src/application/content/publication-read-resolvers.ts";
@@ -456,6 +583,35 @@ describe("Tenant isolation governance registry", () => {
     const unsupported = discoverUnsupportedOperationFormsFromSource(
       implementationPath,
       "export const x = makeService();",
+    );
+    const errors = validateTenantSurfaceRegistry(
+      fixtureInput({
+        registry: [existingEntry],
+        discoveredTenantModels: [],
+        governedImplementationPaths: [implementationPath],
+        discoveredUnsupportedOperationForms: unsupported,
+        isolationProbeIds: new Set(["publication.direct"]),
+      }),
+    );
+
+    expect(errors.some((error) => error.includes("unsupported governed callable form"))).toBe(
+      true,
+    );
+  });
+
+  it("does not let an existing governed file authorize a late exported mutation", () => {
+    const implementationPath =
+      "src/application/content/publication-read-resolvers.ts";
+    const existingEntry = tenantSurfaceRegistry.find(
+      (entry) => entry.id === "publication.authorization.resolvers",
+    );
+    if (existingEntry === undefined) {
+      throw new Error("expected the existing Publication resolver registry entry");
+    }
+
+    const unsupported = discoverUnsupportedOperationFormsFromSource(
+      implementationPath,
+      "export const holder = {}; holder.x = makeService();",
     );
     const errors = validateTenantSurfaceRegistry(
       fixtureInput({
