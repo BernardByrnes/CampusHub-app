@@ -738,6 +738,20 @@ describe("Tenant isolation governance registry", () => {
     });
   });
 
+  it("continues to govern an exported class with an implicit constructor", () => {
+    const implementationPath = "src/application/content/create-publication.ts";
+    const operations = discoverOperationsFromSource(
+      implementationPath,
+      "export class CreatePublicationService {}",
+    );
+
+    expect(operations).toContainEqual({
+      implementationPath,
+      operation: "CreatePublicationService.constructor",
+      kind: "class_method",
+    });
+  });
+
   it("binds all reviewed repository constructors to exact safe shapes", () => {
     const repositories = [
       {
@@ -804,6 +818,40 @@ describe("Tenant isolation governance registry", () => {
           replacement:
             "public constructor(private readonly database: CampusHubDatabase = db, extra: CampusHubDatabase) {}",
         },
+        {
+          name: "protected modifier-only drift",
+          replacement: safeConstructor.replace(
+            "public constructor",
+            "protected constructor",
+          ),
+        },
+        {
+          name: "private modifier-only drift",
+          replacement: safeConstructor.replace(
+            "public constructor",
+            "private constructor",
+          ),
+        },
+        {
+          name: "protected constructor body call",
+          replacement:
+            "protected constructor(private readonly database: CampusHubDatabase = db) { performTenantSensitiveWork(); }",
+        },
+        {
+          name: "private constructor body call",
+          replacement:
+            "private constructor(private readonly database: CampusHubDatabase = db) { performTenantSensitiveWork(); }",
+        },
+        {
+          name: "protected default initializer call",
+          replacement:
+            "protected constructor(private readonly database: CampusHubDatabase = performTenantSensitiveWork()) {}",
+        },
+        {
+          name: "private default initializer call",
+          replacement:
+            "private constructor(private readonly database: CampusHubDatabase = performTenantSensitiveWork()) {}",
+        },
       ];
 
       for (const driftCase of driftCases) {
@@ -812,6 +860,19 @@ describe("Tenant isolation governance registry", () => {
           driftCase.replacement,
         );
         expect(mutatedSource, driftCase.name).not.toBe(sourceText);
+        const mutatedOperations = discoverOperationsFromSource(
+          repository.implementationPath,
+          mutatedSource,
+        );
+        const mutatedUnsupported =
+          discoverUnsupportedOperationFormsFromSource(
+            repository.implementationPath,
+            mutatedSource,
+          );
+        expect(
+          mutatedOperations.length + mutatedUnsupported.length,
+          driftCase.name,
+        ).toBeGreaterThan(0);
         expectFullRegistryValidationFailure(
           { [repository.implementationPath]: mutatedSource },
           repository.implementationPath,

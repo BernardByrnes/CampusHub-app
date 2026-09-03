@@ -1163,10 +1163,6 @@ function discoverClassOperations(
   const constructor = classDeclaration.members.find((member) =>
     ts.isConstructorDeclaration(member),
   );
-  const isConstructible =
-    constructor === undefined ||
-    (!hasModifier(constructor, ts.SyntaxKind.PrivateKeyword) &&
-      !hasModifier(constructor, ts.SyntaxKind.ProtectedKeyword));
 
   if (hasRuntimeDecorators(classDeclaration)) {
     addUnsupportedOperationForm(
@@ -1198,7 +1194,6 @@ function discoverClassOperations(
 
   if (
     includeConstructor &&
-    isConstructible &&
     !isReviewedNonOperationalConstructor(
       implementationPath,
       classDeclaration,
