@@ -57,6 +57,13 @@
       "when": 1788464973726,
       "tag": "0007_optimal_mockingbird",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788470129969,
+      "tag": "0008_loving_dagger",
+      "breakpoints": true
     }
   ]
 }

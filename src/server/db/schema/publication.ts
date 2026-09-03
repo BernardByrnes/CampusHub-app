@@ -81,6 +81,7 @@ export const publications = pgTable(
         onDelete: "restrict",
         onUpdate: "cascade",
       }),
+    version: integer("version").notNull().default(1),
     type: publicationTypeEnum("type").notNull(),
     title: text("title").notNull(),
     body: text("body").notNull(),
@@ -133,6 +134,10 @@ export const publications = pgTable(
     check(
       "publications_title_nonempty",
       sql`char_length(btrim(${table.title})) > 0`,
+    ),
+    check(
+      "publications_version_positive",
+      sql`${table.version} >= 1`,
     ),
     check(
       "publications_body_nonempty",

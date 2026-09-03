@@ -34,6 +34,7 @@ const publicationInput: CreatePublicationInput = {
 const publication: Publication = {
   id: publicationId,
   tenantId: tenantAId,
+  version: 1,
   type: "news",
   title: publicationInput.title,
   body: publicationInput.body,

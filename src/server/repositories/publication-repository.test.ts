@@ -26,6 +26,7 @@ const now = new Date("2026-01-01T00:00:00.000Z");
 const publicationRow: PublicationRow = {
   id: publicationId,
   tenantId,
+  version: 1,
   type: "news",
   title: "Audience test publication",
   body: "Audience test body",
@@ -310,16 +311,18 @@ describe("DrizzlePublicationRepository audience replacement boundary", () => {
       repository.replaceDraftPublicationAudienceForTenant(
         tenantId,
         publicationId,
+        1,
         { tenantId, publicationId, mode: "targeted", groups: [] },
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
     await expect(
       repository.replaceDraftPublicationAudienceForTenant(
         tenantId,
         publicationId,
+        1,
         { tenantId, publicationId, mode: "targeted", groups: [] },
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
     expect(transactionCalls).toBe(0);
   });
 

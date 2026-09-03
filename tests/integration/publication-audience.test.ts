@@ -6,10 +6,22 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
-import type { PublicationAudienceDefinition } from "@/domain/authorization/publication-audience";
+import {
+  evaluatePublicationAudience,
+  type PublicationAudienceDefinition,
+} from "@/domain/authorization/publication-audience";
+import {
+  getPublicationAudienceReadinessForTenant,
+  validatePublicationAudienceConfirmationForTenant,
+} from "@/application/content/publication-audience-readiness";
+import {
+  isMembershipAudienceFacts,
+  type MembershipAudienceFacts,
+} from "@/domain/membership/membership-audience";
 import {
   academicDivisions,
   campuses,
+  memberships,
   programmes,
   publicationAudienceCriteria,
   publications,
@@ -18,6 +30,7 @@ import {
   type AcademicDivisionRow,
   type NewAcademicDivisionRow,
   type NewCampusRow,
+  type NewMembershipRow,
   type NewProgrammeRow,
   type NewResidenceRow,
   type NewTenantAcademicYearConfigRow,
@@ -25,6 +38,7 @@ import {
   type ProgrammeRow,
   type PublicationAudienceCriteriaRow,
   type PublicationRow,
+  type MembershipRow,
   type TenantRow,
 } from "@/server/db/schema";
 import { tenants } from "@/server/db/schema/tenant";
@@ -308,6 +322,70 @@ async function createYearConfig(
   });
 }
 
+async function createMembership(
+  tenantId: string,
+  overrides: Partial<NewMembershipRow> = {},
+): Promise<MembershipRow> {
+  const rows = await getDatabase()
+    .insert(memberships)
+    .values({
+      tenantId,
+      identitySubjectId: nextLabel("identity"),
+      assuranceLevel: "L2",
+      lifecycle: "verified",
+      campusId: null,
+      campusProvenance: null,
+      academicDivisionId: null,
+      academicDivisionProvenance: "optional",
+      programmeId: null,
+      programmeProvenance: "optional",
+      academicYear: null,
+      academicYearProvenance: "optional",
+      residenceState: "unknown",
+      residenceId: null,
+      residenceProvenance: "optional",
+      ...overrides,
+    })
+    .returning();
+  const row = rows[0];
+
+  if (!row) {
+    throw new Error("Membership insert returned no row.");
+  }
+
+  return row;
+}
+
+function toAudienceFacts(row: MembershipRow): MembershipAudienceFacts | null {
+  const candidate = {
+    membershipId: row.id,
+    tenantId: row.tenantId,
+    campus: {
+      value: row.campusId,
+      provenance: row.campusProvenance ?? "optional",
+    },
+    academicDivision: {
+      value: row.academicDivisionId,
+      provenance: row.academicDivisionProvenance,
+    },
+    programme: {
+      value: row.programmeId,
+      provenance: row.programmeProvenance,
+    },
+    academicYear: {
+      value: row.academicYear,
+      provenance: row.academicYearProvenance,
+    },
+    residence: {
+      state: row.residenceState,
+      residenceId: row.residenceId,
+      provenance: row.residenceProvenance,
+    },
+  };
+
+  return isMembershipAudienceFacts(candidate) ? candidate : null;
+}
+
 type CriterionInsert = Omit<
   PublicationAudienceCriteriaRow,
   "id" | "createdAt" | "updatedAt"
@@ -380,6 +458,9 @@ afterAll(async () => {
       await databaseHandle
         .delete(publicationAudienceCriteria)
         .where(inArray(publicationAudienceCriteria.tenantId, tenantIds));
+      await databaseHandle
+        .delete(memberships)
+        .where(inArray(memberships.tenantId, tenantIds));
       await databaseHandle
         .delete(publications)
         .where(inArray(publications.tenantId, tenantIds));
@@ -910,9 +991,10 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenant.id,
         publication.id,
+        1,
         firstDefinition,
       ),
-    ).resolves.toEqual(firstDefinition);
+    ).resolves.toEqual({ ok: true, definition: firstDefinition, version: 2 });
     await expect(
       audienceRepository.findPublicationAudienceDefinitionForTenant(
         tenant.id,
@@ -938,11 +1020,14 @@ describe("real PostgreSQL Publication audience persistence", () => {
         campusIds: [campusB],
       },
     ]);
-    await audienceRepository.replaceDraftPublicationAudienceForTenant(
-      tenant.id,
-      publication.id,
-      secondDefinition,
-    );
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        publication.id,
+        2,
+        secondDefinition,
+      ),
+    ).resolves.toEqual({ ok: true, definition: secondDefinition, version: 3 });
     await expect(
       audienceRepository.findPublicationAudienceDefinitionForTenant(
         tenant.id,
@@ -960,9 +1045,10 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenant.id,
         publication.id,
+        3,
         entireDefinition,
       ),
-    ).resolves.toEqual(entireDefinition);
+    ).resolves.toEqual({ ok: true, definition: entireDefinition, version: 4 });
     await expect(
       audienceRepository.findPublicationAudienceDefinitionForTenant(
         tenant.id,
@@ -984,9 +1070,14 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenant.id,
         scheduled.id,
+        1,
         scheduledDefinition,
       ),
-    ).resolves.toEqual(scheduledDefinition);
+    ).resolves.toEqual({
+      ok: true,
+      definition: scheduledDefinition,
+      version: 2,
+    });
 
     for (const lifecycle of ["published", "expired", "archived"] as const) {
       const publication = await createPublication(tenant.id, "entire_tenant", lifecycle);
@@ -994,6 +1085,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
         audienceRepository.replaceDraftPublicationAudienceForTenant(
           tenant.id,
           publication.id,
+          1,
           {
             tenantId: tenant.id,
             publicationId: publication.id,
@@ -1001,7 +1093,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
             groups: [],
           },
         ),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
     }
   });
 
@@ -1017,6 +1109,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenantA.id,
         publicationB.id,
+        1,
         targetedDefinition(tenantA.id, publicationB.id, [
           {
             dimension: "campus",
@@ -1025,11 +1118,12 @@ describe("real PostgreSQL Publication audience persistence", () => {
           },
         ]),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
     await expect(
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenantA.id,
         publicationA.id,
+        1,
         targetedDefinition(tenantB.id, publicationA.id, [
           {
             dimension: "campus",
@@ -1038,19 +1132,21 @@ describe("real PostgreSQL Publication audience persistence", () => {
           },
         ]),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
     await expect(
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenantA.id,
         publicationA.id,
+        1,
         { tenantId: tenantA.id, publicationId: publicationA.id, mode: "targeted", groups: [] },
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
 
     await expect(
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenantA.id,
         publicationA.id,
+        1,
         targetedDefinition(tenantA.id, publicationA.id, [
           {
             dimension: "academic_year",
@@ -1059,13 +1155,14 @@ describe("real PostgreSQL Publication audience persistence", () => {
           },
         ]),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
     await createYearConfig(tenantA.id, { minimumYear: 2020, maximumYear: 2024 });
     for (const year of [2019, 2025]) {
       await expect(
         audienceRepository.replaceDraftPublicationAudienceForTenant(
           tenantA.id,
           publicationA.id,
+          1,
           targetedDefinition(tenantA.id, publicationA.id, [
             {
               dimension: "academic_year",
@@ -1074,7 +1171,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
             },
           ]),
         ),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
     }
 
     const inactiveCampus = await createCampus(tenantA.id, { status: "inactive" });
@@ -1082,6 +1179,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenantA.id,
         publicationA.id,
+        1,
         targetedDefinition(tenantA.id, publicationA.id, [
           {
             dimension: "campus",
@@ -1090,7 +1188,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
           },
         ]),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
   });
 
   it("rejects merged hierarchy targets and accepts a configured active year", async () => {
@@ -1108,6 +1206,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenant.id,
         publication.id,
+        1,
         targetedDefinition(tenant.id, publication.id, [
           {
             dimension: "academic_division",
@@ -1116,7 +1215,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
           },
         ]),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
 
     const validDefinition = targetedDefinition(tenant.id, publication.id, [
       {
@@ -1129,9 +1228,10 @@ describe("real PostgreSQL Publication audience persistence", () => {
       audienceRepository.replaceDraftPublicationAudienceForTenant(
         tenant.id,
         publication.id,
+        1,
         validDefinition,
       ),
-    ).resolves.toEqual(validDefinition);
+    ).resolves.toEqual({ ok: true, definition: validDefinition, version: 2 });
   });
 
   it("rolls back mode and old criteria when criterion insertion fails", async () => {
@@ -1149,6 +1249,7 @@ describe("real PostgreSQL Publication audience persistence", () => {
     await audienceRepository.replaceDraftPublicationAudienceForTenant(
       tenant.id,
       publication.id,
+      1,
       previousDefinition,
     );
 
@@ -1157,7 +1258,10 @@ describe("real PostgreSQL Publication audience persistence", () => {
         await getDatabase().transaction(async (transaction) => {
           await transaction
             .update(publications)
-            .set({ audienceMode: "entire_tenant" })
+            .set({
+              audienceMode: "entire_tenant",
+              version: sql`${publications.version} + 1`,
+            })
             .where(
               and(
                 eq(publications.tenantId, tenant.id),
@@ -1190,7 +1294,10 @@ describe("real PostgreSQL Publication audience persistence", () => {
       ),
     ).resolves.toEqual(previousDefinition);
     const persistedMode = await getDatabase()
-      .select({ audienceMode: publications.audienceMode })
+      .select({
+        audienceMode: publications.audienceMode,
+        version: publications.version,
+      })
       .from(publications)
       .where(
         and(
@@ -1200,5 +1307,659 @@ describe("real PostgreSQL Publication audience persistence", () => {
       )
       .limit(1);
     expect(persistedMode[0]?.audienceMode).toBe("targeted");
+    expect(persistedMode[0]?.version).toBe(2);
+  });
+
+  it("uses Publication versions for stale audience writes and immutable states", async () => {
+    const tenant = await createTenant();
+    const campus = await createCampus(tenant.id);
+    const publication = await createPublication(tenant.id);
+    await createYearConfig(tenant.id);
+    const definition = targetedDefinition(tenant.id, publication.id, [
+      {
+        dimension: "campus",
+        provenancePolicy: "authoritative_only",
+        campusIds: [campus],
+      },
+    ]);
+
+    expect(publication.version).toBe(1);
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        publication.id,
+        1,
+        definition,
+      ),
+    ).resolves.toEqual({ ok: true, definition, version: 2 });
+
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        publication.id,
+        1,
+        {
+          tenantId: tenant.id,
+          publicationId: publication.id,
+          mode: "entire_tenant",
+          groups: [],
+        },
+      ),
+    ).resolves.toEqual({ ok: false, error: "VERSION_CONFLICT" });
+    await expect(
+      audienceRepository.findPublicationAudienceDefinitionForTenant(
+        tenant.id,
+        publication.id,
+      ),
+    ).resolves.toEqual(definition);
+
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        publication.id,
+        2,
+        { tenantId: tenant.id, publicationId: publication.id, mode: "targeted", groups: [] },
+      ),
+    ).resolves.toEqual({ ok: false, error: "INVALID_AUDIENCE" });
+    const unchanged = await getDatabase()
+      .select({ version: publications.version })
+      .from(publications)
+      .where(
+        and(
+          eq(publications.tenantId, tenant.id),
+          eq(publications.id, publication.id),
+        ),
+      )
+      .limit(1);
+    expect(unchanged[0]?.version).toBe(2);
+
+    const versionConstraint = await getDatabase().execute(sql`
+      select constraint_name
+      from information_schema.check_constraints
+      where constraint_schema = 'public'
+        and constraint_name = 'publications_version_positive'
+    `);
+    expect(versionConstraint.rows.map((row) => row.constraint_name)).toEqual([
+      "publications_version_positive",
+    ]);
+    await expectPostgresCode(
+      () =>
+        getDatabase().transaction(async (transaction) => {
+          await transaction
+            .update(publications)
+            .set({ version: 0 })
+            .where(
+              and(
+                eq(publications.tenantId, tenant.id),
+                eq(publications.id, publication.id),
+              ),
+            );
+        }),
+      "23514",
+    );
+    const afterConstraintFailure = await getDatabase()
+      .select({ version: publications.version })
+      .from(publications)
+      .where(eq(publications.id, publication.id))
+      .limit(1);
+    expect(afterConstraintFailure[0]?.version).toBe(2);
+
+    const immutable = await createPublication(tenant.id, "entire_tenant", "published");
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        immutable.id,
+        1,
+        {
+          tenantId: tenant.id,
+          publicationId: immutable.id,
+          mode: "entire_tenant",
+          groups: [],
+        },
+      ),
+    ).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
+    const immutableVersion = await getDatabase()
+      .select({ version: publications.version })
+      .from(publications)
+      .where(eq(publications.id, immutable.id))
+      .limit(1);
+    expect(immutableVersion[0]?.version).toBe(1);
+  });
+
+  it("counts complete Membership audience facts with evaluator-equivalent SQL", async () => {
+    const tenantA = await createTenant();
+    const tenantB = await createTenant();
+    await createYearConfig(tenantA.id, { minimumYear: 1, maximumYear: 4 });
+    const campusA = await createCampus(tenantA.id);
+    const campusB = await createCampus(tenantA.id);
+    const emptyCampus = await createCampus(tenantA.id);
+    const division = await createDivision(tenantA.id);
+    const programmeX = await createProgramme(tenantA.id, division.id);
+    const programmeY = await createProgramme(tenantA.id, division.id);
+    const residenceA = await createResidence(tenantA.id);
+    const residenceB = await createResidence(tenantA.id);
+
+    const memberA = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "institution_verified",
+      programmeId: programmeX.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "roster_derived",
+      residenceState: "resident",
+      residenceId: residenceA,
+      residenceProvenance: "institution_verified",
+    });
+    const memberB = await createMembership(tenantA.id, {
+      campusId: campusB,
+      campusProvenance: "institution_verified",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "institution_verified",
+      programmeId: programmeY.id,
+      programmeProvenance: "institution_verified",
+      academicYear: 3,
+      academicYearProvenance: "institution_verified",
+      residenceState: "non_resident",
+      residenceProvenance: "roster_derived",
+    });
+    const selfDeclared = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "self_declared",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "self_declared",
+      programmeId: programmeX.id,
+      programmeProvenance: "self_declared",
+      academicYear: 2,
+      academicYearProvenance: "self_declared",
+      residenceState: "resident",
+      residenceId: residenceB,
+      residenceProvenance: "self_declared",
+    });
+    const unknownResidence = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programmeX.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "roster_derived",
+      residenceState: "unknown",
+      residenceId: null,
+      residenceProvenance: "optional",
+    });
+    const missingCampus = await createMembership(tenantA.id, {
+      campusId: null,
+      campusProvenance: null,
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programmeX.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "roster_derived",
+    });
+    await createMembership(tenantB.id);
+    const fixtureRows = [
+      memberA,
+      memberB,
+      selfDeclared,
+      unknownResidence,
+      missingCampus,
+    ];
+
+    const countAudience = async (
+      groups: PublicationAudienceDefinition["groups"],
+    ): Promise<number> => {
+      const publication = await createPublication(tenantA.id, "targeted");
+      const definition = targetedDefinition(tenantA.id, publication.id, groups);
+      await expect(
+        audienceRepository.replaceDraftPublicationAudienceForTenant(
+          tenantA.id,
+          publication.id,
+          1,
+          definition,
+        ),
+      ).resolves.toMatchObject({ ok: true, version: 2 });
+      const count = await audienceRepository.countPublicationAudienceMembershipsForTenant(
+        tenantA.id,
+        publication.id,
+      );
+      expect(typeof count).toBe("number");
+      return count ?? -1;
+    };
+
+    const entire = await createPublication(tenantA.id);
+    expect(
+      await audienceRepository.countPublicationAudienceMembershipsForTenant(
+        tenantA.id,
+        entire.id,
+      ),
+    ).toBe(5);
+
+    const campusAuthoritative = [
+      {
+        dimension: "campus" as const,
+        provenancePolicy: "authoritative_only" as const,
+        campusIds: [campusA],
+      },
+    ];
+    const campusAllowSelf = [
+      {
+        dimension: "campus" as const,
+        provenancePolicy: "allow_self_declared" as const,
+        campusIds: [campusA],
+      },
+    ];
+    const dimensionCases: Array<{
+      groups: PublicationAudienceDefinition["groups"];
+      expected: number;
+    }> = [
+      { groups: campusAuthoritative, expected: 2 },
+      { groups: campusAllowSelf, expected: 3 },
+      {
+        groups: [
+          {
+            dimension: "campus",
+            provenancePolicy: "authoritative_only",
+            campusIds: [campusA, campusB],
+          },
+        ],
+        expected: 3,
+      },
+      {
+        groups: [
+          ...campusAuthoritative,
+          {
+            dimension: "programme",
+            provenancePolicy: "authoritative_only",
+            programmeIds: [programmeX.id],
+          },
+        ],
+        expected: 2,
+      },
+      {
+        groups: [
+          {
+            dimension: "programme",
+            provenancePolicy: "authoritative_only",
+            programmeIds: [programmeX.id, programmeY.id],
+          },
+        ],
+        expected: 3,
+      },
+      {
+        groups: [
+          {
+            dimension: "academic_division",
+            provenancePolicy: "authoritative_only",
+            academicDivisionIds: [division.id],
+          },
+        ],
+        expected: 3,
+      },
+      {
+        groups: [
+          {
+            dimension: "academic_division",
+            provenancePolicy: "allow_self_declared",
+            academicDivisionIds: [division.id],
+          },
+        ],
+        expected: 4,
+      },
+      {
+        groups: [
+          {
+            dimension: "academic_year",
+            provenancePolicy: "authoritative_only",
+            academicYears: [2],
+          },
+        ],
+        expected: 2,
+      },
+      {
+        groups: [
+          {
+            dimension: "academic_year",
+            provenancePolicy: "allow_self_declared",
+            academicYears: [2],
+          },
+        ],
+        expected: 3,
+      },
+      {
+        groups: [
+          {
+            dimension: "programme",
+            provenancePolicy: "allow_self_declared",
+            programmeIds: [programmeX.id],
+          },
+        ],
+        expected: 3,
+      },
+      {
+        groups: [
+          {
+            dimension: "residence",
+            provenancePolicy: "authoritative_only",
+            residenceTargets: [{ kind: "specific_residence", residenceId: residenceA }],
+          },
+        ],
+        expected: 1,
+      },
+      {
+        groups: [
+          {
+            dimension: "residence",
+            provenancePolicy: "authoritative_only",
+            residenceTargets: [{ kind: "any_resident" }],
+          },
+        ],
+        expected: 1,
+      },
+      {
+        groups: [
+          {
+            dimension: "residence",
+            provenancePolicy: "allow_self_declared",
+            residenceTargets: [{ kind: "any_resident" }],
+          },
+        ],
+        expected: 2,
+      },
+      {
+        groups: [
+          {
+            dimension: "residence",
+            provenancePolicy: "authoritative_only",
+            residenceTargets: [{ kind: "non_resident" }],
+          },
+        ],
+        expected: 1,
+      },
+      {
+        groups: [
+          {
+            dimension: "residence",
+            provenancePolicy: "allow_self_declared",
+            residenceTargets: [{ kind: "specific_residence", residenceId: residenceB }],
+          },
+        ],
+        expected: 1,
+      },
+      {
+        groups: [
+          {
+            dimension: "campus",
+            provenancePolicy: "authoritative_only",
+            campusIds: [emptyCampus],
+          },
+        ],
+        expected: 0,
+      },
+    ];
+
+    for (const testCase of dimensionCases) {
+      const publication = await createPublication(tenantA.id, "targeted");
+      const definition = targetedDefinition(tenantA.id, publication.id, testCase.groups);
+      const result = await audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenantA.id,
+        publication.id,
+        1,
+        definition,
+      );
+      expect(result).toMatchObject({ ok: true });
+      const sqlCount = await audienceRepository.countPublicationAudienceMembershipsForTenant(
+        tenantA.id,
+        publication.id,
+      );
+      expect(sqlCount).toBe(testCase.expected);
+
+      const evaluatorCount = fixtureRows.filter((row) =>
+        evaluatePublicationAudience(
+          definition,
+          toAudienceFacts(row),
+        ).eligible,
+      ).length;
+      expect(sqlCount).toBe(evaluatorCount);
+    }
+
+    const allowSelfResidence = await countAudience([
+      {
+        dimension: "residence",
+        provenancePolicy: "allow_self_declared",
+        residenceTargets: [{ kind: "specific_residence", residenceId: residenceB }],
+      },
+    ]);
+    expect(allowSelfResidence).toBe(1);
+  }, 120_000);
+
+  it("returns readiness only for valid current definitions and targets", async () => {
+    const tenantA = await createTenant();
+    const tenantB = await createTenant();
+    await createYearConfig(tenantA.id, { minimumYear: 2020, maximumYear: 2030 });
+    const activeCampus = await createCampus(tenantA.id);
+    const inactiveCampus = await createCampus(tenantA.id, { status: "inactive" });
+    const activeDivision = await createDivision(tenantA.id);
+    const mergedDivision = await createDivision(tenantA.id, {
+      status: "merged",
+      mergedIntoAcademicDivisionId: activeDivision.id,
+      mergedEffectiveAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const activeProgramme = await createProgramme(tenantA.id, activeDivision.id);
+    const inactiveProgramme = await createProgramme(tenantA.id, activeDivision.id, {
+      status: "inactive",
+    });
+    const mergedProgramme = await createProgramme(tenantA.id, activeDivision.id, {
+      status: "merged",
+      mergedIntoProgrammeId: activeProgramme.id,
+      mergedEffectiveAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const inactiveResidence = await createResidence(tenantA.id, { status: "inactive" });
+
+    const entire = await createPublication(tenantA.id);
+    await createMembership(tenantA.id, { campusId: activeCampus, campusProvenance: "roster_derived" });
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenantA.id,
+        entire.id,
+      ),
+    ).resolves.toMatchObject({
+      publicationVersion: 1,
+      audienceMode: "entire_tenant",
+      estimatedRecipientCount: 1,
+      audienceDefinitionValid: true,
+      targetsCurrentlyValid: true,
+      requiresAudienceSizeConfirmation: true,
+    });
+
+    const validTargeted = await createPublication(tenantA.id, "targeted");
+    const validDefinition = targetedDefinition(tenantA.id, validTargeted.id, [
+      {
+        dimension: "campus",
+        provenancePolicy: "authoritative_only",
+        campusIds: [activeCampus],
+      },
+    ]);
+    await expect(
+      audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenantA.id,
+        validTargeted.id,
+        1,
+        validDefinition,
+      ),
+    ).resolves.toMatchObject({ ok: true, version: 2 });
+    const validReadiness = await getPublicationAudienceReadinessForTenant(
+      { publications: audienceRepository },
+      tenantA.id,
+      validTargeted.id,
+    );
+    expect(validReadiness).toMatchObject({
+      publicationVersion: 2,
+      audienceDefinitionValid: true,
+      targetsCurrentlyValid: true,
+      estimatedRecipientCount: 1,
+    });
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenantA.id,
+        validTargeted.id,
+      ),
+    ).resolves.toEqual(validReadiness);
+
+    const noCriteria = await createPublication(tenantA.id, "targeted");
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenantA.id,
+        noCriteria.id,
+      ),
+    ).resolves.toMatchObject({
+      audienceDefinitionValid: false,
+      targetsCurrentlyValid: false,
+      estimatedRecipientCount: null,
+      requiresAudienceSizeConfirmation: false,
+    });
+
+    const invalidPersistedCases: Array<{
+      criterion: CriterionInsert;
+    }> = [
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "campus",
+          campusId: inactiveCampus,
+          academicYear: null,
+        },
+      },
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "academic_division",
+          academicDivisionId: mergedDivision.id,
+          academicYear: null,
+        },
+      },
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "programme",
+          programmeId: inactiveProgramme.id,
+          academicYear: null,
+        },
+      },
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "programme",
+          programmeId: mergedProgramme.id,
+          academicYear: null,
+        },
+      },
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "residence",
+          residenceTarget: "specific_residence",
+          residenceId: inactiveResidence,
+          academicYear: null,
+        },
+      },
+      {
+        criterion: {
+          ...baseCriterion(tenantA.id, "placeholder"),
+          dimension: "academic_year",
+          academicYear: 2040,
+        },
+      },
+    ];
+
+    for (const { criterion } of invalidPersistedCases) {
+      const publication = await createPublication(tenantA.id, "targeted");
+      await insertCriterion({ ...criterion, publicationId: publication.id });
+      await expect(
+        getPublicationAudienceReadinessForTenant(
+          { publications: audienceRepository },
+          tenantA.id,
+          publication.id,
+        ),
+      ).resolves.toMatchObject({
+        audienceDefinitionValid: true,
+        targetsCurrentlyValid: false,
+        estimatedRecipientCount: null,
+      });
+    }
+
+    const conflicting = await createPublication(tenantA.id, "targeted");
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, conflicting.id),
+      dimension: "campus",
+      campusId: activeCampus,
+      academicYear: null,
+    });
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, conflicting.id),
+      dimension: "campus",
+      provenancePolicy: "allow_self_declared",
+      campusId: inactiveCampus,
+      academicYear: null,
+    });
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenantA.id,
+        conflicting.id,
+      ),
+    ).resolves.toMatchObject({
+      audienceDefinitionValid: false,
+      targetsCurrentlyValid: false,
+      estimatedRecipientCount: null,
+    });
+
+    const foreign = await createPublication(tenantB.id);
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenantA.id,
+        foreign.id,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("revalidates audience confirmations against current version and count", async () => {
+    const tenant = await createTenant();
+    const publication = await createPublication(tenant.id);
+    const dependencies = { publications: audienceRepository };
+
+    await expect(
+      validatePublicationAudienceConfirmationForTenant(
+        dependencies,
+        tenant.id,
+        publication.id,
+        { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      validatePublicationAudienceConfirmationForTenant(
+        dependencies,
+        tenant.id,
+        publication.id,
+        { expectedPublicationVersion: 2, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toEqual({ ok: false, error: "VERSION_CONFLICT" });
+
+    await createMembership(tenant.id);
+    await expect(
+      validatePublicationAudienceConfirmationForTenant(
+        dependencies,
+        tenant.id,
+        publication.id,
+        { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toEqual({ ok: false, error: "RECONFIRM_REQUIRED" });
   });
 });

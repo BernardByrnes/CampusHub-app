@@ -1,0 +1,2 @@
+ALTER TABLE "publications" ADD COLUMN "version" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "publications" ADD CONSTRAINT "publications_version_positive" CHECK ("publications"."version" >= 1);

@@ -55,6 +55,7 @@ function publication(
   return {
     id,
     tenantId: tenantAlphaId,
+    version: 1,
     type: "news",
     title: `Publication ${id}`,
     body: "Publication body",

@@ -12,6 +12,7 @@ import {
   lt,
   lte,
   or,
+  sql,
 } from "drizzle-orm";
 
 import {
@@ -53,6 +54,7 @@ import {
   type PublicationRow,
   type PublicationAudienceCriteriaRow,
 } from "@/server/db/schema/publication";
+import { memberships } from "@/server/db/schema/membership";
 import {
   academicDivisions,
   campuses,
@@ -73,6 +75,21 @@ export type CreatePublicationInput = Readonly<{
   publishAt?: Date | null;
   expiresAt?: Date | null;
 }>;
+
+export type PublicationAudienceMutationResult =
+  | Readonly<{
+      ok: true;
+      definition: PublicationAudienceDefinition;
+      version: number;
+    }>
+  | Readonly<{
+      ok: false;
+      error:
+        | "NOT_FOUND"
+        | "VERSION_CONFLICT"
+        | "INVALID_STATE"
+        | "INVALID_AUDIENCE";
+    }>;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -105,6 +122,7 @@ function toPublication(row: PublicationRow): Publication | null {
   const candidate = {
     id: row.id,
     tenantId: row.tenantId,
+    version: row.version,
     type,
     title: row.title,
     body: row.body,
@@ -625,6 +643,133 @@ async function validateAudienceTargets(
   return true;
 }
 
+const EVIDENCED_PROVENANCES = [
+  "institution_verified",
+  "roster_derived",
+  "self_declared",
+] as const;
+
+const AUTHORITATIVE_PROVENANCES = [
+  "institution_verified",
+  "roster_derived",
+] as const;
+
+function permittedProvenancePredicate(
+  column:
+    | typeof memberships.campusProvenance
+    | typeof memberships.academicDivisionProvenance
+    | typeof memberships.programmeProvenance
+    | typeof memberships.academicYearProvenance
+    | typeof memberships.residenceProvenance,
+  policy: PublicationAudienceGroup["provenancePolicy"],
+) {
+  return inArray(
+    column,
+    policy === "authoritative_only"
+      ? AUTHORITATIVE_PROVENANCES
+      : EVIDENCED_PROVENANCES,
+  );
+}
+
+function buildTargetedMembershipPredicate(
+  definition: PublicationAudienceDefinition,
+) {
+  if (definition.mode !== "targeted") {
+    return null;
+  }
+
+  const predicates = [
+    eq(memberships.tenantId, definition.tenantId),
+    isNotNull(memberships.campusId),
+    inArray(memberships.campusProvenance, EVIDENCED_PROVENANCES),
+  ];
+
+  for (const group of definition.groups) {
+    const groupPredicates = (() => {
+      switch (group.dimension) {
+        case "campus":
+          return [
+            and(
+              inArray(memberships.campusId, [...group.campusIds]),
+              permittedProvenancePredicate(
+                memberships.campusProvenance,
+                group.provenancePolicy,
+              ),
+            ),
+          ];
+        case "academic_division":
+          return [
+            and(
+              inArray(memberships.academicDivisionId, [
+                ...group.academicDivisionIds,
+              ]),
+              permittedProvenancePredicate(
+                memberships.academicDivisionProvenance,
+                group.provenancePolicy,
+              ),
+            ),
+          ];
+        case "programme":
+          return [
+            and(
+              inArray(memberships.programmeId, [...group.programmeIds]),
+              permittedProvenancePredicate(
+                memberships.programmeProvenance,
+                group.provenancePolicy,
+              ),
+            ),
+          ];
+        case "academic_year":
+          return [
+            and(
+              inArray(memberships.academicYear, [...group.academicYears]),
+              permittedProvenancePredicate(
+                memberships.academicYearProvenance,
+                group.provenancePolicy,
+              ),
+            ),
+          ];
+        case "residence":
+          return group.residenceTargets.map((target) => {
+            const provenance = permittedProvenancePredicate(
+              memberships.residenceProvenance,
+              group.provenancePolicy,
+            );
+            switch (target.kind) {
+              case "specific_residence":
+                return and(
+                  eq(memberships.residenceState, "resident"),
+                  eq(memberships.residenceId, target.residenceId),
+                  provenance,
+                );
+              case "any_resident":
+                return and(
+                  eq(memberships.residenceState, "resident"),
+                  provenance,
+                );
+              case "non_resident":
+                return and(
+                  eq(memberships.residenceState, "non_resident"),
+                  provenance,
+                );
+            }
+          });
+      }
+    })();
+    const groupPredicate = or(...groupPredicates);
+    if (groupPredicate === undefined) {
+      return null;
+    }
+    predicates.push(groupPredicate);
+  }
+
+  return and(...predicates);
+}
+
+function isPositivePublicationVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
 export class DrizzlePublicationRepository {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
@@ -767,16 +912,23 @@ export class DrizzlePublicationRepository {
   public async replaceDraftPublicationAudienceForTenant(
     tenantId: string,
     publicationId: string,
+    expectedVersion: number,
     definition: unknown,
-  ): Promise<PublicationAudienceDefinition | null> {
+  ): Promise<PublicationAudienceMutationResult> {
     if (
       !isUuid(tenantId) ||
-      !isUuid(publicationId) ||
+      !isUuid(publicationId)
+    ) {
+      return { ok: false, error: "NOT_FOUND" };
+    }
+
+    if (
+      !isPositivePublicationVersion(expectedVersion) ||
       !isPublicationAudienceDefinition(definition) ||
       definition.tenantId !== tenantId ||
       definition.publicationId !== publicationId
     ) {
-      return null;
+      return { ok: false, error: "INVALID_AUDIENCE" };
     }
 
     try {
@@ -796,19 +948,26 @@ export class DrizzlePublicationRepository {
           ? toPublication(lockedRows[0])
           : null;
 
+        if (publication === null) {
+          return { ok: false, error: "NOT_FOUND" };
+        }
+
+        if (publication.version !== expectedVersion) {
+          return { ok: false, error: "VERSION_CONFLICT" };
+        }
+
         if (
-          publication === null ||
-          (publication.lifecycle !== "draft" &&
-            publication.lifecycle !== "scheduled")
+          publication.lifecycle !== "draft" &&
+          publication.lifecycle !== "scheduled"
         ) {
-          return null;
+          return { ok: false, error: "INVALID_STATE" };
         }
 
         if (
           definition.mode === "targeted" &&
           !(await validateAudienceTargets(transaction, definition))
         ) {
-          return null;
+          return { ok: false, error: "INVALID_AUDIENCE" };
         }
 
         const criteriaRows =
@@ -818,7 +977,11 @@ export class DrizzlePublicationRepository {
 
         await transaction
           .update(publications)
-          .set({ audienceMode: definition.mode, updatedAt: new Date() })
+          .set({
+            audienceMode: definition.mode,
+            version: sql`${publications.version} + 1`,
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(publications.tenantId, tenantId),
@@ -841,8 +1004,78 @@ export class DrizzlePublicationRepository {
             .values(criteriaRows);
         }
 
-        return definition;
+        return {
+          ok: true,
+          definition,
+          version: publication.version + 1,
+        };
       });
+    } catch {
+      return { ok: false, error: "INVALID_AUDIENCE" };
+    }
+  }
+
+  public async arePublicationAudienceTargetsCurrentlyValidForTenant(
+    tenantId: string,
+    definition: unknown,
+  ): Promise<boolean> {
+    if (
+      !isUuid(tenantId) ||
+      !isPublicationAudienceDefinition(definition) ||
+      definition.tenantId !== tenantId
+    ) {
+      return false;
+    }
+
+    if (definition.mode === "entire_tenant") {
+      return true;
+    }
+
+    try {
+      return await validateAudienceTargets(this.database, definition);
+    } catch {
+      return false;
+    }
+  }
+
+  public async countPublicationAudienceMembershipsForTenant(
+    tenantId: string,
+    publicationId: string,
+  ): Promise<number | null> {
+    if (!isUuid(tenantId) || !isUuid(publicationId)) {
+      return null;
+    }
+
+    const definition =
+      await this.findPublicationAudienceDefinitionForTenant(
+        tenantId,
+        publicationId,
+      );
+    if (definition === null) {
+      return null;
+    }
+
+    const scope =
+      definition.mode === "entire_tenant"
+        ? eq(memberships.tenantId, tenantId)
+        : buildTargetedMembershipPredicate(definition);
+    if (scope === null || scope === undefined) {
+      return null;
+    }
+
+    try {
+      const rows = await this.database
+        .select({ count: sql<number>`count(*)::int` })
+        .from(memberships)
+        .where(scope);
+      const rawCount = rows[0]?.count;
+      const count =
+        typeof rawCount === "number"
+          ? rawCount
+          : typeof rawCount === "string" && /^\d+$/.test(rawCount)
+            ? Number(rawCount)
+            : NaN;
+      return Number.isSafeInteger(count) && count >= 0 ? count : null;
     } catch {
       return null;
     }

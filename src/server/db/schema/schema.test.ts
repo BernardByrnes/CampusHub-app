@@ -136,6 +136,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(publicationConfig.foreignKeys[0]?.onUpdate).toBe("cascade");
     expect(publicationConfig.checks.map((check) => check.name)).toEqual([
       "publications_title_nonempty",
+      "publications_version_positive",
       "publications_body_nonempty",
       "publications_author_office_label_nonempty",
     ]);

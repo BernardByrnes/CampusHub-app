@@ -32,6 +32,7 @@ export type PublicationAudienceMode =
 export type Publication = Readonly<{
   id: string;
   tenantId: string;
+  version: number;
   type: PublicationType;
   title: string;
   body: string;
@@ -100,6 +101,9 @@ export function isPublication(value: unknown): value is Publication {
   return (
     isNonEmptyString(candidate.id) &&
     isNonEmptyString(candidate.tenantId) &&
+    typeof candidate.version === "number" &&
+    Number.isInteger(candidate.version) &&
+    candidate.version >= 1 &&
     parsePublicationType(candidate.type) !== null &&
     isNonEmptyString(candidate.title) &&
     isNonEmptyString(candidate.body) &&

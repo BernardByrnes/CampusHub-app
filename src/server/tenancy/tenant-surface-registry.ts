@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0007_optimal_mockingbird.sql",
+    implementationPath: "drizzle/0008_loving_dagger.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -766,6 +766,54 @@ export const tenantSurfaceRegistry = [
       "DrizzlePublicationRepository.replaceDraftPublicationAudienceForTenant",
   },
   {
+    id: "publication.repository.audience-target-validity",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.arePublicationAudienceTargetsCurrentlyValidForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Current hierarchy and academic-year configuration are checked through the same Tenant-bound canonical audience definition.",
+    requiredNegativeTestIds: ["publication.audience-target-validity"],
+    operation:
+      "DrizzlePublicationRepository.arePublicationAudienceTargetsCurrentlyValidForTenant",
+  },
+  {
+    id: "publication.repository.audience-count",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.countPublicationAudienceMembershipsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The scalar aggregate is constrained by the Tenant-bound Publication definition and Membership tenant_id; no identity fields are selected.",
+    requiredNegativeTestIds: ["publication.audience-count"],
+    operation:
+      "DrizzlePublicationRepository.countPublicationAudienceMembershipsForTenant",
+  },
+  {
+    id: "publication.audience-readiness",
+    category: "application_service",
+    implementationPath: "src/application/content/publication-audience-readiness.ts",
+    surface: "getPublicationAudienceReadinessForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Readiness is calculated only from a Tenant-bound Publication, canonical audience definition, current target validity, and scalar Membership count.",
+    requiredNegativeTestIds: ["publication.audience-readiness"],
+    operation: "getPublicationAudienceReadinessForTenant",
+  },
+  {
+    id: "publication.audience-confirmation",
+    category: "application_service",
+    implementationPath: "src/application/content/publication-audience-readiness.ts",
+    surface: "validatePublicationAudienceConfirmationForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Confirmation re-reads current readiness and accepts only the expected version and exact scalar estimate.",
+    requiredNegativeTestIds: ["publication.audience-confirmation"],
+    operation: "validatePublicationAudienceConfirmationForTenant",
+  },
+  {
     id: "publication.direct-read",
     category: "application_service",
     implementationPath: "src/application/content/read-publication.ts",
@@ -873,8 +921,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0007_optimal_mockingbird.sql",
-    surface: "Reviewed Drizzle migration history through 0007",
+    implementationPath: "drizzle/0008_loving_dagger.sql",
+    surface: "Reviewed Drizzle migration history through 0008",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -888,8 +936,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0005_nostalgic_prima.sql",
       "drizzle/0006_unknown_psylocke.sql",
       "drizzle/0007_optimal_mockingbird.sql",
+      "drizzle/0008_loving_dagger.sql",
     ],
-    migrationHead: "drizzle/0007_optimal_mockingbird.sql",
+    migrationHead: "drizzle/0008_loving_dagger.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

@@ -10,6 +10,10 @@ import type { Publication } from "@/domain/content/publication";
 import { CreatePublicationService } from "@/application/content/create-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
+import {
+  getPublicationAudienceReadinessForTenant,
+  validatePublicationAudienceConfirmationForTenant,
+} from "@/application/content/publication-audience-readiness";
 import { RequestContextService } from "@/application/context/resolve-request-context";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { CampusHubDatabase } from "@/server/db/client";
@@ -72,6 +76,7 @@ const anonymousViewerA: ResourceReadViewer = {
 const publicationA: Publication = {
   id: publicationId,
   tenantId: tenantAId,
+  version: 1,
   type: "news",
   title: "Tenant A publication",
   body: "Tenant A body",
@@ -413,16 +418,18 @@ async function publicationAudienceReplacementProbe(): Promise<void> {
     repository.replaceDraftPublicationAudienceForTenant(
       "banana",
       publicationId,
+      1,
       definition,
     ),
-  ).resolves.toBeNull();
+  ).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
   await expect(
     repository.replaceDraftPublicationAudienceForTenant(
       tenantAId,
       "banana",
+      1,
       definition,
     ),
-  ).resolves.toBeNull();
+  ).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
 
   const emptyTransactionDatabase = {
     transaction: async (
@@ -445,9 +452,163 @@ async function publicationAudienceReplacementProbe(): Promise<void> {
     foreignPublicationRepository.replaceDraftPublicationAudienceForTenant(
       tenantAId,
       foreignPublicationId,
+      1,
       { ...definition, publicationId: foreignPublicationId },
     ),
+  ).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+}
+
+async function publicationAudienceTargetValidityProbe(): Promise<void> {
+  const repository = new DrizzlePublicationRepository(
+    publicationAudienceNoSqlDatabase(),
+  );
+  const entireDefinition = {
+    tenantId: tenantAId,
+    publicationId,
+    mode: "entire_tenant" as const,
+    groups: [],
+  };
+
+  await expect(
+    repository.arePublicationAudienceTargetsCurrentlyValidForTenant(
+      tenantAId,
+      entireDefinition,
+    ),
+  ).resolves.toBe(true);
+  await expect(
+    repository.arePublicationAudienceTargetsCurrentlyValidForTenant(
+      tenantBId,
+      entireDefinition,
+    ),
+  ).resolves.toBe(false);
+  await expect(
+    repository.arePublicationAudienceTargetsCurrentlyValidForTenant(
+      tenantAId,
+      "banana",
+    ),
+  ).resolves.toBe(false);
+}
+
+async function publicationAudienceCountProbe(): Promise<void> {
+  let selectCalls = 0;
+  const emptyDatabase = {
+    select: () => {
+      selectCalls += 1;
+      return {
+        from: () => ({
+          where: () => ({ limit: async () => [] }),
+        }),
+      };
+    },
+  } as unknown as CampusHubDatabase;
+  const repository = new DrizzlePublicationRepository(emptyDatabase);
+
+  await expect(
+    repository.countPublicationAudienceMembershipsForTenant(
+      "banana",
+      publicationId,
+    ),
   ).resolves.toBeNull();
+  await expect(
+    repository.countPublicationAudienceMembershipsForTenant(
+      tenantAId,
+      "banana",
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.countPublicationAudienceMembershipsForTenant(
+      tenantAId,
+      foreignPublicationId,
+    ),
+  ).resolves.toBeNull();
+  expect(selectCalls).toBe(1);
+}
+
+async function publicationAudienceReadinessProbe(): Promise<void> {
+  const calls: string[] = [];
+  const dependencies = {
+    publications: {
+      findPublicationByIdForTenant: async (tenantId: string, id: string) => {
+        calls.push(`publication:${tenantId}:${id}`);
+        return id === publicationId && tenantId === tenantAId ? publicationA : null;
+      },
+      findPublicationAudienceDefinitionForTenant: async () => {
+        calls.push("definition");
+        return null;
+      },
+      arePublicationAudienceTargetsCurrentlyValidForTenant: async () => {
+        calls.push("targets");
+        return true;
+      },
+      countPublicationAudienceMembershipsForTenant: async () => {
+        calls.push("count");
+        return 1;
+      },
+    },
+  };
+
+  await expect(
+    getPublicationAudienceReadinessForTenant(
+      dependencies,
+      tenantAId,
+      foreignPublicationId,
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    getPublicationAudienceReadinessForTenant(
+      dependencies,
+      tenantAId,
+      publicationId,
+    ),
+  ).resolves.toMatchObject({
+    audienceDefinitionValid: false,
+    targetsCurrentlyValid: false,
+    estimatedRecipientCount: null,
+  });
+  expect(calls).toEqual([
+    `publication:${tenantAId}:${foreignPublicationId}`,
+    `publication:${tenantAId}:${publicationId}`,
+    "definition",
+  ]);
+}
+
+async function publicationAudienceConfirmationProbe(): Promise<void> {
+  const definition = {
+    tenantId: tenantAId,
+    publicationId,
+    mode: "entire_tenant" as const,
+    groups: [],
+  };
+  const dependencies = {
+    publications: {
+      findPublicationByIdForTenant: async (tenantId: string, id: string) =>
+        tenantId === tenantAId && id === publicationId ? publicationA : null,
+      findPublicationAudienceDefinitionForTenant: async () => definition,
+      arePublicationAudienceTargetsCurrentlyValidForTenant: async () => true,
+      countPublicationAudienceMembershipsForTenant: async () => 2,
+    },
+  };
+
+  await expect(
+    validatePublicationAudienceConfirmationForTenant(
+      dependencies,
+      tenantBId,
+      publicationId,
+      { expectedPublicationVersion: 1, confirmedRecipientCount: 2 },
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    validatePublicationAudienceConfirmationForTenant(
+      dependencies,
+      tenantAId,
+      publicationId,
+      {
+        expectedPublicationVersion: 1,
+        confirmedRecipientCount: 2,
+        identitySubjectIds: ["must-not-be-accepted"],
+      },
+    ),
+  ).resolves.toEqual({ ok: false, error: "RECONFIRM_REQUIRED" });
 }
 
 async function publicationDirectProbe(): Promise<void> {
@@ -631,4 +792,8 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.create": publicationCreateProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-replacement": publicationAudienceReplacementProbe,
+  "publication.audience-target-validity": publicationAudienceTargetValidityProbe,
+  "publication.audience-count": publicationAudienceCountProbe,
+  "publication.audience-readiness": publicationAudienceReadinessProbe,
+  "publication.audience-confirmation": publicationAudienceConfirmationProbe,
 };

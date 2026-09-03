@@ -18,6 +18,7 @@ import {
 const basePublication: Publication = {
   id: "publication-alpha-a",
   tenantId: "tenant-alpha",
+  version: 1,
   type: "news",
   title: "Campus update",
   body: "The campus update body.",
@@ -80,6 +81,8 @@ describe("Publication domain", () => {
   it("fails closed for malformed required fields and timestamps", () => {
     expect(isPublication({ ...basePublication, id: "" })).toBe(false);
     expect(isPublication({ ...basePublication, tenantId: " " })).toBe(false);
+    expect(isPublication({ ...basePublication, version: 0 })).toBe(false);
+    expect(isPublication({ ...basePublication, version: 1.5 })).toBe(false);
     expect(isPublication({ ...basePublication, title: "   " })).toBe(false);
     expect(isPublication({ ...basePublication, body: "" })).toBe(false);
     expect(isPublication({ ...basePublication, priority: "urgent" })).toBe(

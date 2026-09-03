@@ -14,6 +14,7 @@ const tenantId = "00000000-0000-4000-8000-000000000001";
 const basePublication: Publication = {
   id: "00000000-0000-4000-8000-000000000011",
   tenantId,
+  version: 1,
   type: "news",
   title: "Campus update",
   body: "The campus update body.",

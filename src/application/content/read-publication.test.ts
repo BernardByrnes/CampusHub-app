@@ -22,6 +22,7 @@ const missingPublicationId = "00000000-0000-4000-8000-000000000099";
 const publication: Publication = {
   id: publicationAlphaId,
   tenantId: tenantAlphaId,
+  version: 1,
   type: "news",
   title: "Campus update",
   body: "The campus update body.",
