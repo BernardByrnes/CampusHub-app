@@ -2,15 +2,21 @@ import "server-only";
 
 import { isUuid } from "@/domain/identifiers/uuid";
 
-export const PROFILE_FIELD_PROVENANCES = [
-  "institution_verified",
-  "roster_derived",
-  "self_declared",
-  "optional",
-] as const;
+import {
+  MEMBERSHIP_RESIDENCE_STATES,
+  PROFILE_FIELD_PROVENANCES,
+  type MembershipResidenceState,
+  type ProfileFieldProvenance,
+} from "./membership-audience-vocabulary";
 
-export type ProfileFieldProvenance =
-  (typeof PROFILE_FIELD_PROVENANCES)[number];
+export {
+  MEMBERSHIP_RESIDENCE_STATES,
+  PROFILE_FIELD_PROVENANCES,
+} from "./membership-audience-vocabulary";
+export type {
+  MembershipResidenceState,
+  ProfileFieldProvenance,
+} from "./membership-audience-vocabulary";
 
 export type EvidencedProfileFieldProvenance = Exclude<
   ProfileFieldProvenance,
@@ -43,20 +49,20 @@ export type MembershipAudienceAttribute<T> = Readonly<{
   provenance: ProfileFieldProvenance;
 }>;
 
-export const MEMBERSHIP_RESIDENCE_STATES = [
-  "unknown",
-  "non_resident",
-  "resident",
-] as const;
-
-export type MembershipResidenceState =
-  (typeof MEMBERSHIP_RESIDENCE_STATES)[number];
-
 export type MembershipResidenceAudienceFact = Readonly<{
   state: MembershipResidenceState;
   residenceId: string | null;
   provenance: ProfileFieldProvenance;
 }>;
+
+export function parseMembershipResidenceState(
+  value: unknown,
+): MembershipResidenceState | null {
+  return typeof value === "string" &&
+    (MEMBERSHIP_RESIDENCE_STATES as readonly string[]).includes(value)
+    ? (value as MembershipResidenceState)
+    : null;
+}
 
 /**
  * Trusted, server-resolved facts used by the Publication audience evaluator.

@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0005_nostalgic_prima.sql",
+    implementationPath: "drizzle/0006_unknown_psylocke.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -208,6 +208,16 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/membership.ts",
     exportName: "membershipLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/membership.ts",
+    exportName: "profileFieldProvenanceEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/membership.ts",
+    exportName: "membershipResidenceStateEnum",
     expectedAstForm: "CallExpression",
   },
   {
@@ -506,7 +516,7 @@ export const tenantSurfaceRegistry = [
     implementationPath: "src/server/db/schema/membership.ts",
     surface: "memberships",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Required tenant_id ownership with a foreign key to tenants.id.",
+    isolationStrategy: "Required tenant_id ownership plus same-Tenant affiliation foreign keys and provenance/state checks.",
     requiredNegativeTestIds: ["membership.persistence"],
     databaseObjectName: "memberships",
     operation: "table:memberships",
@@ -633,6 +643,19 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "SQL requires tenant_id and Membership id; foreign or malformed IDs return null.",
     requiredNegativeTestIds: ["membership.id-tenant"],
     operation: "DrizzleMembershipRepository.findMembershipByIdForTenant",
+  },
+  {
+    id: "membership.repository.audience-facts",
+    category: "repository",
+    implementationPath: "src/server/repositories/membership-repository.ts",
+    surface:
+      "DrizzleMembershipRepository.findMembershipAudienceFactsByIdForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "SQL requires the explicit Tenant and Membership identifiers; incomplete or invalid affiliation facts fail closed through the canonical runtime guard.",
+    requiredNegativeTestIds: ["membership.audience-facts"],
+    operation:
+      "DrizzleMembershipRepository.findMembershipAudienceFactsByIdForTenant",
   },
   {
     id: "publication.persistence",
@@ -792,8 +815,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0005_nostalgic_prima.sql",
-    surface: "Reviewed Drizzle migration history through 0005",
+    implementationPath: "drizzle/0006_unknown_psylocke.sql",
+    surface: "Reviewed Drizzle migration history through 0006",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -805,8 +828,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0003_skinny_boom_boom.sql",
       "drizzle/0004_right_whizzer.sql",
       "drizzle/0005_nostalgic_prima.sql",
+      "drizzle/0006_unknown_psylocke.sql",
     ],
-    migrationHead: "drizzle/0005_nostalgic_prima.sql",
+    migrationHead: "drizzle/0006_unknown_psylocke.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

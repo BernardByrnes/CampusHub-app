@@ -197,6 +197,11 @@ export const programmes = pgTable(
       table.tenantId,
       table.id,
     ),
+    unique("programmes_tenant_id_id_division_unique").on(
+      table.tenantId,
+      table.id,
+      table.academicDivisionId,
+    ),
     index("programmes_tenant_division").on(
       table.tenantId,
       table.academicDivisionId,

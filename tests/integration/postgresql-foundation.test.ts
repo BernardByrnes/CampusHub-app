@@ -722,7 +722,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(6);
+    ).toBe(7);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {

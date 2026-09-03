@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   membershipAssuranceLevelEnum,
   membershipLifecycleEnum,
+  membershipResidenceStateEnum,
   memberships,
   academicDivisionLifecycleEnum,
   academicDivisions,
@@ -14,6 +15,7 @@ import {
   publicationTypeEnum,
   publicationVisibilityEnum,
   publications,
+  profileFieldProvenanceEnum,
   programmeLifecycleEnum,
   programmes,
   residenceLifecycleEnum,
@@ -81,6 +83,17 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "merged",
     ]);
     expect(residenceLifecycleEnum.enumValues).toEqual(["active", "inactive"]);
+    expect(profileFieldProvenanceEnum.enumValues).toEqual([
+      "institution_verified",
+      "roster_derived",
+      "self_declared",
+      "optional",
+    ]);
+    expect(membershipResidenceStateEnum.enumValues).toEqual([
+      "unknown",
+      "non_resident",
+      "resident",
+    ]);
   });
 
   it("declares tenant ownership and justified tenant-first indexes", () => {
@@ -95,6 +108,25 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "memberships_tenant_identity_unique",
     );
     expect(membershipConfig.foreignKeys[0]?.onDelete).toBe("restrict");
+    expect(membershipConfig.foreignKeys).toHaveLength(5);
+    expect(
+      membershipConfig.foreignKeys.map((foreignKey) => {
+        const reference = foreignKey.reference();
+        return `${reference.columns.map((column) => column.name).join(",")} -> ${reference.foreignColumns.map((column) => column.name).join(",")}`;
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "tenant_id -> id",
+        "tenant_id,campus_id -> tenant_id,id",
+        "tenant_id,academic_division_id -> tenant_id,id",
+        "tenant_id,programme_id,academic_division_id -> tenant_id,id,academic_division_id",
+        "tenant_id,residence_id -> tenant_id,id",
+      ]),
+    );
+    for (const foreignKey of membershipConfig.foreignKeys) {
+      expect(foreignKey.onDelete).toBe("restrict");
+      expect(foreignKey.onUpdate).toBe("cascade");
+    }
     expect(publicationConfig.indexes.map((index) => index.config.name)).toEqual([
       "publications_tenant_id_id",
       "publications_tenant_lifecycle",
@@ -153,6 +185,38 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       expect.arrayContaining([
         "programmes_merge_not_self",
         "programmes_merge_metadata_shape",
+      ]),
+    );
+    expect(
+      programmeConfig.uniqueConstraints.map((constraint) => constraint.name),
+    ).toContain("programmes_tenant_id_id_division_unique");
+  });
+
+  it("declares Membership affiliation columns and fail-closed shape checks", () => {
+    const membershipConfig = getTableConfig(memberships);
+    const column = (name: string) =>
+      membershipConfig.columns.find((candidate) => candidate.name === name);
+
+    expect(column("campus_id")?.notNull).toBe(false);
+    expect(column("campus_provenance")?.notNull).toBe(false);
+    expect(column("academic_division_id")?.notNull).toBe(false);
+    expect(column("academic_division_provenance")?.notNull).toBe(true);
+    expect(column("programme_id")?.notNull).toBe(false);
+    expect(column("programme_provenance")?.notNull).toBe(true);
+    expect(column("academic_year")?.notNull).toBe(false);
+    expect(column("academic_year_provenance")?.notNull).toBe(true);
+    expect(column("residence_state")?.notNull).toBe(true);
+    expect(column("residence_id")?.notNull).toBe(false);
+    expect(column("residence_provenance")?.notNull).toBe(true);
+    expect(membershipConfig.checks.map((check) => check.name)).toEqual(
+      expect.arrayContaining([
+        "memberships_campus_provenance_shape",
+        "memberships_academic_division_provenance_shape",
+        "memberships_programme_provenance_shape",
+        "memberships_academic_year_provenance_shape",
+        "memberships_academic_year_positive",
+        "memberships_programme_requires_division",
+        "memberships_residence_shape",
       ]),
     );
   });

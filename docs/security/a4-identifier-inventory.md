@@ -22,6 +22,10 @@ key, even if a future account model contains it.
 | `membership.id` | Membership resource | PostgreSQL UUID primary key; always read with Tenant scope. | `CURRENT` |
 | `membership.tenantId` | Membership ownership | PostgreSQL UUID FK to `tenant.id`; determines Membership Tenant ownership. | `CURRENT` |
 | `membership.identitySubjectId` | Membership-to-identity relation | Opaque subject relation, unique only with `membership.tenantId`. | `CURRENT` |
+| `membership.campusId` | Membership Campus affiliation | Nullable PostgreSQL UUID paired with `membership.tenantId` for a same-Tenant Campus FK; null is a transitional incomplete state. | `CURRENT` |
+| `membership.academicDivisionId` | Membership Academic Division affiliation | Nullable PostgreSQL UUID paired with `membership.tenantId` for a same-Tenant Academic Division FK. | `CURRENT` |
+| `membership.programmeId` | Membership Programme affiliation | Nullable PostgreSQL UUID paired with `membership.tenantId` and `membership.academicDivisionId` for a same-Tenant Programme/Division FK. | `CURRENT` |
+| `membership.residenceId` | Membership Residence affiliation | Nullable PostgreSQL UUID paired with `membership.tenantId` for a same-Tenant Residence FK; absent for unknown and non-resident states. | `CURRENT` |
 | `RequestContext.tenantId` | Trusted active context | One active Tenant UUID; no Tenant list. | `CURRENT` |
 | `RequestContext.membershipId` | Trusted active context | One active Membership UUID for `RequestContext.tenantId`. | `CURRENT` |
 | `publication.id` | Publication resource | PostgreSQL UUID primary key; direct and collection reads are Tenant-scoped. | `CURRENT` |
@@ -42,6 +46,10 @@ key, even if a future account model contains it.
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `memberships.(tenant_id,campus_id) -> campuses.(tenant_id,id)` | Same-Tenant Membership Campus FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `memberships.(tenant_id,academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant Membership Academic Division FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `memberships.(tenant_id,programme_id,academic_division_id) -> programmes.(tenant_id,id,academic_division_id)` | Same-Tenant Membership Programme/Division FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `memberships.(tenant_id,residence_id) -> residences.(tenant_id,id)` | Same-Tenant Membership Residence FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `publications.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `campuses.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `academic_divisions.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |

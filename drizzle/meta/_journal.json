@@ -43,6 +43,13 @@
       "when": 1788454230082,
       "tag": "0005_nostalgic_prima",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788460561785,
+      "tag": "0006_unknown_psylocke",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,7 @@ import {
   residences,
   tenantAcademicYearConfig,
   tenants,
+  type MembershipRow,
 } from "@/server/db/schema";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
@@ -175,6 +176,133 @@ async function membershipIdProbe(): Promise<void> {
   ).resolves.toBeNull();
 }
 
+function audienceFactsRow(): Pick<
+  MembershipRow,
+  | "id"
+  | "tenantId"
+  | "campusId"
+  | "campusProvenance"
+  | "academicDivisionId"
+  | "academicDivisionProvenance"
+  | "programmeId"
+  | "programmeProvenance"
+  | "academicYear"
+  | "academicYearProvenance"
+  | "residenceState"
+  | "residenceId"
+  | "residenceProvenance"
+> {
+  return {
+    id: membershipAId,
+    tenantId: tenantAId,
+    campusId: "00000000-0000-4000-8000-000000000031",
+    campusProvenance: "self_declared",
+    academicDivisionId: "00000000-0000-4000-8000-000000000032",
+    academicDivisionProvenance: "roster_derived",
+    programmeId: "00000000-0000-4000-8000-000000000033",
+    programmeProvenance: "self_declared",
+    academicYear: 2,
+    academicYearProvenance: "institution_verified",
+    residenceState: "non_resident",
+    residenceId: null,
+    residenceProvenance: "roster_derived",
+  };
+}
+
+function audienceFactsDatabase(
+  rows: readonly Record<string, unknown>[],
+): CampusHubDatabase {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => rows,
+        }),
+      }),
+    }),
+  } as unknown as CampusHubDatabase;
+}
+
+async function membershipAudienceFactsProbe(): Promise<void> {
+  const malformedDatabase = {
+    select: () => {
+      throw new Error("malformed audience-facts UUID reached SQL");
+    },
+  } as unknown as CampusHubDatabase;
+  const malformedRepository = new DrizzleMembershipRepository(
+    malformedDatabase,
+  );
+
+  await expect(
+    malformedRepository.findMembershipAudienceFactsByIdForTenant(
+      "banana",
+      membershipAId,
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    malformedRepository.findMembershipAudienceFactsByIdForTenant(
+      tenantAId,
+      "banana",
+    ),
+  ).resolves.toBeNull();
+
+  const repository = new DrizzleMembershipRepository(
+    audienceFactsDatabase([audienceFactsRow()]),
+  );
+  await expect(
+    repository.findMembershipAudienceFactsByIdForTenant(
+      tenantAId,
+      membershipAId,
+    ),
+  ).resolves.toMatchObject({
+    membershipId: membershipAId,
+    tenantId: tenantAId,
+    campus: { provenance: "self_declared" },
+  });
+
+  const missingCampusRepository = new DrizzleMembershipRepository(
+    audienceFactsDatabase([
+      { ...audienceFactsRow(), campusId: null, campusProvenance: null },
+    ]),
+  );
+  await expect(
+    missingCampusRepository.findMembershipAudienceFactsByIdForTenant(
+      tenantAId,
+      membershipAId,
+    ),
+  ).resolves.toBeNull();
+
+  const foreignOrMissingRepository = new DrizzleMembershipRepository(
+    audienceFactsDatabase([]),
+  );
+  await expect(
+    foreignOrMissingRepository.findMembershipAudienceFactsByIdForTenant(
+      tenantAId,
+      membershipBId,
+    ),
+  ).resolves.toBeNull();
+}
+
+function membershipPersistenceProbe(): void {
+  expectTenantOwnedTable(memberships);
+  expectForeignKey(memberships, ["tenant_id", "campus_id"], ["tenant_id", "id"]);
+  expectForeignKey(
+    memberships,
+    ["tenant_id", "academic_division_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    memberships,
+    ["tenant_id", "programme_id", "academic_division_id"],
+    ["tenant_id", "id", "academic_division_id"],
+  );
+  expectForeignKey(
+    memberships,
+    ["tenant_id", "residence_id"],
+    ["tenant_id", "id"],
+  );
+}
+
 async function publicationDirectProbe(): Promise<void> {
   const draft = { ...publicationA, lifecycle: "draft" as const };
   const service = new ReadPublicationService({
@@ -296,10 +424,11 @@ export const tenantIsolationProbeRegistry: Readonly<
   "tenant.root.contract": () => {
     expect(getTableConfig(tenants).name).toBe("tenants");
   },
-  "membership.persistence": () => expectTenantOwnedTable(memberships),
+  "membership.persistence": membershipPersistenceProbe,
   "membership.context": membershipContextProbe,
   "membership.identity-tenant": membershipContextProbe,
   "membership.id-tenant": membershipIdProbe,
+  "membership.audience-facts": membershipAudienceFactsProbe,
   "publication.persistence": () => expectTenantOwnedTable(publications),
   "campus.persistence": () => {
     expectTenantOwnedTable(campuses);
