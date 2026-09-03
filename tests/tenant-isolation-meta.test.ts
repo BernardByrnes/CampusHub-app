@@ -39,6 +39,7 @@ function implementationPathForDatabaseObject(
     tenants: "src/server/db/schema/tenant.ts",
     memberships: "src/server/db/schema/membership.ts",
     publications: "src/server/db/schema/publication.ts",
+    publication_audience_criteria: "src/server/db/schema/publication.ts",
   };
 
   return (

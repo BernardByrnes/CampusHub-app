@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0006_unknown_psylocke.sql",
+    implementationPath: "drizzle/0007_optimal_mockingbird.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -252,7 +252,27 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   },
   {
     implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAudienceDimensionEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAudienceProvenancePolicyEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAudienceResidenceTargetEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publications",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAudienceCriteria",
     expectedAstForm: "CallExpression",
   },
   {
@@ -669,6 +689,18 @@ export const tenantSurfaceRegistry = [
     operation: "table:publications",
   },
   {
+    id: "publication-audience-criteria.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/publication.ts",
+    surface: "publication_audience_criteria",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Each criterion is owned by an explicit Tenant and Publication and every entity target uses a same-Tenant foreign key.",
+    requiredNegativeTestIds: ["publication-audience-criteria.persistence"],
+    databaseObjectName: "publication_audience_criteria",
+    operation: "table:publication_audience_criteria",
+  },
+  {
     id: "publication.authorization.resolvers",
     category: "application_service",
     implementationPath: "src/application/content/publication-read-resolvers.ts",
@@ -706,6 +738,32 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "SQL requires tenant_id, surface lifecycle predicates, and keyset ordering without OFFSET.",
     requiredNegativeTestIds: ["publication.collection"],
     operation: "DrizzlePublicationRepository.listPublicationCandidatesForTenant",
+  },
+  {
+    id: "publication.repository.audience-definition",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.findPublicationAudienceDefinitionForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Publication and criterion reads require the same explicit Tenant and Publication identifiers; malformed and foreign rows fail closed.",
+    requiredNegativeTestIds: ["publication.audience-definition"],
+    operation:
+      "DrizzlePublicationRepository.findPublicationAudienceDefinitionForTenant",
+  },
+  {
+    id: "publication.repository.audience-replacement",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.replaceDraftPublicationAudienceForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "A row-locked Tenant-bound Publication transaction validates targets before Tenant-scoped mode and criterion replacement.",
+    requiredNegativeTestIds: ["publication.audience-replacement"],
+    operation:
+      "DrizzlePublicationRepository.replaceDraftPublicationAudienceForTenant",
   },
   {
     id: "publication.direct-read",
@@ -815,8 +873,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0006_unknown_psylocke.sql",
-    surface: "Reviewed Drizzle migration history through 0006",
+    implementationPath: "drizzle/0007_optimal_mockingbird.sql",
+    surface: "Reviewed Drizzle migration history through 0007",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -829,8 +887,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0004_right_whizzer.sql",
       "drizzle/0005_nostalgic_prima.sql",
       "drizzle/0006_unknown_psylocke.sql",
+      "drizzle/0007_optimal_mockingbird.sql",
     ],
-    migrationHead: "drizzle/0006_unknown_psylocke.sql",
+    migrationHead: "drizzle/0007_optimal_mockingbird.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

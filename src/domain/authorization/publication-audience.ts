@@ -14,25 +14,25 @@ import {
 import { isUuid } from "@/domain/identifiers/uuid";
 
 import type { PublicationAudienceDecision } from "./publication-read-contract";
+import {
+  PUBLICATION_AUDIENCE_DIMENSIONS,
+  PUBLICATION_AUDIENCE_PROVENANCE_POLICIES,
+  PUBLICATION_RESIDENCE_TARGETS,
+} from "./publication-audience-vocabulary";
+import type {
+  PublicationAudienceDimension,
+  PublicationAudienceProvenancePolicy,
+} from "./publication-audience-vocabulary";
 
-export const PUBLICATION_AUDIENCE_DIMENSIONS = [
-  "campus",
-  "academic_division",
-  "programme",
-  "academic_year",
-  "residence",
-] as const;
-
-export type PublicationAudienceDimension =
-  (typeof PUBLICATION_AUDIENCE_DIMENSIONS)[number];
-
-export const PUBLICATION_AUDIENCE_PROVENANCE_POLICIES = [
-  "authoritative_only",
-  "allow_self_declared",
-] as const;
-
-export type PublicationAudienceProvenancePolicy =
-  (typeof PUBLICATION_AUDIENCE_PROVENANCE_POLICIES)[number];
+export {
+  PUBLICATION_AUDIENCE_DIMENSIONS,
+  PUBLICATION_AUDIENCE_PROVENANCE_POLICIES,
+  PUBLICATION_RESIDENCE_TARGETS,
+};
+export type {
+  PublicationAudienceDimension,
+  PublicationAudienceProvenancePolicy,
+};
 
 export function parsePublicationAudienceProvenancePolicy(
   value: unknown,
@@ -50,12 +50,6 @@ export function isPublicationAudienceProvenancePolicy(
 ): value is PublicationAudienceProvenancePolicy {
   return parsePublicationAudienceProvenancePolicy(value) !== null;
 }
-
-export const PUBLICATION_RESIDENCE_TARGETS = [
-  "specific_residence",
-  "any_resident",
-  "non_resident",
-] as const;
 
 export type PublicationResidenceTarget =
   | Readonly<{ kind: "specific_residence"; residenceId: string }>

@@ -17,6 +17,7 @@ import {
   academicDivisions,
   campuses,
   memberships,
+  publicationAudienceCriteria,
   programmes,
   publications,
   residences,
@@ -25,6 +26,7 @@ import {
   type MembershipRow,
 } from "@/server/db/schema";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
+import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
@@ -303,6 +305,151 @@ function membershipPersistenceProbe(): void {
   );
 }
 
+function publicationAudienceCriteriaPersistenceProbe(): void {
+  expectTenantOwnedTable(publicationAudienceCriteria);
+  expectForeignKey(
+    publicationAudienceCriteria,
+    ["tenant_id", "publication_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    publicationAudienceCriteria,
+    ["tenant_id", "campus_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    publicationAudienceCriteria,
+    ["tenant_id", "academic_division_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    publicationAudienceCriteria,
+    ["tenant_id", "programme_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    publicationAudienceCriteria,
+    ["tenant_id", "residence_id"],
+    ["tenant_id", "id"],
+  );
+
+  const config = getTableConfig(publicationAudienceCriteria);
+  expect(config.checks.map((constraint) => constraint.name)).toContain(
+    "publication_audience_criteria_payload_shape",
+  );
+  expect(config.indexes.map((index) => index.config.name)).toEqual(
+    expect.arrayContaining([
+      "publication_audience_criteria_campus_unique",
+      "publication_audience_criteria_division_unique",
+      "publication_audience_criteria_programme_unique",
+      "publication_audience_criteria_academic_year_unique",
+      "publication_audience_criteria_specific_residence_unique",
+      "publication_audience_criteria_residence_target_unique",
+    ]),
+  );
+}
+
+function publicationAudienceNoSqlDatabase(): CampusHubDatabase {
+  return {
+    select: () => {
+      throw new Error("invalid audience repository input reached SQL");
+    },
+    transaction: () => {
+      throw new Error("invalid audience repository input reached transaction");
+    },
+  } as unknown as CampusHubDatabase;
+}
+
+async function publicationAudienceDefinitionProbe(): Promise<void> {
+  const repository = new DrizzlePublicationRepository(
+    publicationAudienceNoSqlDatabase(),
+  );
+
+  await expect(
+    repository.findPublicationAudienceDefinitionForTenant(
+      "banana",
+      publicationId,
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.findPublicationAudienceDefinitionForTenant(
+      tenantAId,
+      "banana",
+    ),
+  ).resolves.toBeNull();
+
+  const emptyDatabase = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => [],
+        }),
+      }),
+    }),
+  } as unknown as CampusHubDatabase;
+  const foreignPublicationRepository = new DrizzlePublicationRepository(
+    emptyDatabase,
+  );
+  await expect(
+    foreignPublicationRepository.findPublicationAudienceDefinitionForTenant(
+      tenantAId,
+      foreignPublicationId,
+    ),
+  ).resolves.toBeNull();
+}
+
+async function publicationAudienceReplacementProbe(): Promise<void> {
+  const repository = new DrizzlePublicationRepository(
+    publicationAudienceNoSqlDatabase(),
+  );
+  const definition = {
+    tenantId: tenantAId,
+    publicationId,
+    mode: "entire_tenant" as const,
+    groups: [],
+  };
+
+  await expect(
+    repository.replaceDraftPublicationAudienceForTenant(
+      "banana",
+      publicationId,
+      definition,
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.replaceDraftPublicationAudienceForTenant(
+      tenantAId,
+      "banana",
+      definition,
+    ),
+  ).resolves.toBeNull();
+
+  const emptyTransactionDatabase = {
+    transaction: async (
+      callback: (transaction: CampusHubDatabase) => Promise<unknown>,
+    ) =>
+      callback({
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              for: () => ({ limit: async () => [] }),
+            }),
+          }),
+        }),
+      } as unknown as CampusHubDatabase),
+  } as unknown as CampusHubDatabase;
+  const foreignPublicationRepository = new DrizzlePublicationRepository(
+    emptyTransactionDatabase,
+  );
+  await expect(
+    foreignPublicationRepository.replaceDraftPublicationAudienceForTenant(
+      tenantAId,
+      foreignPublicationId,
+      { ...definition, publicationId: foreignPublicationId },
+    ),
+  ).resolves.toBeNull();
+}
+
 async function publicationDirectProbe(): Promise<void> {
   const draft = { ...publicationA, lifecycle: "draft" as const };
   const service = new ReadPublicationService({
@@ -429,7 +576,12 @@ export const tenantIsolationProbeRegistry: Readonly<
   "membership.identity-tenant": membershipContextProbe,
   "membership.id-tenant": membershipIdProbe,
   "membership.audience-facts": membershipAudienceFactsProbe,
-  "publication.persistence": () => expectTenantOwnedTable(publications),
+  "publication.persistence": () => {
+    expectTenantOwnedTable(publications);
+    expectTenantCompositeIdentity(publications);
+  },
+  "publication-audience-criteria.persistence":
+    publicationAudienceCriteriaPersistenceProbe,
   "campus.persistence": () => {
     expectTenantOwnedTable(campuses);
     expectTenantCompositeIdentity(campuses);
@@ -477,4 +629,6 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.direct": publicationDirectProbe,
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,
+  "publication.audience-definition": publicationAudienceDefinitionProbe,
+  "publication.audience-replacement": publicationAudienceReplacementProbe,
 };
