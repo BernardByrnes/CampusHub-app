@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
@@ -99,6 +99,62 @@ function currentRegistryValidationInput(): RegistryValidationInput {
   };
 }
 
+function currentRegistryValidationInputWithSourceOverrides(
+  sourceOverrides: Readonly<Record<string, string>>,
+  baseInput: RegistryValidationInput = currentRegistryValidationInput(),
+): RegistryValidationInput {
+  const overriddenPaths = new Set(
+    baseInput.governedImplementationPaths.filter(
+      (implementationPath) => sourceOverrides[implementationPath] !== undefined,
+    ),
+  );
+  const overriddenOperations = [...overriddenPaths].flatMap(
+    (implementationPath) =>
+      discoverOperationsFromSource(
+        implementationPath,
+        sourceOverrides[implementationPath]!,
+      ),
+  );
+  const overriddenUnsupported = [...overriddenPaths].flatMap(
+    (implementationPath) =>
+      discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceOverrides[implementationPath]!,
+      ),
+  );
+
+  return {
+    ...baseInput,
+    discoveredOperations: [
+      ...baseInput.discoveredOperations.filter(
+        (operation) => !overriddenPaths.has(operation.implementationPath),
+      ),
+      ...overriddenOperations,
+    ],
+    discoveredUnsupportedOperationForms: [
+      ...baseInput.discoveredUnsupportedOperationForms.filter(
+        (form) => !overriddenPaths.has(form.implementationPath),
+      ),
+      ...overriddenUnsupported,
+    ],
+  };
+}
+
+function expectFullRegistryValidationFailure(
+  sourceOverrides: Readonly<Record<string, string>>,
+  implementationPath: string,
+  baseInput?: RegistryValidationInput,
+): void {
+  const errors = validateTenantSurfaceRegistry(
+    currentRegistryValidationInputWithSourceOverrides(sourceOverrides, baseInput),
+  );
+  expect(errors).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining(implementationPath),
+    ]),
+  );
+}
+
 function fixtureEntry(
   overrides: Partial<TenantSurfaceRegistryEntry> = {},
 ): TenantSurfaceRegistryEntry {
@@ -143,7 +199,7 @@ describe("Tenant isolation governance registry", () => {
     expect(validateTenantSurfaceRegistry(currentRegistryValidationInput())).toEqual(
       [],
     );
-  });
+  }, 30_000);
 
   for (const [probeId, probe] of Object.entries(tenantIsolationProbeRegistry)) {
     it(`executes required isolation probe ${probeId}`, async () => {
@@ -630,15 +686,15 @@ describe("Tenant isolation governance registry", () => {
     const implementationPath = "src/application/content/create-publication.ts";
     const emptyBodySource = `
       export class CreatePublicationService {
-        public constructor(
-          private readonly dependencies: Dependencies,
+          public constructor(
+          private readonly dependencies: CreatePublicationServiceDependencies,
         ) {}
       }
     `;
     const executableBodySource = `
       export class CreatePublicationService {
-        public constructor(
-          private readonly dependencies: Dependencies,
+          public constructor(
+          private readonly dependencies: CreatePublicationServiceDependencies,
         ) {
           performTenantSensitiveWork();
         }
@@ -680,6 +736,181 @@ describe("Tenant isolation governance registry", () => {
       operation: "CreatePublicationService.constructor",
       kind: "class_method",
     });
+  });
+
+  it("binds all reviewed repository constructors to exact safe shapes", () => {
+    const repositories = [
+      {
+        implementationPath: "src/server/repositories/membership-repository.ts",
+        classIdentity: "DrizzleMembershipRepository",
+      },
+      {
+        implementationPath: "src/server/repositories/publication-repository.ts",
+        classIdentity: "DrizzlePublicationRepository",
+      },
+      {
+        implementationPath: "src/server/repositories/tenant-repository.ts",
+        classIdentity: "DrizzleTenantRepository",
+      },
+    ];
+    const safeConstructor =
+      "public constructor(private readonly database: CampusHubDatabase = db) {}";
+    const baseInput = currentRegistryValidationInput();
+
+    for (const repository of repositories) {
+      const sourceText = readFileSync(
+        path.join(repositoryRoot, repository.implementationPath),
+        "utf8",
+      );
+      const operations = discoverOperationsFromSource(
+        repository.implementationPath,
+        sourceText,
+      );
+      expect(operations).not.toContainEqual(
+        expect.objectContaining({
+          operation: `${repository.classIdentity}.constructor`,
+        }),
+      );
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          repository.implementationPath,
+          sourceText,
+        ),
+      ).toEqual([]);
+
+      const driftCases = [
+        {
+          name: "default initializer call",
+          replacement:
+            "public constructor(private readonly database: CampusHubDatabase = performTenantSensitiveWork()) {}",
+        },
+        {
+          name: "wrapped default initializer",
+          replacement:
+            "public constructor(private readonly database: CampusHubDatabase = (db)) {}",
+        },
+        {
+          name: "constructor body call",
+          replacement:
+            "public constructor(private readonly database: CampusHubDatabase = db) { performTenantSensitiveWork(); }",
+        },
+        {
+          name: "extra executable parameter initializer",
+          replacement:
+            "public constructor(private readonly database: CampusHubDatabase = db, extra = performTenantSensitiveWork()) {}",
+        },
+        {
+          name: "additional dependency parameter",
+          replacement:
+            "public constructor(private readonly database: CampusHubDatabase = db, extra: CampusHubDatabase) {}",
+        },
+      ];
+
+      for (const driftCase of driftCases) {
+        const mutatedSource = sourceText.replace(
+          safeConstructor,
+          driftCase.replacement,
+        );
+        expect(mutatedSource, driftCase.name).not.toBe(sourceText);
+        expectFullRegistryValidationFailure(
+          { [repository.implementationPath]: mutatedSource },
+          repository.implementationPath,
+          baseInput,
+        );
+      }
+    }
+
+    expect(
+      tenantSurfaceRegistry.some((entry) =>
+        entry.id.endsWith("-repository.constructor"),
+      ),
+    ).toBe(false);
+  }, 30_000);
+
+  it("does not review a constructor when eager class initialization changes", () => {
+    const implementationPath =
+      "src/server/repositories/membership-repository.ts";
+    const sourceText = readFileSync(
+      path.join(repositoryRoot, implementationPath),
+      "utf8",
+    );
+    const mutatedSource = sourceText.replace(
+      "export class DrizzleMembershipRepository implements MembershipContextReader {",
+      "export class DrizzleMembershipRepository implements MembershipContextReader {\n  private hidden = performTenantSensitiveWork();",
+    );
+
+    expect(mutatedSource).not.toBe(sourceText);
+    expectFullRegistryValidationFailure(
+      { [implementationPath]: mutatedSource },
+      implementationPath,
+    );
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        mutatedSource,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: expect.stringContaining(
+            "non-public class field DrizzleMembershipRepository.hidden",
+          ),
+        }),
+      ]),
+    );
+  }, 30_000);
+
+  it("fails closed for private, protected, and private-identifier eager initializers", () => {
+    const cases = [
+      "export class Example { private hidden = performTenantSensitiveWork(); }",
+      "export class Example { protected hidden = performTenantSensitiveWork(); }",
+      "export class Example { #hidden = performTenantSensitiveWork(); }",
+    ];
+
+    for (const [index, sourceText] of cases.entries()) {
+      const implementationPath =
+        `src/server/services/non-public-field-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length + unsupported.length).toBeGreaterThan(0);
+      expect(unsupported.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not create operations for inert private initialization", () => {
+    const implementationPath = "src/server/services/inert-private-fields.ts";
+    const sourceText = `
+      export class Example {
+        private retries = 0;
+        private label = "publication";
+        private enabled = false;
+        private ids = [];
+        private callback = () => doSomething();
+      }
+    `;
+    const operations = discoverOperationsFromSource(implementationPath, sourceText);
+    const unsupported = discoverUnsupportedOperationFormsFromSource(
+      implementationPath,
+      sourceText,
+    );
+
+    expect(unsupported).toEqual([]);
+    expect(operations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: expect.stringContaining(".retries") }),
+        expect.objectContaining({ operation: expect.stringContaining(".label") }),
+        expect.objectContaining({ operation: expect.stringContaining(".enabled") }),
+        expect.objectContaining({ operation: expect.stringContaining(".ids") }),
+        expect.objectContaining({ operation: expect.stringContaining(".callback") }),
+      ]),
+    );
   });
 
   it("fails closed for executable static initialization blocks, including multiple blocks", () => {
@@ -725,6 +956,26 @@ describe("Tenant isolation governance registry", () => {
         multipleBlockSource,
       ),
     ).toHaveLength(2);
+
+    const nonExportedClassSource = `
+      class ModuleLoadedClass {
+        static { performModuleInitialization(); }
+      }
+    `;
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/services/static-block-non-exported.ts",
+        nonExportedClassSource,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: expect.stringContaining(
+            "class ModuleLoadedClass has an executable static initialization block",
+          ),
+        }),
+      ]),
+    );
   });
 
   it("fails closed when exported bindings are passed to mutation or unknown calls", () => {
@@ -775,6 +1026,186 @@ describe("Tenant isolation governance registry", () => {
         }),
       ]),
     );
+  });
+
+  it("accounts for module-load executable forms and inert initializers", () => {
+    const moduleLoadExpressions = [
+      "performTenantSensitiveWork();",
+      "new TenantService();",
+      "await performTenantSensitiveWork();",
+      "value = factory();",
+      "counter++;",
+      "tag`value`;",
+      "performTenantSensitiveWork() as unknown;",
+    ];
+
+    for (const [index, sourceText] of moduleLoadExpressions.entries()) {
+      const implementationPath =
+        `src/server/services/module-load-expression-${index}.ts`;
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          implementationPath,
+          sourceText,
+        ).length,
+      ).toBeGreaterThan(0);
+    }
+
+    const moduleLoadInitializers = [
+      "const hidden = performTenantSensitiveWork();",
+      "const service = new TenantService();",
+      "const value = factory();",
+    ];
+    for (const [index, sourceText] of moduleLoadInitializers.entries()) {
+      const implementationPath =
+        `src/server/services/module-load-initializer-${index}.ts`;
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          implementationPath,
+          sourceText,
+        ).length,
+      ).toBeGreaterThan(0);
+    }
+
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/services/module-load-directive.ts",
+        '"use strict";',
+      ),
+    ).toEqual([]);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        "src/server/services/module-load-function-value.ts",
+        "const callback = () => doSomething();",
+      ),
+    ).toEqual([]);
+  });
+
+  it("fails full validation for module-load additions on a real governed path", () => {
+    const implementationPath =
+      "src/application/content/publication-read-resolvers.ts";
+    const sourceText = readFileSync(
+      path.join(repositoryRoot, implementationPath),
+      "utf8",
+    );
+
+    expectFullRegistryValidationFailure(
+      { [implementationPath]: `${sourceText}\nperformTenantSensitiveWork();\n` },
+      implementationPath,
+    );
+    expectFullRegistryValidationFailure(
+      {
+        [implementationPath]:
+          `${sourceText}\nconst hidden = performTenantSensitiveWork();\n`,
+      },
+      implementationPath,
+    );
+    expectFullRegistryValidationFailure(
+      {
+        [implementationPath]:
+          `${sourceText}\nexport class ExistingClass { private hidden = performTenantSensitiveWork(); }\n`,
+      },
+      implementationPath,
+    );
+  }, 30_000);
+
+  it("fails closed for exported-binding aliases, composites, and receivers", () => {
+    const aliasCases = [
+      "export const holder = {}; const alias = holder;",
+      "export const holder = {}; let alias; alias = holder;",
+      "export const holder = {}; const someObject = {}; someObject.value = holder;",
+      "export const holder = {}; const wrapper = { holder };",
+      "export const holder = {}; const wrapper = [holder];",
+      `
+        export const holder = {};
+        function escape() {
+          const alias = holder;
+          Object.assign(alias, {});
+        }
+      `,
+    ];
+    for (const [index, sourceText] of aliasCases.entries()) {
+      const implementationPath =
+        `src/server/services/exported-binding-alias-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      expect(unsupported).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description: expect.stringContaining("lose provenance"),
+          }),
+        ]),
+      );
+    }
+
+    const receiverCases = [
+      "export const holder = {}; holder.mutate();",
+      'export const holder = {}; holder["mutate"]();',
+      "export const holder = {}; holder[method]();",
+      "export const holder = {}; const alias = holder; alias.mutate();",
+    ];
+    for (const [index, sourceText] of receiverCases.entries()) {
+      const implementationPath =
+        `src/server/services/exported-binding-receiver-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      expect(unsupported.length).toBeGreaterThan(0);
+    }
+
+    const existingGovernedPath =
+      "src/application/content/publication-read-resolvers.ts";
+    const sourceText = readFileSync(
+      path.join(repositoryRoot, existingGovernedPath),
+      "utf8",
+    );
+    expectFullRegistryValidationFailure(
+      {
+        [existingGovernedPath]: `${sourceText}
+          export const a2Holder = {};
+          const a2Alias = a2Holder;
+          Object.assign(a2Alias, { x: makeService() });
+        `,
+      },
+      existingGovernedPath,
+    );
+    expectFullRegistryValidationFailure(
+      {
+        [existingGovernedPath]: `${sourceText}
+          export const a2ReceiverHolder = {};
+          a2ReceiverHolder.mutate();
+        `,
+      },
+      existingGovernedPath,
+    );
+  }, 30_000);
+
+  it("preserves direct exported-binding mutation and unknown-call protection", () => {
+    const directCallCases = [
+      "Object.assign(holder, {});",
+      'Object.defineProperty(holder, "x", {});',
+      'Object.defineProperties(holder, {});',
+      'Reflect.set(holder, "x", value);',
+      "mutate(holder);",
+    ];
+
+    for (const [index, call] of directCallCases.entries()) {
+      const implementationPath =
+        `src/server/services/exported-binding-direct-call-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        `export const holder = {}; ${call}`,
+      );
+      expect(unsupported).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            description: expect.stringContaining("exported binding(s) holder"),
+          }),
+        ]),
+      );
+    }
   });
 
   it("accounts for static CommonJS template members and fails closed on computed templates", () => {

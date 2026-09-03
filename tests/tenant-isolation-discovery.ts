@@ -6,6 +6,7 @@ import * as ts from "typescript";
 import {
   REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS,
   REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS,
+  REVIEWED_NON_OPERATIONAL_MODULE_INITIALIZER_CONTRACTS,
   REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS,
 } from "@/server/tenancy/tenant-surface-registry";
 
@@ -368,6 +369,19 @@ function collectExportedBindingNames(
 
   for (const statement of sourceFile.statements) {
     if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword) &&
+      statement.name !== undefined
+    ) {
+      addExportedBindingName(
+        bindings,
+        statement.name.text,
+        statement.name.text,
+      );
+      continue;
+    }
+
+    if (
       ts.isVariableStatement(statement) &&
       hasModifier(statement, ts.SyntaxKind.ExportKeyword)
     ) {
@@ -481,10 +495,122 @@ function isReviewedNonCallableReExport(
   );
 }
 
+function modifierNames(node: ts.Node): string[] {
+  if (!ts.canHaveModifiers(node)) {
+    return [];
+  }
+
+  return (ts.getModifiers(node) ?? []).map((modifier) => {
+    switch (modifier.kind) {
+      case ts.SyntaxKind.PublicKeyword:
+        return "public";
+      case ts.SyntaxKind.PrivateKeyword:
+        return "private";
+      case ts.SyntaxKind.ProtectedKeyword:
+        return "protected";
+      case ts.SyntaxKind.ReadonlyKeyword:
+        return "readonly";
+      case ts.SyntaxKind.StaticKeyword:
+        return "static";
+      case ts.SyntaxKind.AbstractKeyword:
+        return "abstract";
+      case ts.SyntaxKind.AsyncKeyword:
+        return "async";
+      case ts.SyntaxKind.OverrideKeyword:
+        return "override";
+      case ts.SyntaxKind.DeclareKeyword:
+        return "declare";
+      case ts.SyntaxKind.ExportKeyword:
+        return "export";
+      case ts.SyntaxKind.DefaultKeyword:
+        return "default";
+      case ts.SyntaxKind.AccessorKeyword:
+        return "accessor";
+      case ts.SyntaxKind.ConstKeyword:
+        return "const";
+      case ts.SyntaxKind.InKeyword:
+        return "in";
+      default:
+        return `unknown:${modifier.kind}`;
+    }
+  });
+}
+
+function hasRuntimeDecorators(node: ts.Node): boolean {
+  return (
+    ts.canHaveDecorators(node) && (ts.getDecorators(node)?.length ?? 0) > 0
+  );
+}
+
+function hasComputedClassMemberName(member: ts.ClassElement): boolean {
+  if (
+    ts.isConstructorDeclaration(member) ||
+    ts.isClassStaticBlockDeclaration(member) ||
+    member.name === undefined
+  ) {
+    return false;
+  }
+
+  return !(
+    ts.isIdentifier(member.name) ||
+    ts.isStringLiteral(member.name) ||
+    ts.isNumericLiteral(member.name) ||
+    ts.isPrivateIdentifier(member.name)
+  );
+}
+
+function hasUnsafeRuntimeClassInitialization(
+  classDeclaration: ts.ClassDeclaration | ts.ClassExpression,
+): boolean {
+  if (hasRuntimeDecorators(classDeclaration)) {
+    return true;
+  }
+
+  if (
+    classDeclaration.heritageClauses?.some(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )
+  ) {
+    return true;
+  }
+
+  return classDeclaration.members.some((member) => {
+    if (
+      hasRuntimeDecorators(member) ||
+      hasComputedClassMemberName(member) ||
+      ts.isClassStaticBlockDeclaration(member) ||
+      ts.isPropertyDeclaration(member)
+    ) {
+      return true;
+    }
+
+    if (ts.isConstructorDeclaration(member)) {
+      return (
+        hasRuntimeDecorators(member) ||
+        member.parameters.some(hasRuntimeDecorators)
+      );
+    }
+
+    return false;
+  });
+}
+
+function sameStringArray(
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
+
 function isReviewedNonOperationalConstructor(
   implementationPath: string,
+  classDeclaration: ts.ClassDeclaration | ts.ClassExpression,
   classIdentity: string,
   constructor: ts.ConstructorDeclaration | undefined,
+  sourceFile: ts.SourceFile,
 ): boolean {
   if (constructor === undefined || constructor.body === undefined) {
     return false;
@@ -494,15 +620,62 @@ function isReviewedNonOperationalConstructor(
     return false;
   }
 
-  if (constructor.parameters.some((parameter) => parameter.initializer !== undefined)) {
+  if (
+    hasUnsafeRuntimeClassInitialization(classDeclaration) ||
+    constructor.parameters.some(hasRuntimeDecorators)
+  ) {
     return false;
   }
 
-  return REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS.some(
-    (contract) =>
-      contract.implementationPath === implementationPath &&
-      contract.classIdentity === classIdentity,
+  const contract = REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS.find(
+    (candidate) =>
+      candidate.implementationPath === implementationPath &&
+      candidate.classIdentity === classIdentity,
   );
+  if (contract === undefined) {
+    return false;
+  }
+
+  if (
+    !sameStringArray(modifierNames(constructor), contract.constructorModifiers) ||
+    constructor.parameters.length !== contract.parameterCount
+  ) {
+    return false;
+  }
+
+  return constructor.parameters.every((parameter, index) => {
+    if (
+      !ts.isIdentifier(parameter.name) ||
+      parameter.dotDotDotToken !== undefined ||
+      modifierNames(parameter).length !==
+        contract.parameterPropertyModifiers[index]?.length
+    ) {
+      return false;
+    }
+
+    if (
+      parameter.name.text !== contract.parameterNames[index] ||
+      parameter.type?.getText(sourceFile).trim() !==
+        contract.parameterTypeTexts[index] ||
+      !sameStringArray(
+        modifierNames(parameter),
+        contract.parameterPropertyModifiers[index] ?? [],
+      )
+    ) {
+      return false;
+    }
+
+    const expectedDefault = contract.defaultInitializerIdentifiers[index];
+    if (expectedDefault === null) {
+      return parameter.initializer === undefined;
+    }
+
+    return (
+      parameter.initializer !== undefined &&
+      ts.isIdentifier(parameter.initializer) &&
+      parameter.initializer.text === expectedDefault
+    );
+  });
 }
 
 function isStaticallyNonCallableExpression(expression: ts.Expression): boolean {
@@ -516,6 +689,190 @@ function isStaticallyNonCallableExpression(expression: ts.Expression): boolean {
     (ts.isIdentifier(unwrapped) &&
       ["Infinity", "NaN", "undefined"].includes(unwrapped.text))
   );
+}
+
+function isFunctionValue(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  return ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped);
+}
+
+function isExactCallChainStep(
+  expression: ts.Expression,
+  memberName: string,
+): { receiver: ts.Expression; arguments: readonly ts.Expression[] } | null {
+  const unwrapped = unwrapExpression(expression);
+  if (!ts.isCallExpression(unwrapped)) {
+    return null;
+  }
+
+  const callee = unwrapExpression(unwrapped.expression);
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== memberName) {
+    return null;
+  }
+
+  return {
+    receiver: callee.expression,
+    arguments: unwrapped.arguments,
+  };
+}
+
+function isIdentifierExpression(
+  expression: ts.Expression,
+  expectedName: string,
+): boolean {
+  const unwrapped = unwrapExpression(expression);
+  return ts.isIdentifier(unwrapped) && unwrapped.text === expectedName;
+}
+
+function isReviewedPostgresConnectionStringInitializer(
+  expression: ts.Expression,
+): boolean {
+  const refine = isExactCallChainStep(expression, "refine");
+  if (
+    refine === null ||
+    refine.arguments.length !== 2 ||
+    !isFunctionValue(refine.arguments[0]) ||
+    staticStringValue(refine.arguments[1]) !==
+      "DATABASE_URL must be a valid PostgreSQL connection URL"
+  ) {
+    return false;
+  }
+
+  const min = isExactCallChainStep(refine.receiver, "min");
+  if (
+    min === null ||
+    min.arguments.length !== 2 ||
+    !ts.isNumericLiteral(unwrapExpression(min.arguments[0])) ||
+    unwrapExpression(min.arguments[0]).getText() !== "1" ||
+    staticStringValue(min.arguments[1]) !== "DATABASE_URL is required"
+  ) {
+    return false;
+  }
+
+  const trim = isExactCallChainStep(min.receiver, "trim");
+  if (trim === null || trim.arguments.length !== 0) {
+    return false;
+  }
+
+  const string = isExactCallChainStep(trim.receiver, "string");
+  return (
+    string !== null &&
+    string.arguments.length === 0 &&
+    isIdentifierExpression(string.receiver, "z")
+  );
+}
+
+function isReviewedDatabaseInitializer(expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  if (
+    !ts.isBinaryExpression(unwrapped) ||
+    unwrapped.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+  ) {
+    return false;
+  }
+
+  const left = unwrapExpression(unwrapped.left);
+  if (
+    !ts.isPropertyAccessExpression(left) ||
+    !isIdentifierExpression(left.expression, "globalForDatabase") ||
+    left.name.text !== "campushubDatabase"
+  ) {
+    return false;
+  }
+
+  const right = unwrapExpression(unwrapped.right);
+  return (
+    ts.isCallExpression(right) &&
+    right.arguments.length === 0 &&
+    isIdentifierExpression(right.expression, "createDatabase")
+  );
+}
+
+function isReviewedNonOperationalModuleInitializer(
+  implementationPath: string,
+  bindingName: string,
+  initializer: ts.Expression,
+): boolean {
+  const contract = REVIEWED_NON_OPERATIONAL_MODULE_INITIALIZER_CONTRACTS.find(
+    (candidate) =>
+      candidate.implementationPath === implementationPath &&
+      candidate.bindingName === bindingName,
+  );
+  if (contract === undefined) {
+    return false;
+  }
+
+  switch (contract.initializerShape) {
+    case "postgres_connection_string_schema":
+      return isReviewedPostgresConnectionStringInitializer(initializer);
+    case "database_cache_or_create":
+      return isReviewedDatabaseInitializer(initializer);
+    default:
+      return false;
+  }
+}
+
+function isEagerlyInertInitializer(
+  expression: ts.Expression,
+  visited = new Set<ts.Node>(),
+): boolean {
+  const unwrapped = unwrapExpression(expression);
+  if (visited.has(unwrapped)) {
+    return false;
+  }
+  const nextVisited = new Set(visited);
+  nextVisited.add(unwrapped);
+
+  if (
+    ts.isLiteralExpression(unwrapped) ||
+    unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+    unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+    unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+    ts.isIdentifier(unwrapped)
+  ) {
+    return true;
+  }
+
+  if (isFunctionValue(unwrapped)) {
+    return true;
+  }
+
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return unwrapped.elements.every(
+      (element) =>
+        !ts.isSpreadElement(element) &&
+        ts.isExpression(element) &&
+        isEagerlyInertInitializer(element, nextVisited),
+    );
+  }
+
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return unwrapped.properties.every((property) => {
+      if (
+        ts.isMethodDeclaration(property) ||
+        ts.isGetAccessorDeclaration(property) ||
+        ts.isSetAccessorDeclaration(property)
+      ) {
+        return propertyNameText(property.name) !== null;
+      }
+      if (ts.isPropertyAssignment(property)) {
+        return (
+          propertyNameText(property.name) !== null &&
+          isEagerlyInertInitializer(property.initializer, nextVisited)
+        );
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return true;
+      }
+      return false;
+    });
+  }
+
+  if (ts.isClassExpression(unwrapped)) {
+    return !hasUnsafeRuntimeClassInitialization(unwrapped);
+  }
+
+  return false;
 }
 
 function addOperation(
@@ -738,13 +1095,44 @@ function discoverClassOperations(
     constructor === undefined ||
     (!hasModifier(constructor, ts.SyntaxKind.PrivateKeyword) &&
       !hasModifier(constructor, ts.SyntaxKind.ProtectedKeyword));
+
+  if (hasRuntimeDecorators(classDeclaration)) {
+    addUnsupportedOperationForm(
+      unsupported,
+      implementationPath,
+      `class ${classIdentity} has an unreviewed runtime decorator`,
+    );
+  }
+
+  if (
+    classDeclaration.heritageClauses?.some(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )
+  ) {
+    addUnsupportedOperationForm(
+      unsupported,
+      implementationPath,
+      `class ${classIdentity} has an unreviewed executable extends expression`,
+    );
+  }
+
+  if (constructor !== undefined && hasRuntimeDecorators(constructor)) {
+    addUnsupportedOperationForm(
+      unsupported,
+      implementationPath,
+      `class ${classIdentity} constructor has an unreviewed runtime decorator`,
+    );
+  }
+
   if (
     includeConstructor &&
     isConstructible &&
     !isReviewedNonOperationalConstructor(
       implementationPath,
+      classDeclaration,
       classIdentity,
       constructor,
+      classDeclaration.getSourceFile(),
     )
   ) {
     addOperation(
@@ -756,19 +1144,68 @@ function discoverClassOperations(
   }
 
   for (const [memberIndex, member] of classDeclaration.members.entries()) {
+    if (hasRuntimeDecorators(member)) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `class ${classIdentity} member #${memberIndex + 1} has an unreviewed runtime decorator`,
+      );
+    }
+
+    if (hasComputedClassMemberName(member)) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `class ${classIdentity} has an unresolved computed member name`,
+      );
+      continue;
+    }
+
+    if (ts.isClassStaticBlockDeclaration(member)) {
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `${includeConstructor ? "exported " : ""}class ${classIdentity} has an executable static initialization block #${memberIndex + 1}`,
+      );
+      continue;
+    }
+
+    if (ts.isConstructorDeclaration(member)) {
+      if (member.parameters.some(hasRuntimeDecorators)) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `class ${classIdentity} constructor parameter has an unreviewed runtime decorator`,
+        );
+      }
+      continue;
+    }
+
+    const isNonPublicField =
+      (ts.isPropertyDeclaration(member) &&
+        (ts.isPrivateIdentifier(member.name) ||
+          hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
+          hasModifier(member, ts.SyntaxKind.ProtectedKeyword))) ||
+      false;
+
+    if (isNonPublicField && ts.isPropertyDeclaration(member)) {
+      if (
+        member.initializer !== undefined &&
+        !isEagerlyInertInitializer(member.initializer)
+      ) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `non-public class field ${classIdentity}.${member.name.getText()} has an initializer with unresolved eager execution`,
+        );
+      }
+      continue;
+    }
+
     if (
       hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
       hasModifier(member, ts.SyntaxKind.ProtectedKeyword)
     ) {
-      continue;
-    }
-
-    if (includeConstructor && ts.isClassStaticBlockDeclaration(member)) {
-      addUnsupportedOperationForm(
-        unsupported,
-        implementationPath,
-        `exported class ${classIdentity} has an executable static initialization block #${memberIndex + 1}`,
-      );
       continue;
     }
 
@@ -1212,6 +1649,37 @@ function discoverExportedBindingCallEscapes(
     if (ts.isCallExpression(node)) {
       const escapedNames = new Set<string>();
       const knownMutationCall = isKnownMutationCall(node);
+      const callee = unwrapExpression(node.expression);
+      const receiver =
+        ts.isPropertyAccessExpression(callee) ||
+        ts.isElementAccessExpression(callee)
+          ? callee.expression
+          : undefined;
+
+      if (receiver !== undefined) {
+        const receiverNames = containsExportedBindingReference(
+          receiver,
+          exportedBindings,
+        );
+        for (const name of receiverNames) {
+          if (
+            isReviewedOrStaticallyNonCallableBinding(
+              implementationPath,
+              name,
+              exportedBindings,
+              bindings,
+            )
+          ) {
+            continue;
+          }
+          addUnsupportedOperationForm(
+            unsupported,
+            implementationPath,
+            `exported binding(s) ${name} are used as an unresolved call receiver`,
+          );
+        }
+      }
+
       for (const argument of node.arguments) {
         for (const name of containsExportedBindingReference(
           argument,
@@ -1245,6 +1713,166 @@ function discoverExportedBindingCallEscapes(
   };
 
   sourceFile.forEachChild(visit);
+}
+
+function isDirectRecognisedCommonJsExportAssignment(
+  assignment: ts.BinaryExpression,
+): boolean {
+  const target = commonJsExportTarget(assignment.left);
+  return (
+    isAssignmentOperator(assignment.operatorToken.kind) &&
+    assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    target.isExportSurface &&
+    target.operation !== null
+  );
+}
+
+function isDirectExportedBindingMutation(
+  assignment: ts.BinaryExpression,
+  exportedBindings: ExportedBindingNames,
+): boolean {
+  const left = unwrapExpression(assignment.left);
+  if (ts.isIdentifier(left)) {
+    return exportedBindings.has(left.text);
+  }
+
+  const target = exportedMemberTarget(left);
+  return target !== null && exportedBindings.has(target.localName);
+}
+
+function discoverExportedBindingAliasEscapes(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  exportedBindings: ExportedBindingNames,
+  bindings: ReadonlyMap<string, BindingDeclaration>,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  const isPotentialAliasInitializer = (expression: ts.Expression): boolean => {
+    const unwrapped = unwrapExpression(expression);
+    const hasAliasShape =
+      ts.isIdentifier(unwrapped) ||
+      ts.isObjectLiteralExpression(unwrapped) ||
+      ts.isArrayLiteralExpression(unwrapped) ||
+      ts.isPropertyAccessExpression(unwrapped) ||
+      ts.isElementAccessExpression(unwrapped);
+    if (!hasAliasShape) {
+      return false;
+    }
+
+    const names = containsExportedBindingReference(
+      unwrapped,
+      exportedBindings,
+    );
+    return names.some(
+      (name) =>
+        !isReviewedOrStaticallyNonCallableBinding(
+          implementationPath,
+          name,
+          exportedBindings,
+          bindings,
+        ),
+    );
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer !== undefined &&
+      isPotentialAliasInitializer(node.initializer)
+    ) {
+      const names = containsExportedBindingReference(
+        node.initializer,
+        exportedBindings,
+      );
+      if (names.length > 0) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `exported binding(s) ${names.sort().join(", ")} lose provenance in a new binding ${node.name.getText()}`,
+        );
+      }
+    }
+
+    if (
+      ts.isBinaryExpression(node) &&
+      isAssignmentOperator(node.operatorToken.kind)
+    ) {
+      const names = containsExportedBindingReference(
+        node.right,
+        exportedBindings,
+      );
+      if (
+        names.length > 0 &&
+        !isDirectRecognisedCommonJsExportAssignment(node) &&
+        !isDirectExportedBindingMutation(node, exportedBindings)
+      ) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          `exported binding(s) ${names.sort().join(", ")} lose provenance through an assignment target`,
+        );
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  sourceFile.forEachChild(visit);
+}
+
+function isPlainModuleLoadLiteral(expression: ts.Expression): boolean {
+  return ts.isLiteralExpression(unwrapExpression(expression));
+}
+
+function discoverModuleLoadExecution(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  for (const statement of sourceFile.statements) {
+    if (ts.isExpressionStatement(statement)) {
+      if (!isPlainModuleLoadLiteral(statement.expression)) {
+        addUnsupportedOperationForm(
+          unsupported,
+          implementationPath,
+          "top-level module initialization expression is not statically proven side-effect-free",
+        );
+      }
+      continue;
+    }
+
+    if (
+      !ts.isVariableStatement(statement) ||
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+    ) {
+      continue;
+    }
+
+    for (const declaration of statement.declarationList.declarations) {
+      if (declaration.initializer === undefined) {
+        continue;
+      }
+
+      if (
+        isReviewedNonOperationalModuleInitializer(
+          implementationPath,
+          ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : declaration.name.getText(sourceFile),
+          declaration.initializer,
+        ) ||
+        isEagerlyInertInitializer(declaration.initializer)
+      ) {
+        continue;
+      }
+
+      addUnsupportedOperationForm(
+        unsupported,
+        implementationPath,
+        `module-scope initializer ${declaration.name.getText(sourceFile)} has unresolved eager execution`,
+      );
+    }
+  }
 }
 
 function collectCommonJsExportedBindingNames(
@@ -1649,6 +2277,14 @@ function analyzeSource(
     ts.forEachChild(node, visitAssignments);
   };
   sourceFile.forEachChild(visitAssignments);
+  discoverModuleLoadExecution(normalizedPath, sourceFile, unsupported);
+  discoverExportedBindingAliasEscapes(
+    normalizedPath,
+    sourceFile,
+    exportedBindings,
+    bindings,
+    unsupported,
+  );
   discoverExportedBindingCallEscapes(
     normalizedPath,
     sourceFile,

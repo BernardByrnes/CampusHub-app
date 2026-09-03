@@ -70,9 +70,6 @@ export const APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS = [
   "global.health.route",
   "global.health.service",
   "global.database.client",
-  "global.membership-repository.constructor",
-  "global.publication-repository.constructor",
-  "global.tenant-repository.constructor",
   "global.schema.barrel",
   "global.env.reader",
   "global.env.schema",
@@ -97,21 +94,6 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   "global.database.client": {
     category: "infrastructure",
     implementationPath: "src/server/db/client.ts",
-  },
-  "global.membership-repository.constructor": {
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/membership-repository.ts",
-    operation: "DrizzleMembershipRepository.constructor",
-  },
-  "global.publication-repository.constructor": {
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/publication-repository.ts",
-    operation: "DrizzlePublicationRepository.constructor",
-  },
-  "global.tenant-repository.constructor": {
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/tenant-repository.ts",
-    operation: "DrizzleTenantRepository.constructor",
   },
   "global.schema.barrel": {
     category: "infrastructure",
@@ -233,6 +215,21 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     exportName: "TENANT_SCOPE_CLASSIFICATIONS",
     expectedAstForm: "ArrayLiteralExpression",
   },
+  {
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    exportName: "TENANT_SCOPE_MATRIX",
+    expectedAstForm: "ObjectLiteralExpression",
+  },
+  {
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    exportName: "APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS",
+    expectedAstForm: "ArrayLiteralExpression",
+  },
+  {
+    implementationPath: "src/server/tenancy/tenant-surface-registry.ts",
+    exportName: "APPROVED_GLOBAL_NON_TENANT_CONTRACTS",
+    expectedAstForm: "ObjectLiteralExpression",
+  },
 ] as const;
 
 /**
@@ -262,38 +259,111 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
 /**
  * Existing exported service/repository constructors are dependency-injection
  * construction details rather than independently governed operations. These
- * exact path/class contracts preserve that reviewed surface only when the
- * constructor body is empty; a newly executable constructor is discovered as
- * a callable operation.
+ * exact structural contracts preserve only the reviewed constructor shape:
+ * explicit public construction, one reviewed parameter-property signature,
+ * no executable parameter initializer beyond the named default, and no eager
+ * class initialization. Any shape drift re-enters operation discovery.
  */
+export type ReviewedNonOperationalConstructorContract = Readonly<{
+  implementationPath: string;
+  classIdentity: string;
+  constructorModifiers: readonly string[];
+  parameterCount: number;
+  parameterNames: readonly string[];
+  parameterTypeTexts: readonly string[];
+  parameterPropertyModifiers: readonly (readonly string[])[];
+  defaultInitializerIdentifiers: readonly (string | null)[];
+}>;
+
 export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
   {
     implementationPath: "src/application/context/resolve-request-context.ts",
     classIdentity: "RequestContextService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["ResolveRequestContextDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
   {
     implementationPath: "src/application/content/create-publication.ts",
     classIdentity: "CreatePublicationService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["CreatePublicationServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
   {
     implementationPath: "src/application/content/list-publications.ts",
     classIdentity: "ListPublicationsService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["ListPublicationsServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
   {
     implementationPath: "src/application/content/read-publication.ts",
     classIdentity: "ReadPublicationService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["ReadPublicationServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
   {
     implementationPath: "src/server/repositories/membership-repository.ts",
     classIdentity: "DrizzleMembershipRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
   },
   {
     implementationPath: "src/server/repositories/publication-repository.ts",
     classIdentity: "DrizzlePublicationRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
   },
   {
     implementationPath: "src/server/repositories/tenant-repository.ts",
     classIdentity: "DrizzleTenantRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
+  },
+] as const satisfies readonly ReviewedNonOperationalConstructorContract[];
+
+/**
+ * These are exact reviewed module-initializer shapes for the two existing
+ * non-exported infrastructure/configuration bindings that intentionally run
+ * while their modules evaluate. They are path, binding, and AST-shape bound;
+ * no call-name or directory-wide exemption is granted.
+ */
+export const REVIEWED_NON_OPERATIONAL_MODULE_INITIALIZER_CONTRACTS = [
+  {
+    implementationPath: "src/server/config/env-schema.ts",
+    bindingName: "postgresConnectionString",
+    initializerShape: "postgres_connection_string_schema",
+  },
+  {
+    implementationPath: "src/server/db/client.ts",
+    bindingName: "database",
+    initializerShape: "database_cache_or_create",
   },
 ] as const;
 
@@ -557,39 +627,6 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Connection infrastructure performs no resource query by itself.",
     requiredNegativeTestIds: [],
     globalExemptionReason: "The connection pool is shared infrastructure; every resource query remains scoped in its repository.",
-  },
-  {
-    id: "global.membership-repository.constructor",
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/membership-repository.ts",
-    surface: "DrizzleMembershipRepository constructor dependency wiring",
-    tenantScope: "GLOBAL_NON_TENANT",
-    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
-    requiredNegativeTestIds: [],
-    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
-    operation: "DrizzleMembershipRepository.constructor",
-  },
-  {
-    id: "global.publication-repository.constructor",
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/publication-repository.ts",
-    surface: "DrizzlePublicationRepository constructor dependency wiring",
-    tenantScope: "GLOBAL_NON_TENANT",
-    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
-    requiredNegativeTestIds: [],
-    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
-    operation: "DrizzlePublicationRepository.constructor",
-  },
-  {
-    id: "global.tenant-repository.constructor",
-    category: "infrastructure",
-    implementationPath: "src/server/repositories/tenant-repository.ts",
-    surface: "DrizzleTenantRepository constructor dependency wiring",
-    tenantScope: "GLOBAL_NON_TENANT",
-    isolationStrategy: "Constructor selects an injected or default database dependency without performing a Tenant query.",
-    requiredNegativeTestIds: [],
-    globalExemptionReason: "Repository construction wires shared infrastructure; Tenant scoping begins at each repository operation.",
-    operation: "DrizzleTenantRepository.constructor",
   },
   {
     id: "global.schema.barrel",
