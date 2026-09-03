@@ -26,14 +26,37 @@ key, even if a future account model contains it.
 | `RequestContext.membershipId` | Trusted active context | One active Membership UUID for `RequestContext.tenantId`. | `CURRENT` |
 | `publication.id` | Publication resource | PostgreSQL UUID primary key; direct and collection reads are Tenant-scoped. | `CURRENT` |
 | `publication.tenantId` | Publication ownership | PostgreSQL UUID FK to `tenant.id`. | `CURRENT` |
+| `campus.id` | Campus resource | PostgreSQL UUID primary key; stable across label changes and owned by one Tenant. | `CURRENT` |
+| `campus.tenantId` | Campus ownership | PostgreSQL UUID FK to `tenant.id`; downstream references use the Tenant-first composite identity. | `CURRENT` |
+| `academicDivision.id` | Academic Division resource | PostgreSQL UUID primary key; stable across label changes and non-destructive merges. | `CURRENT` |
+| `academicDivision.tenantId` | Academic Division ownership | PostgreSQL UUID FK to `tenant.id`; parent and merge references remain Tenant-local. | `CURRENT` |
+| `academicDivision.parentAcademicDivisionId` | Academic Division hierarchy | Nullable PostgreSQL UUID paired with `academicDivision.tenantId` for a same-Tenant composite FK. | `CURRENT` |
+| `academicDivision.mergedIntoAcademicDivisionId` | Academic Division merge metadata | Nullable PostgreSQL UUID paired with `academicDivision.tenantId` for a same-Tenant composite FK. | `CURRENT` |
+| `programme.id` | Programme resource | PostgreSQL UUID primary key; stable across label changes and non-destructive merges. | `CURRENT` |
+| `programme.tenantId` | Programme ownership | PostgreSQL UUID FK to `tenant.id`; downstream references use the Tenant-first composite identity. | `CURRENT` |
+| `programme.academicDivisionId` | Programme affiliation | PostgreSQL UUID paired with `programme.tenantId` for a same-Tenant Academic Division FK. | `CURRENT` |
+| `programme.mergedIntoProgrammeId` | Programme merge metadata | Nullable PostgreSQL UUID paired with `programme.tenantId` for a same-Tenant composite FK. | `CURRENT` |
+| `residence.id` | Residence resource | PostgreSQL UUID primary key; stable optional Residence identity. | `CURRENT` |
+| `residence.tenantId` | Residence ownership | PostgreSQL UUID FK to `tenant.id`; no `non_resident` Residence row is inferred. | `CURRENT` |
+| `tenantAcademicYearConfig.tenantId` | Tenant academic-year configuration | PostgreSQL UUID one-to-one primary key and FK to `tenant.id`. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `publications.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `campuses.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `academic_divisions.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `academic_divisions.(tenant_id,parent_academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant parent FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `academic_divisions.(tenant_id,merged_into_academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant merge FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `programmes.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `programmes.(tenant_id,academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant Programme affiliation FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `programmes.(tenant_id,merged_into_programme_id) -> programmes.(tenant_id,id)` | Same-Tenant merge FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `residences.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `tenant_academic_year_config.tenant_id -> tenants.id` | One-to-one ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 
-The current ID-bearing Tenant-owned models are therefore `memberships` and
-`publications`, with `tenants` as their Tenant root. There is no current Global
-User, account, session, credential, OAuth, or MFA table.
+The current ID-bearing Tenant-owned models are `memberships`, `publications`,
+`campuses`, `academic_divisions`, `programmes`, `residences`, and
+`tenant_academic_year_config`, with `tenants` as their Tenant root. There is no
+current Global User, account, session, credential, OAuth, or MFA table.
 
 ## Future identifier classes
 

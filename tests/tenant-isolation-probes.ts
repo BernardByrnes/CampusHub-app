@@ -13,7 +13,16 @@ import { ReadPublicationService } from "@/application/content/read-publication";
 import { RequestContextService } from "@/application/context/resolve-request-context";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { CampusHubDatabase } from "@/server/db/client";
-import { memberships, publications, tenants } from "@/server/db/schema";
+import {
+  academicDivisions,
+  campuses,
+  memberships,
+  programmes,
+  publications,
+  residences,
+  tenantAcademicYearConfig,
+  tenants,
+} from "@/server/db/schema";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 
@@ -79,6 +88,36 @@ function expectTenantOwnedTable(table: unknown): void {
   const columns = Object.values(config.columns) as Array<{ name: string }>;
   expect(columns.map((column) => column.name)).toContain("tenant_id");
   expect(config.foreignKeys.length).toBeGreaterThan(0);
+}
+
+function expectForeignKey(
+  table: unknown,
+  localColumns: readonly string[],
+  foreignColumns: readonly string[],
+): void {
+  const config = getTableConfig(table as never);
+  const found = config.foreignKeys.some((foreignKey) => {
+    const reference = foreignKey.reference();
+    return (
+      reference.columns.map((column) => column.name).join(",") ===
+        localColumns.join(",") &&
+      reference.foreignColumns.map((column) => column.name).join(",") ===
+        foreignColumns.join(",") &&
+      foreignKey.onDelete === "restrict" &&
+      foreignKey.onUpdate === "cascade"
+    );
+  });
+
+  expect(found).toBe(true);
+}
+
+function expectTenantCompositeIdentity(table: unknown): void {
+  const config = getTableConfig(table as never);
+  const uniqueConstraintNames = config.uniqueConstraints.map(
+    (constraint) => constraint.name,
+  );
+  expect(uniqueConstraintNames).toContain(`${config.name}_tenant_id_id_unique`);
+  expectForeignKey(table, ["tenant_id"], ["id"]);
 }
 
 async function membershipContextProbe(): Promise<void> {
@@ -262,6 +301,50 @@ export const tenantIsolationProbeRegistry: Readonly<
   "membership.identity-tenant": membershipContextProbe,
   "membership.id-tenant": membershipIdProbe,
   "publication.persistence": () => expectTenantOwnedTable(publications),
+  "campus.persistence": () => {
+    expectTenantOwnedTable(campuses);
+    expectTenantCompositeIdentity(campuses);
+  },
+  "academic-division.persistence": () => {
+    expectTenantOwnedTable(academicDivisions);
+    expectTenantCompositeIdentity(academicDivisions);
+    expectForeignKey(
+      academicDivisions,
+      ["tenant_id", "parent_academic_division_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      academicDivisions,
+      ["tenant_id", "merged_into_academic_division_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "programme.persistence": () => {
+    expectTenantOwnedTable(programmes);
+    expectTenantCompositeIdentity(programmes);
+    expectForeignKey(
+      programmes,
+      ["tenant_id", "academic_division_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      programmes,
+      ["tenant_id", "merged_into_programme_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "residence.persistence": () => {
+    expectTenantOwnedTable(residences);
+    expectTenantCompositeIdentity(residences);
+  },
+  "tenant-academic-year-config.persistence": () => {
+    expectTenantOwnedTable(tenantAcademicYearConfig);
+    const config = getTableConfig(tenantAcademicYearConfig);
+    expect(
+      config.columns.find((column) => column.name === "tenant_id")?.primary,
+    ).toBe(true);
+    expectForeignKey(tenantAcademicYearConfig, ["tenant_id"], ["id"]);
+  },
   "publication.direct": publicationDirectProbe,
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,

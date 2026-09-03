@@ -224,8 +224,13 @@ describe("A4 User/Membership boundary", () => {
     const currentTableConfigs = tableConfigs();
     const currentTableNames = currentTableConfigs.map((config) => config.name).sort();
     expect(currentTableNames).toEqual([
+      "academic_divisions",
+      "campuses",
       "memberships",
+      "programmes",
       "publications",
+      "residences",
+      "tenant_academic_year_config",
       "tenants",
     ]);
 
@@ -252,7 +257,15 @@ describe("A4 User/Membership boundary", () => {
       .map((config) => config.name)
       .sort();
 
-    expect(tenantOwnedTables).toEqual(["memberships", "publications"]);
+    expect(tenantOwnedTables).toEqual([
+      "academic_divisions",
+      "campuses",
+      "memberships",
+      "programmes",
+      "publications",
+      "residences",
+      "tenant_academic_year_config",
+    ]);
     for (const identifier of [
       "tenant.id",
       "tenant.slug",
@@ -262,12 +275,34 @@ describe("A4 User/Membership boundary", () => {
       "membership.identitySubjectId",
       "publication.id",
       "publication.tenantId",
+      "campus.id",
+      "campus.tenantId",
+      "academicDivision.id",
+      "academicDivision.tenantId",
+      "academicDivision.parentAcademicDivisionId",
+      "academicDivision.mergedIntoAcademicDivisionId",
+      "programme.id",
+      "programme.tenantId",
+      "programme.academicDivisionId",
+      "programme.mergedIntoProgrammeId",
+      "residence.id",
+      "residence.tenantId",
+      "tenantAcademicYearConfig.tenantId",
       "RequestContext.tenantId",
       "RequestContext.membershipId",
       "Publication collection cursor.id",
       "Publication collection cursor.publishAt",
       "memberships.tenant_id -> tenants.id",
       "publications.tenant_id -> tenants.id",
+      "campuses.tenant_id -> tenants.id",
+      "academic_divisions.tenant_id -> tenants.id",
+      "academic_divisions.(tenant_id,parent_academic_division_id) -> academic_divisions.(tenant_id,id)",
+      "academic_divisions.(tenant_id,merged_into_academic_division_id) -> academic_divisions.(tenant_id,id)",
+      "programmes.tenant_id -> tenants.id",
+      "programmes.(tenant_id,academic_division_id) -> academic_divisions.(tenant_id,id)",
+      "programmes.(tenant_id,merged_into_programme_id) -> programmes.(tenant_id,id)",
+      "residences.tenant_id -> tenants.id",
+      "tenant_academic_year_config.tenant_id -> tenants.id",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

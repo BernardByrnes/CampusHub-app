@@ -1,0 +1,31 @@
+# ADR 0006: Targeted-Publication Audience Hierarchy Foundation
+
+- Status: **IMPLEMENTED — PENDING SOL REVIEW**
+- Date: 2026-09-03
+- Scope: B.2.4.2 typed Tenant hierarchy foundation
+
+## Decision
+
+CampusHub uses typed Tenant-owned relational tables for `campuses`,
+`academic_divisions`, `programmes`, `residences`, and
+`tenant_academic_year_config`. A generic hierarchy-node table is not used.
+Stable UUIDs preserve identity across label changes. Academic Divisions use an
+explicit one- or two-level contract, and relational composite foreign keys
+preserve same-Tenant ownership for parents, merge targets, and Programme
+affiliation.
+
+Residences are real optional entities; `non_resident` remains a future
+Membership state and is not represented by a Residence row. Academic years use
+a Tenant-owned numeric minimum/maximum range with no fabricated default rows.
+This checkpoint stores current labels and non-destructive merge metadata only;
+it does not rewrite historical attribution, redirect references, or add label
+history.
+
+B.2.4.1 audience boolean/provenance semantics remain the approved contract,
+but Publication audience criteria, Membership affiliation fields, and audience
+read integration are deferred to later checkpoints. TI-1 Tenant-isolation
+registry and negative evidence accompany each implemented Tenant-owned model.
+
+The second-level parent invariant that cannot be expressed by the simple
+PostgreSQL checks alone belongs to the future canonical hierarchy mutation
+boundary. No broad hierarchy CRUD or audience resolution is introduced here.

@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0004_right_whizzer.sql",
+    implementationPath: "drizzle/0005_nostalgic_prima.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -153,6 +153,51 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/tenant.ts",
     exportName: "tenants",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "campusLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "academicDivisionLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "programmeLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "residenceLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "campuses",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "academicDivisions",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "programmes",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "residences",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/organization.ts",
+    exportName: "tenantAcademicYearConfig",
     expectedAstForm: "CallExpression",
   },
   {
@@ -252,6 +297,11 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/index.ts",
     moduleSpecifier: "./tenant",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./organization",
     exportForm: "ExportAllDeclaration",
   },
 ] as const;
@@ -460,6 +510,61 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["membership.persistence"],
     databaseObjectName: "memberships",
     operation: "table:memberships",
+  },
+  {
+    id: "campus.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/organization.ts",
+    surface: "campuses",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Campus rows require Tenant ownership and preserve a Tenant-first composite identity for downstream foreign keys.",
+    requiredNegativeTestIds: ["campus.persistence"],
+    databaseObjectName: "campuses",
+    operation: "table:campuses",
+  },
+  {
+    id: "academic-division.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/organization.ts",
+    surface: "academic_divisions",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Academic Division rows bind parent and merge references through same-Tenant composite foreign keys.",
+    requiredNegativeTestIds: ["academic-division.persistence"],
+    databaseObjectName: "academic_divisions",
+    operation: "table:academic_divisions",
+  },
+  {
+    id: "programme.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/organization.ts",
+    surface: "programmes",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Programme rows bind their Academic Division and merge target through same-Tenant composite foreign keys.",
+    requiredNegativeTestIds: ["programme.persistence"],
+    databaseObjectName: "programmes",
+    operation: "table:programmes",
+  },
+  {
+    id: "residence.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/organization.ts",
+    surface: "residences",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Residence rows require Tenant ownership and retain stable Tenant-first identity.",
+    requiredNegativeTestIds: ["residence.persistence"],
+    databaseObjectName: "residences",
+    operation: "table:residences",
+  },
+  {
+    id: "tenant-academic-year-config.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/organization.ts",
+    surface: "tenant_academic_year_config",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "The academic-year range is one-to-one with its owning Tenant through a primary-key Tenant foreign key.",
+    requiredNegativeTestIds: ["tenant-academic-year-config.persistence"],
+    databaseObjectName: "tenant_academic_year_config",
+    operation: "table:tenant_academic_year_config",
   },
   {
     id: "membership.context.reader-contract",
@@ -687,8 +792,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0004_right_whizzer.sql",
-    surface: "Reviewed Drizzle migration history through 0004",
+    implementationPath: "drizzle/0005_nostalgic_prima.sql",
+    surface: "Reviewed Drizzle migration history through 0005",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -699,8 +804,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0002_talented_timeslip.sql",
       "drizzle/0003_skinny_boom_boom.sql",
       "drizzle/0004_right_whizzer.sql",
+      "drizzle/0005_nostalgic_prima.sql",
     ],
-    migrationHead: "drizzle/0004_right_whizzer.sql",
+    migrationHead: "drizzle/0005_nostalgic_prima.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

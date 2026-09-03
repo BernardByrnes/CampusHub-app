@@ -31,6 +31,11 @@ function implementationPathForDatabaseObject(
   databaseObjectName: string,
 ): string {
   const knownPaths: Record<string, string> = {
+    campuses: "src/server/db/schema/organization.ts",
+    academic_divisions: "src/server/db/schema/organization.ts",
+    programmes: "src/server/db/schema/organization.ts",
+    residences: "src/server/db/schema/organization.ts",
+    tenant_academic_year_config: "src/server/db/schema/organization.ts",
     tenants: "src/server/db/schema/tenant.ts",
     memberships: "src/server/db/schema/membership.ts",
     publications: "src/server/db/schema/publication.ts",
