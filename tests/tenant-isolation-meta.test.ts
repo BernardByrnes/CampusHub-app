@@ -1080,6 +1080,75 @@ describe("Tenant isolation governance registry", () => {
     ).toEqual([]);
   });
 
+  it("classifies every known top-level runtime statement fail-closed", () => {
+    const runtimeStatements = [
+      "if (condition) { performTenantSensitiveWork(); }",
+      "if (condition) { performFirst(); } else { performSecond(); }",
+      "for (;;) { performTenantSensitiveWork(); }",
+      "for (const value of values) { performTenantSensitiveWork(value); }",
+      "while (condition) { performTenantSensitiveWork(); }",
+      "do { performTenantSensitiveWork(); } while (condition);",
+      "switch (value) { case 1: performTenantSensitiveWork(); break; }",
+      "try { performTenantSensitiveWork(); } catch { recover(); } finally { finish(); }",
+      "{ performTenantSensitiveWork(); }",
+      "throw new Error(\"runtime\");",
+      "runtimeLabel: performTenantSensitiveWork();",
+    ];
+
+    for (const [index, sourceText] of runtimeStatements.entries()) {
+      const implementationPath =
+        `src/server/services/module-load-statement-${index}.ts`;
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(unsupported.length, sourceText).toBeGreaterThan(0);
+    }
+  });
+
+  it("rejects runtime enum and namespace declarations while preserving type-only negatives", () => {
+    const runtimeDeclarations = [
+      "enum HiddenRuntimeEnum { First, Second }",
+      "namespace HiddenRuntimeNamespace { export const value = 1; }",
+    ];
+    for (const [index, sourceText] of runtimeDeclarations.entries()) {
+      const implementationPath =
+        `src/server/services/module-load-runtime-declaration-${index}.ts`;
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          implementationPath,
+          sourceText,
+        ).length,
+      ).toBeGreaterThan(0);
+    }
+
+    const typeOnlyDeclarations = [
+      "type HiddenType = { value: string };",
+      "interface HiddenInterface { value: string }",
+      "function hiddenFunction() { performTenantSensitiveWork(); }",
+      "declare enum AmbientEnum { First, Second }",
+      "declare namespace AmbientNamespace { const value: string; }",
+    ];
+    for (const [index, sourceText] of typeOnlyDeclarations.entries()) {
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          `src/server/services/module-load-type-only-${index}.ts`,
+          sourceText,
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it("defaults an unrecognized top-level statement to fail-closed", () => {
+    const unsupported = discoverUnsupportedOperationFormsFromSource(
+      "src/server/services/module-load-unknown-statement.ts",
+      "debugger;",
+    );
+
+    expect(unsupported.length).toBeGreaterThan(0);
+  });
+
   it("fails full validation for module-load additions on a real governed path", () => {
     const implementationPath =
       "src/application/content/publication-read-resolvers.ts";
@@ -1087,10 +1156,12 @@ describe("Tenant isolation governance registry", () => {
       path.join(repositoryRoot, implementationPath),
       "utf8",
     );
+    const baseInput = currentRegistryValidationInput();
 
     expectFullRegistryValidationFailure(
       { [implementationPath]: `${sourceText}\nperformTenantSensitiveWork();\n` },
       implementationPath,
+      baseInput,
     );
     expectFullRegistryValidationFailure(
       {
@@ -1098,6 +1169,7 @@ describe("Tenant isolation governance registry", () => {
           `${sourceText}\nconst hidden = performTenantSensitiveWork();\n`,
       },
       implementationPath,
+      baseInput,
     );
     expectFullRegistryValidationFailure(
       {
@@ -1105,8 +1177,64 @@ describe("Tenant isolation governance registry", () => {
           `${sourceText}\nexport class ExistingClass { private hidden = performTenantSensitiveWork(); }\n`,
       },
       implementationPath,
+      baseInput,
     );
+
+    const realPathModuleLoadStatements = [
+      "if (condition) { performTenantSensitiveWork(); }",
+      "for (const value of values) { performTenantSensitiveWork(value); }",
+      "try { performTenantSensitiveWork(); } catch { recover(); } finally { finish(); }",
+      "switch (value) { case 1: performTenantSensitiveWork(); break; }",
+    ];
+    for (const statement of realPathModuleLoadStatements) {
+      expectFullRegistryValidationFailure(
+        { [implementationPath]: `${sourceText}\n${statement}\n` },
+        implementationPath,
+        baseInput,
+      );
+    }
+
+    for (const declaration of [
+      "enum HiddenRuntimeEnum { First, Second }",
+      "namespace HiddenRuntimeNamespace { export const value = 1; }",
+    ]) {
+      expectFullRegistryValidationFailure(
+        { [implementationPath]: `${sourceText}\n${declaration}\n` },
+        implementationPath,
+        baseInput,
+      );
+    }
   }, 30_000);
+
+  it("keeps reviewed module initializers exact and rejects executable drift", () => {
+    const envPath = "src/server/config/env-schema.ts";
+    const envSource = readFileSync(path.join(repositoryRoot, envPath), "utf8");
+    const mutatedEnvSource = envSource.replace(
+      "    (value) => {",
+      "    performTenantSensitiveWork(), (value) => {",
+    );
+    expect(mutatedEnvSource).not.toBe(envSource);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(envPath, mutatedEnvSource),
+    ).not.toEqual([]);
+
+    const databasePath = "src/server/db/client.ts";
+    const databaseSource = readFileSync(
+      path.join(repositoryRoot, databasePath),
+      "utf8",
+    );
+    const mutatedDatabaseSource = databaseSource.replace(
+      "globalForDatabase.campushubDatabase ?? createDatabase()",
+      "globalForDatabase.campushubDatabase ?? performTenantSensitiveWork()",
+    );
+    expect(mutatedDatabaseSource).not.toBe(databaseSource);
+    expect(
+      discoverUnsupportedOperationFormsFromSource(
+        databasePath,
+        mutatedDatabaseSource,
+      ),
+    ).not.toEqual([]);
+  });
 
   it("fails closed for exported-binding aliases, composites, and receivers", () => {
     const aliasCases = [

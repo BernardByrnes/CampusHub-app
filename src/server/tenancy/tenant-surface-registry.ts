@@ -367,6 +367,19 @@ export const REVIEWED_NON_OPERATIONAL_MODULE_INITIALIZER_CONTRACTS = [
   },
 ] as const;
 
+/**
+ * This is the one existing top-level control-flow statement whose module-load
+ * behavior has been explicitly reviewed: the development-only database cache
+ * assignment. Its path and structural shape are validated by discovery; a
+ * different condition or assignment is not covered by this contract.
+ */
+export const REVIEWED_NON_OPERATIONAL_MODULE_STATEMENT_CONTRACTS = [
+  {
+    implementationPath: "src/server/db/client.ts",
+    statementShape: "development_database_cache_assignment",
+  },
+] as const;
+
 export type TenantSurfaceRegistryEntry = Readonly<{
   id: string;
   category: TenantSurfaceCategory;

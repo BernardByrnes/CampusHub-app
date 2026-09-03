@@ -7,6 +7,7 @@ import {
   REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS,
   REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS,
   REVIEWED_NON_OPERATIONAL_MODULE_INITIALIZER_CONTRACTS,
+  REVIEWED_NON_OPERATIONAL_MODULE_STATEMENT_CONTRACTS,
   REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS,
 } from "@/server/tenancy/tenant-surface-registry";
 
@@ -810,6 +811,77 @@ function isReviewedNonOperationalModuleInitializer(
     default:
       return false;
   }
+}
+
+function isReviewedNonOperationalModuleStatement(
+  implementationPath: string,
+  statement: ts.Statement,
+): boolean {
+  const contract = REVIEWED_NON_OPERATIONAL_MODULE_STATEMENT_CONTRACTS.find(
+    (candidate) => candidate.implementationPath === implementationPath,
+  );
+  if (
+    contract === undefined ||
+    contract.statementShape !== "development_database_cache_assignment" ||
+    !ts.isIfStatement(statement) ||
+    statement.elseStatement !== undefined
+  ) {
+    return false;
+  }
+
+  const condition = unwrapExpression(statement.expression);
+  if (
+    !ts.isBinaryExpression(condition) ||
+    condition.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    return false;
+  }
+
+  const environmentProperty = unwrapExpression(condition.left);
+  if (
+    !ts.isPropertyAccessExpression(environmentProperty) ||
+    environmentProperty.name.text !== "NODE_ENV"
+  ) {
+    return false;
+  }
+
+  const environmentCall = unwrapExpression(environmentProperty.expression);
+  if (
+    !ts.isCallExpression(environmentCall) ||
+    environmentCall.arguments.length !== 0 ||
+    !isIdentifierExpression(environmentCall.expression, "getServerEnv") ||
+    staticStringValue(condition.right) !== "production"
+  ) {
+    return false;
+  }
+
+  if (
+    !ts.isBlock(statement.thenStatement) ||
+    statement.thenStatement.statements.length !== 1
+  ) {
+    return false;
+  }
+
+  const bodyStatement = statement.thenStatement.statements[0];
+  if (!ts.isExpressionStatement(bodyStatement)) {
+    return false;
+  }
+
+  const assignment = unwrapExpression(bodyStatement.expression);
+  if (
+    !ts.isBinaryExpression(assignment) ||
+    assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+  ) {
+    return false;
+  }
+
+  const cacheProperty = unwrapExpression(assignment.left);
+  return (
+    ts.isPropertyAccessExpression(cacheProperty) &&
+    isIdentifierExpression(cacheProperty.expression, "globalForDatabase") &&
+    cacheProperty.name.text === "campushubDatabase" &&
+    isIdentifierExpression(assignment.right, "database")
+  );
 }
 
 function isEagerlyInertInitializer(
@@ -1824,52 +1896,142 @@ function isPlainModuleLoadLiteral(expression: ts.Expression): boolean {
   return ts.isLiteralExpression(unwrapExpression(expression));
 }
 
-function discoverModuleLoadExecution(
+type TopLevelStatementClassification =
+  | "safe_declaration"
+  | "already_governed"
+  | "reviewed_safe_initialization"
+  | "unsupported_runtime";
+
+function isAmbientTopLevelDeclaration(statement: ts.Statement): boolean {
+  return hasModifier(statement, ts.SyntaxKind.DeclareKeyword);
+}
+
+function classifyTopLevelStatement(
   implementationPath: string,
   sourceFile: ts.SourceFile,
-  unsupported: DiscoveredUnsupportedOperationForm[],
-): void {
-  for (const statement of sourceFile.statements) {
-    if (ts.isExpressionStatement(statement)) {
-      if (!isPlainModuleLoadLiteral(statement.expression)) {
-        addUnsupportedOperationForm(
-          unsupported,
-          implementationPath,
-          "top-level module initialization expression is not statically proven side-effect-free",
-        );
-      }
-      continue;
+  statement: ts.Statement,
+): TopLevelStatementClassification {
+  if (ts.isExpressionStatement(statement)) {
+    return isPlainModuleLoadLiteral(statement.expression)
+      ? "safe_declaration"
+      : "unsupported_runtime";
+  }
+
+  if (ts.isVariableStatement(statement)) {
+    if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+      return "already_governed";
     }
 
-    if (
-      !ts.isVariableStatement(statement) ||
-      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
-    ) {
-      continue;
-    }
-
+    let hasReviewedInitializer = false;
     for (const declaration of statement.declarationList.declarations) {
       if (declaration.initializer === undefined) {
         continue;
       }
 
+      const bindingName = ts.isIdentifier(declaration.name)
+        ? declaration.name.text
+        : declaration.name.getText(sourceFile);
       if (
         isReviewedNonOperationalModuleInitializer(
           implementationPath,
-          ts.isIdentifier(declaration.name)
-            ? declaration.name.text
-            : declaration.name.getText(sourceFile),
+          bindingName,
           declaration.initializer,
-        ) ||
-        isEagerlyInertInitializer(declaration.initializer)
+        )
       ) {
+        hasReviewedInitializer = true;
         continue;
       }
 
+      if (!isEagerlyInertInitializer(declaration.initializer)) {
+        return "unsupported_runtime";
+      }
+    }
+
+    return hasReviewedInitializer
+      ? "reviewed_safe_initialization"
+      : "safe_declaration";
+  }
+
+  if (
+    ts.isImportDeclaration(statement) ||
+    ts.isImportEqualsDeclaration(statement) ||
+    ts.isExportDeclaration(statement) ||
+    ts.isExportAssignment(statement)
+  ) {
+    return "already_governed";
+  }
+
+  if (
+    ts.isFunctionDeclaration(statement) ||
+    ts.isTypeAliasDeclaration(statement) ||
+    ts.isInterfaceDeclaration(statement) ||
+    ts.isEmptyStatement(statement)
+  ) {
+    return "safe_declaration";
+  }
+
+  if (ts.isClassDeclaration(statement)) {
+    return "already_governed";
+  }
+
+  if (ts.isEnumDeclaration(statement)) {
+    if (isAmbientTopLevelDeclaration(statement)) {
+      return "safe_declaration";
+    }
+    return hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+      ? "already_governed"
+      : "unsupported_runtime";
+  }
+
+  if (ts.isModuleDeclaration(statement)) {
+    if (isAmbientTopLevelDeclaration(statement)) {
+      return "safe_declaration";
+    }
+    return hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+      ? "already_governed"
+      : "unsupported_runtime";
+  }
+
+  if (isReviewedNonOperationalModuleStatement(implementationPath, statement)) {
+    return "reviewed_safe_initialization";
+  }
+
+  if (
+    ts.isIfStatement(statement) ||
+    ts.isForStatement(statement) ||
+    ts.isForInStatement(statement) ||
+    ts.isForOfStatement(statement) ||
+    ts.isWhileStatement(statement) ||
+    ts.isDoStatement(statement) ||
+    ts.isSwitchStatement(statement) ||
+    ts.isTryStatement(statement) ||
+    ts.isBlock(statement) ||
+    ts.isThrowStatement(statement) ||
+    ts.isLabeledStatement(statement)
+  ) {
+    return "unsupported_runtime";
+  }
+
+  // A new or currently unrecognized top-level statement must never default to
+  // safe: module evaluation is executable unless its safety is proven above.
+  return "unsupported_runtime";
+}
+
+function discoverModuleLoadExecution(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  unsupported: DiscoveredUnsupportedOperationForm[],
+): void {
+  for (const [statementIndex, statement] of sourceFile.statements.entries()) {
+    if (
+      classifyTopLevelStatement(implementationPath, sourceFile, statement) ===
+      "unsupported_runtime"
+    ) {
+      const statementKind = ts.SyntaxKind[statement.kind] ?? "UnknownStatement";
       addUnsupportedOperationForm(
         unsupported,
         implementationPath,
-        `module-scope initializer ${declaration.name.getText(sourceFile)} has unresolved eager execution`,
+        `top-level statement #${statementIndex + 1} (${statementKind}) has unresolved module-load execution`,
       );
     }
   }
