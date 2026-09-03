@@ -118,6 +118,14 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
@@ -155,12 +163,16 @@ function isResidenceTarget(value: unknown): value is PublicationResidenceTarget 
 
   if (value.kind === "specific_residence") {
     return (
+      hasOnlyKeys(value, ["kind", "residenceId"]) &&
       hasOwn(value, "residenceId") &&
       isUuid(value.residenceId)
     );
   }
 
-  return value.kind === "any_resident" || value.kind === "non_resident";
+  return (
+    (value.kind === "any_resident" || value.kind === "non_resident") &&
+    hasOnlyKeys(value, ["kind"])
+  );
 }
 
 function residenceTargetKey(target: PublicationResidenceTarget): string {
@@ -196,26 +208,35 @@ function isGroup(value: unknown): value is PublicationAudienceGroup {
   switch (value.dimension) {
     case "campus":
       return (
+        hasOnlyKeys(value, ["dimension", "provenancePolicy", "campusIds"]) &&
         hasOwn(value, "campusIds") &&
         isUuidArray(value.campusIds)
       );
     case "academic_division":
       return (
+        hasOnlyKeys(value, [
+          "dimension",
+          "provenancePolicy",
+          "academicDivisionIds",
+        ]) &&
         hasOwn(value, "academicDivisionIds") &&
         isUuidArray(value.academicDivisionIds)
       );
     case "programme":
       return (
+        hasOnlyKeys(value, ["dimension", "provenancePolicy", "programmeIds"]) &&
         hasOwn(value, "programmeIds") &&
         isUuidArray(value.programmeIds)
       );
     case "academic_year":
       return (
+        hasOnlyKeys(value, ["dimension", "provenancePolicy", "academicYears"]) &&
         hasOwn(value, "academicYears") &&
         isPositiveIntegerArray(value.academicYears)
       );
     case "residence":
       return (
+        hasOnlyKeys(value, ["dimension", "provenancePolicy", "residenceTargets"]) &&
         hasOwn(value, "residenceTargets") &&
         isResidenceTargetArray(value.residenceTargets)
       );

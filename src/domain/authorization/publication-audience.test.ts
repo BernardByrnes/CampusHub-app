@@ -165,6 +165,88 @@ describe("Publication audience definitions", () => {
     ).toBe(false);
   });
 
+  it("rejects foreign semantic payloads from every other dimension", () => {
+    const foreignPayloadCases = [
+      {
+        dimension: "campus",
+        provenancePolicy: "authoritative_only",
+        campusIds: [campusId],
+        programmeIds: [programmeId],
+      },
+      {
+        dimension: "academic_division",
+        provenancePolicy: "authoritative_only",
+        academicDivisionIds: [divisionId],
+        campusIds: [campusId],
+      },
+      {
+        dimension: "programme",
+        provenancePolicy: "authoritative_only",
+        programmeIds: [programmeId],
+        academicYears: [2],
+      },
+      {
+        dimension: "academic_year",
+        provenancePolicy: "authoritative_only",
+        academicYears: [2],
+        residenceTargets: [{ kind: "non_resident" }],
+      },
+      {
+        dimension: "residence",
+        provenancePolicy: "authoritative_only",
+        residenceTargets: [{ kind: "non_resident" }],
+        programmeIds: [programmeId],
+      },
+    ];
+
+    for (const group of foreignPayloadCases) {
+      expect(
+        isPublicationAudienceDefinition({
+          ...definition([], "targeted"),
+          groups: [group],
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("requires exact residence target shapes", () => {
+    expect(
+      isPublicationAudienceDefinition(
+        definition([
+          residenceGroup([{ kind: "specific_residence", residenceId }]),
+        ]),
+      ),
+    ).toBe(true);
+    expect(
+      isPublicationAudienceDefinition(
+        definition([residenceGroup([{ kind: "any_resident" }])]),
+      ),
+    ).toBe(true);
+    expect(
+      isPublicationAudienceDefinition(
+        definition([residenceGroup([{ kind: "non_resident" }])]),
+      ),
+    ).toBe(true);
+
+    for (const target of [
+      { kind: "any_resident", residenceId },
+      { kind: "non_resident", residenceId },
+    ]) {
+      expect(
+        isPublicationAudienceDefinition({
+          ...definition([], "targeted"),
+          groups: [
+            {
+              dimension: "residence",
+              provenancePolicy: "authoritative_only",
+              residenceTargets: [target],
+            },
+          ],
+        }),
+      ).toBe(false);
+    }
+  });
+
   it("parses only the approved provenance policies", () => {
     expect(parsePublicationAudienceProvenancePolicy("authoritative_only")).toBe(
       "authoritative_only",
