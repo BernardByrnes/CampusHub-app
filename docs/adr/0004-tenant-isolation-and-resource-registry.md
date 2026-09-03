@@ -1,8 +1,8 @@
 # ADR 0004: Tenant Isolation and Resource Registry
 
-- Status: **PROPOSED — READY FOR INDEPENDENT RE-REVIEW**
-- Date: 2026-09-02
-- Decision owner: independent security review is still required
+- Status: **APPROVED WITH NONBLOCKING OBLIGATIONS**
+- Date: 2026-09-03
+- Decision owner: independent security review completed
 - Scope: 8V-B.A2 tenant-isolation governance and resource-registry gate
 
 ## Decision
@@ -11,9 +11,8 @@ CampusHub treats the active Tenant as a mandatory security boundary for every
 Tenant-owned resource. A resource read, collection read, background operation,
 export, search operation, cache access, media access, notification, analytics,
 backup, and restore operation must carry a trusted Tenant context or fail
-closed. This
-ADR is a proposed governance contract; it does not approve A2 and does not
-grant authorization by itself.
+closed. This ADR is the approved A2 governance contract with nonblocking
+obligations; it does not grant authorization by itself.
 
 The registry at `src/server/tenancy/tenant-surface-registry.ts` is metadata only.
 It records ownership, implementation location, isolation strategy, and required
@@ -244,10 +243,32 @@ operations. The reserved categories `jobs`, `exports`, `search`, `cache`,
 | Malformed identifier | Reject before PostgreSQL. | `PASS` — repository/context/service tests. |
 | Deleted/nonexistent resource | Same safe not-found outcome as wrong-Tenant resource. | `PASS` — direct-read evidence. |
 
-## Review boundary and recommendation
+## Approval record
 
-The A2.2 remediation is ready to be handed to independent security re-review
-after the reported quality gates pass. This ADR remains explicitly proposed
-and unapproved; it records no A2 approval. A4 is separately approved with
-nonblocking future obligations in ADR 0005. B.2.4 must not begin until A2 is
-independently re-reviewed and approved.
+- Review date: 2026-09-03
+- Reviewed SHA: `ed3674bc8689aacd1075161215d16cd4994efcac`
+- Result: `APPROVED WITH NONBLOCKING OBLIGATIONS`
+- Frozen A2 exit: `PASS`
+- B.2.4 gate: `UNBLOCKED`
+
+Independent security review completed. All independent blocking findings
+A2-MED-01 through A2-MED-10 were closed at approval.
+
+The following obligations remain nonblocking:
+
+- Before the first externally exposed Tenant-scoped route or server action,
+  cross-Tenant attempts must emit durable, redacted security events.
+- Before paid production launch, Tenant-safe backup/restore controls must be
+  implemented and negatively tested under the relevant A7/NFR-8 work.
+- Future Tenant-sensitive jobs, exports, search, cache, media, notifications,
+  analytics, and backup/restore surfaces must enter the Tenant-surface registry
+  and receive appropriate Tenant-isolation negative probes.
+- TG-04 remains `NONBLOCKING`, with migration governance continuing.
+- Existing A4 nonblocking obligations remain unchanged.
+
+## Review boundary
+
+A2 is approved with nonblocking obligations. B.2.4 is unblocked by this
+approval record; its implementation is outside this documentation-only
+commit. A4 remains separately approved with nonblocking future obligations in
+ADR 0005.

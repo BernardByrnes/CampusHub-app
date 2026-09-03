@@ -2,9 +2,11 @@
 
 ## Review status
 
-This is the implementation and evidence packet for independent security
-review. It is not an approval record. The proposed ADR status is
-`PROPOSED — READY FOR INDEPENDENT RE-REVIEW`.
+This remains the implementation and evidence packet for A2. Independent
+security review completed on 2026-09-03. Final A2 status is
+`APPROVED WITH NONBLOCKING OBLIGATIONS` at approved SHA
+`ed3674bc8689aacd1075161215d16cd4994efcac`. ADR 0004 contains the canonical
+approval record.
 
 ## Scope
 
@@ -178,12 +180,12 @@ implementation.
 | Malformed identifier | Reject before PostgreSQL. | `PASS` |
 | Deleted/nonexistent resource | Match wrong-Tenant safe not-found outcome. | `PASS` |
 
-## Required review decisions
+## Review decisions
 
-Independent security review must inspect the registry inventory, schema
-discovery assumptions, callable-form and import-boundary assumptions, negative
-probes, no-RLS decision, global exemptions, future obligations, and
-security-event boundary. Any finding must be remediated before A2 can be
-treated as complete. A4 is separately approved with
-nonblocking future obligations in ADR 0005. B.2.4 remains blocked and must not
-begin from this packet alone.
+Independent security review completed the registry inventory, schema discovery
+assumptions, callable-form and import-boundary assumptions, negative probes,
+no-RLS decision, global exemptions, future obligations, and security-event
+boundary at the approved SHA. The frozen A2 exit is `PASS`, and the final A2
+status is `APPROVED WITH NONBLOCKING OBLIGATIONS`. ADR 0004 contains the
+canonical approval record. B.2.4 is unblocked. A4 is separately approved with
+nonblocking future obligations in ADR 0005.
