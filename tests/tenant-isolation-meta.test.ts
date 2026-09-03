@@ -1149,6 +1149,82 @@ describe("Tenant isolation governance registry", () => {
     expect(unsupported.length).toBeGreaterThan(0);
   });
 
+  it("fails closed for top-level binding patterns and resource declarations", () => {
+    const unsafeDeclarations = [
+      "const { hidden = performTenantSensitiveWork() } = {};",
+      "const [hidden = performTenantSensitiveWork()] = [];",
+      "const { x } = object;",
+      "const [x] = array;",
+      "const { outer: { hidden = performTenantSensitiveWork() } } = {};",
+      "const [[hidden = performTenantSensitiveWork()]] = [];",
+      "const { a: [hidden = performTenantSensitiveWork()] } = {};",
+      "const { ...rest } = source;",
+      "const [first, ...rest] = source;",
+      "const { value: renamed } = source;",
+      "const safe = 1, { hidden = performTenantSensitiveWork() } = {};",
+      "const safe = 1, dangerous = performTenantSensitiveWork();",
+      "using resource = tenantSensitiveDisposable;",
+      "await using resource = tenantSensitiveDisposable;",
+      "using resource = existingResource;",
+      "export using resource = existingResource;",
+      "export await using resource = existingResource;",
+    ];
+
+    for (const [index, sourceText] of unsafeDeclarations.entries()) {
+      const implementationPath =
+        `src/server/services/module-load-binding-pattern-${index}.ts`;
+      const operations = discoverOperationsFromSource(
+        implementationPath,
+        sourceText,
+      );
+      const unsupported = discoverUnsupportedOperationFormsFromSource(
+        implementationPath,
+        sourceText,
+      );
+
+      expect(operations.length + unsupported.length, sourceText).toBeGreaterThan(
+        0,
+      );
+      expect(unsupported.length, sourceText).toBeGreaterThan(0);
+    }
+  });
+
+  it("preserves safe identifier binding controls and exported destructuring rejection", () => {
+    const safeDeclarations = [
+      "const count = 0;",
+      "const enabled = false;",
+      'const name = "campushub";',
+      "const values = [];",
+      "const config = {};",
+      "const callback = () => { performWorkLater(); };",
+      "let value;",
+    ];
+    for (const [index, sourceText] of safeDeclarations.entries()) {
+      expect(
+        discoverUnsupportedOperationFormsFromSource(
+          `src/server/services/module-load-safe-binding-${index}.ts`,
+          sourceText,
+        ),
+      ).toEqual([]);
+    }
+
+    const exportedDestructuring =
+      "export const { x } = source;";
+    const unsupported = discoverUnsupportedOperationFormsFromSource(
+      "src/server/services/module-load-exported-destructuring.ts",
+      exportedDestructuring,
+    );
+    expect(unsupported).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: expect.stringContaining(
+            "exported destructured binding",
+          ),
+        }),
+      ]),
+    );
+  });
+
   it("fails full validation for module-load additions on a real governed path", () => {
     const implementationPath =
       "src/application/content/publication-read-resolvers.ts";
@@ -1200,6 +1276,23 @@ describe("Tenant isolation governance registry", () => {
     ]) {
       expectFullRegistryValidationFailure(
         { [implementationPath]: `${sourceText}\n${declaration}\n` },
+        implementationPath,
+        baseInput,
+      );
+    }
+
+    const realPathBindingAdditions = [
+      "const { hidden = performTenantSensitiveWork() } = {};",
+      "const [hidden = performTenantSensitiveWork()] = [];",
+      "const { hidden } = source;",
+      "const [hidden] = source;",
+      "const { nested: { hidden = performTenantSensitiveWork() } } = {};",
+      "using resource = tenantSensitiveDisposable;",
+      "await using resource = tenantSensitiveDisposable;",
+    ];
+    for (const addition of realPathBindingAdditions) {
+      expectFullRegistryValidationFailure(
+        { [implementationPath]: `${sourceText}\n${addition}\n` },
         implementationPath,
         baseInput,
       );

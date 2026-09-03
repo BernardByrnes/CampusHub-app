@@ -1906,6 +1906,56 @@ function isAmbientTopLevelDeclaration(statement: ts.Statement): boolean {
   return hasModifier(statement, ts.SyntaxKind.DeclareKeyword);
 }
 
+function isResourceDeclarationList(
+  declarationList: ts.VariableDeclarationList,
+): boolean {
+  return (declarationList.flags & ts.NodeFlags.Using) === ts.NodeFlags.Using;
+}
+
+function classifyTopLevelVariableStatement(
+  implementationPath: string,
+  sourceFile: ts.SourceFile,
+  statement: ts.VariableStatement,
+): TopLevelStatementClassification {
+  if (isResourceDeclarationList(statement.declarationList)) {
+    return "unsupported_runtime";
+  }
+
+  if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+    return "already_governed";
+  }
+
+  let hasReviewedInitializer = false;
+  for (const declaration of statement.declarationList.declarations) {
+    if (!ts.isIdentifier(declaration.name)) {
+      return "unsupported_runtime";
+    }
+
+    if (declaration.initializer === undefined) {
+      continue;
+    }
+
+    if (
+      isReviewedNonOperationalModuleInitializer(
+        implementationPath,
+        declaration.name.text,
+        declaration.initializer,
+      )
+    ) {
+      hasReviewedInitializer = true;
+      continue;
+    }
+
+    if (!isEagerlyInertInitializer(declaration.initializer)) {
+      return "unsupported_runtime";
+    }
+  }
+
+  return hasReviewedInitializer
+    ? "reviewed_safe_initialization"
+    : "safe_declaration";
+}
+
 function classifyTopLevelStatement(
   implementationPath: string,
   sourceFile: ts.SourceFile,
@@ -1918,38 +1968,11 @@ function classifyTopLevelStatement(
   }
 
   if (ts.isVariableStatement(statement)) {
-    if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
-      return "already_governed";
-    }
-
-    let hasReviewedInitializer = false;
-    for (const declaration of statement.declarationList.declarations) {
-      if (declaration.initializer === undefined) {
-        continue;
-      }
-
-      const bindingName = ts.isIdentifier(declaration.name)
-        ? declaration.name.text
-        : declaration.name.getText(sourceFile);
-      if (
-        isReviewedNonOperationalModuleInitializer(
-          implementationPath,
-          bindingName,
-          declaration.initializer,
-        )
-      ) {
-        hasReviewedInitializer = true;
-        continue;
-      }
-
-      if (!isEagerlyInertInitializer(declaration.initializer)) {
-        return "unsupported_runtime";
-      }
-    }
-
-    return hasReviewedInitializer
-      ? "reviewed_safe_initialization"
-      : "safe_declaration";
+    return classifyTopLevelVariableStatement(
+      implementationPath,
+      sourceFile,
+      statement,
+    );
   }
 
   if (
