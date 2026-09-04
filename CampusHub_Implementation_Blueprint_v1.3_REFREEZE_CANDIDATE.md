@@ -267,9 +267,13 @@ deny. A role is a bundle of capabilities; it is not a bypass around Tenant,
 resource, lifecycle, assurance, audience, or audit rules.
 
 Privileged grants are Tenant-scoped, time/term-bound, MFA-protected where the
-product requires, and revocable immediately server-side. Capability bootstrap,
-the first holder, privileged non-student principal shape, and emergency
-Custodian authority remain open decisions OD-01, OD-02, and OD-06.
+product requires, and revocable immediately server-side. The frozen Initial
+Provisioning Grant supplies the narrow first-holder bootstrap path during
+explicit Tenant/module provisioning when no valid holder exists. Ordinary
+post-provisioning grantability, non-holder Guild Administrator grant authority,
+self-grant, renewal/re-grant, and unsupplied rollover details remain open under
+OD-01; privileged non-student principal shape and emergency Custodian authority
+remain open under OD-02 and OD-06.
 
 The canonical read decision has two ordered layers:
 
@@ -326,6 +330,10 @@ Tenant surfaces. Each must apply its own reviewed Tenant, visibility,
 exposure, audience, and data-minimization contract before it is implemented.
 Client-side filtering may only operate over an already authorized bounded
 result set.
+
+The shared GSC-14 evaluator applies consistently to Poll, Student Voice, RSVP,
+Save, Follow, and Daily Quiz actionability. A transport or client convenience
+must not create a competing evaluator or bypass the ordered server-side check.
 
 ## 9. Targeted-audience evaluation
 
@@ -495,6 +503,18 @@ Tenant-timezone day, and idempotent. Streak uses the Tenant timezone, neutral
 copy, and automatic recess pause. Numeric XP amounts, the daily cap, and quiz
 grace window remain open where product authority leaves them open.
 
+### 15.6 Sponsorship
+
+Sponsorship remains future and feature-gated. The v1.2 Product Specification
+supplies entire-university and specific-campus audience branches. It also names
+an all product-defined verified-students branch, but that assurance-derived
+branch conflicts with the same v1.2 prohibition on assurance-level targeting.
+OD-13 therefore preserves the supplied branch in the canonical Product
+Specification while blocking its implementation and serving until Product
+Owner/security/privacy authority decides the interpretation. This Blueprint
+does not choose removal, an exception, or another outcome, and it does not
+permit assurance-level or behavioural targeting.
+
 ## 16. Tests and quality gates
 
 Each production surface receives applicable:
@@ -563,5 +583,184 @@ The v1.3 candidates are not frozen. Product-owner, architecture, security,
 legal, and relevant human review must explicitly approve the candidate before
 it can replace v1.2 authority. Open decisions in the controlled refreeze
 register remain blockers at their stated timing.
+
+## 19. Canonical story and acceptance-criteria traceability
+
+The Product Specification candidate is the canonical product source for WHAT and
+WHY. This Blueprint traces implementation work to stable Product Specification
+identifiers without copying their acceptance criteria into the HOW document.
+Every implementation change must identify the exact story ID and acceptance
+criteria bullet(s) it satisfies, the applicable Global Story Contract and Trust
+Invariant, the authorization boundary, and the negative evidence required.
+
+The carried-forward product backlog contains 124 CH story IDs and 615
+canonical Given acceptance-criteria bullets across 124 acceptance-criteria
+blocks. The epic
+traceability map is:
+
+| Canonical story IDs | Production HOW boundary | Current authorization state |
+| --- | --- | --- |
+| CH-TEN-001..005 | Tenant root, provisioning boundary, campuses, hierarchy configuration, academic calendar, and launch readiness. | Foundation context exists; provisioning/launch authority remains gated. |
+| CH-AUT-001..008 | Future identity, contact provenance, sessions, shared-device safety, MFA, and recovery. | Not implemented; OD-03 and the Auth boundary apply. |
+| CH-MEM-001..007 | Tenant Membership lifecycle, dual Membership isolation, transfer, alumni, dual role, and participation restriction. | Foundation facts exist; future Auth and privileged workflows remain gated. |
+| CH-ORG-001..003 | Typed hierarchy, affiliation, effective-dated change, and attribution boundaries. | Typed foundation exists; broad historical mutation remains future. |
+| CH-VER-001..007 | Roster import, provenance, claim, dispute, assurance, and manual review orchestration. | Not implemented; OD-03 and OD-05 apply. |
+| CH-PRO-001..004 | Progressive profile, field provenance, contextual gates, and correction workflow. | Future; client state cannot grant authority. |
+| CH-HOM-001..004 | Home composition, Save/Follow actionability, public surface, and server-authorized Search. | Future; CH-HOM-002 is governed by GSC-14. |
+| CH-PUB-001..006 | Publication persistence, audience, lifecycle, correction, reach, and Priority Notice controls. | B.2.4 foundation exists; real capability authorization remains subject to OD-01. |
+| CH-EVT-001..004 | Event lifecycle, attribution, RSVP, cancellation, and concurrency. | Future; RSVP uses GSC-14. |
+| CH-OPP-001..004 | Opportunity vetting, lifecycle, engagement, and reporting. | Future; OD-07 applies to safety expansion. |
+| CH-SPT-001..005 | Tenant-local Sports structure, fixtures, results, corrections, and team pages. | Future. |
+| CH-POL-001..008 | A1-gated Poll privacy, frozen cohort, lifecycle, results, and notifications. | A1 blocked; no Poll persistence or implementation authorized. |
+| CH-VOX-001..007 | Voice readiness, moderation, identity access, status, support, and reporting. | Disabled/future; OD-07 and readiness gates apply. |
+| CH-XP-001..005 | Membership-local ledger, rules, explanation, correction, and levels. | Future; OD-12 applies to numeric cap/allocation. |
+| CH-STK-001..003 | Tenant-timezone Streak, recess pause, reminders, and kill criteria. | Future. |
+| CH-QIZ-001..005 | Server-authoritative Daily Quiz, attempts, content, integrity, and extensibility. | Future; A10/OD-12 remains open. |
+| CH-SPN-001..005 | Sponsor Placement, prohibited categories, audience, serving, and metrics. | Future; OD-13 blocks only the disputed verified-student branch. |
+| CH-NTF-001..004 | Tenant-local notification categories, fatigue, delivery, and duplicate safety. | Future. |
+| CH-ANL-001..004 | Defined metrics, dashboards, reports, suppression, and pseudonymous Tenant identity. | Future; no Global User joins. |
+| CH-GOV-001..006 | Initial provisioning, grants, Guild Terms, Custodian, revocation, compromise, and audit. | Initial Provisioning Grant supplied; ordinary privileged branches remain gated. |
+| CH-CNT-001..003 | Immutable audit, redaction, attachments, reporting, and public availability. | Future beyond current audit obligations; OD-07 applies to moderation. |
+| CH-PRV-001..005 | Transparency, access, correction/deletion, lawful-basis records, and restricted export. | Future; legal and privacy gates apply. |
+| CH-PLT-001..005 | Tiered support, elevated access, no impersonation, break-glass, and policy enforcement. | Future; no standing support authority is implied. |
+| CH-SUB-001..003 | Subscription lifecycle, dispute protection, exit, and export. | Future; commercial/legal review applies. |
+| CH-QUA-001..004 | Accessibility, performance, resilience, and device/browser requirements. | Applied to each implemented surface at its release gate. |
+
+This map is a traceability index, not permission to implement every mapped
+feature. A story may be implementation-ready only when its Product acceptance
+criteria, applicable decision gates, security review, migration/recovery plan,
+and regression evidence are all identified.
+
+## 20. Implementation authorization boundary
+
+The implementation authorization record for a change must contain:
+
+1. exact Product Specification story and acceptance-criteria identifiers;
+2. the approved Product Owner or checkpoint authority for any open branch;
+3. the Tenant/resource/identity boundary and default-deny policy;
+4. the persistence, mutation, read, concurrency, audit, and side-effect design;
+5. the migration and recovery plan, or an explicit N/A rationale;
+6. unit, orchestration, integration, Tenant-negative, and regression tests; and
+7. the release/checkpoint evidence and independent reviewer required.
+
+The v1.3 candidate itself is not an implementation authorization. In particular,
+it does not authorize Auth, ordinary capability grants, sponsorship, Polls,
+Events, Opportunities, XP, Voice, Notifications, moderation, UI, background
+jobs, or a new migration. The Initial Provisioning Grant is a Product authority
+branch, not a permission to implement an unreviewed general role manager.
+
+## 21. Live Execution State / approved equivalent
+
+The controlled refreeze uses the following Live Execution State equivalent for
+documentation work:
+
+| Field | R1 state |
+| --- | --- |
+| State ID | V13-R1-DOC-REFREEZE-REMEDIATION |
+| Review baseline | 85beeaeb20fa9816f8495d3ec755968bfb8ccf2f |
+| Scope | Product Specification carry-forward, Blueprint conformance, and governance remediation only. |
+| Runtime/schema state | No runtime, test, schema, migration, or historical-ADR change authorized. |
+| Migration head | drizzle/0008_loving_dagger.sql; no migration created by R1. |
+| Product state | Candidate remains pending independent re-review; v1.3 is not frozen. |
+| Approval bindings | A2, A4, and B.2.4 remain bound to their historical reviewed SHAs. |
+| Open gates | OD-01 ordinary grants, OD-02, OD-03, OD-04, OD-05, OD-06, OD-07, OD-08, OD-09, OD-10, OD-11, OD-12, and OD-13 at their stated boundaries. |
+| Exit evidence | Exact changed-file set, canonical ID counts, frozen-file hashes, diff checks, focused governance tests, clean worktree, and independent review. |
+
+This state is an execution record, not an approval or a substitute for an
+independent security, product, legal, or architecture decision.
+
+## 22. Implementation sequencing
+
+Implementation proceeds only in the following gated order:
+
+1. **Foundation:** Tenant root, explicit RequestContext, Membership facts,
+   typed hierarchy, Publication persistence, canonical audience policy, and
+   Tenant-negative evidence already reviewed at the applicable checkpoints.
+2. **Identity and Membership operations:** Auth, contact provenance, roster,
+   assurance, sessions, and privileged identity only after OD-02, OD-03, and
+   OD-05 have the required authority and evidence.
+3. **Publication operations:** ordinary create/publish capability authority,
+   Initial Provisioning Grant use, publish-time audience confirmation, and
+   transport only after OD-01's applicable branch and the B.2.4 obligations are
+   explicitly authorized.
+4. **Participation resources:** Events, Opportunities, Save/Follow, Polls,
+   Voice, and Quiz each use GSC-14 and their own lifecycle, safety, and review
+   gates. A1 remains a separate hard gate for Polls.
+5. **Operational surfaces:** Search, media, caches, notifications, analytics,
+   exports, jobs, and backups receive their own Tenant-surface registration,
+   negative tests, minimization, and release evidence. OD-08 blocks background
+   execution until SYSTEM reauthorization is decided.
+6. **Pilot readiness:** Guild continuity, roster authority, Custodian,
+   moderation, privacy/legal, hosting, sessions, data rights, analytics,
+   abuse, Voice, sponsorship OD-13, and paid-launch continuity are closed in
+   the Product Specification readiness register.
+
+No later phase can be inferred from a completed earlier phase. A blocked branch
+is held or degraded honestly rather than broadened to an easier implementation.
+
+## 23. Deployment, migration, and recovery discipline
+
+The current foundation has no R1 migration. The append-only migration head is
+drizzle/0008_loving_dagger.sql. Future schema work must:
+
+- use an expand/backfill/contract plan for populated data;
+- preserve same-Tenant foreign keys, closed values, ownership predicates, and
+  expected-version constraints;
+- prove the migration against a representative production-shaped snapshot;
+- record preflight, lock/timeout, observability, and abort conditions;
+- verify the expected migration head after deployment; and
+- provide a forward-fix or restore plan that does not silently discard audit or
+  Tenant data.
+
+Deployment requires artifact provenance, dependency/security checks, environment
+configuration validation, health/readiness checks, safe rollout, migration
+ordering, and post-deploy Tenant-negative smoke tests. A failed external side
+effect never becomes an excuse to roll back a committed business fact unless
+the approved Product contract explicitly makes delivery part of success.
+
+Backup and restore are confidential, Tenant-aware, ownership-validated, and
+tested before paid launch. Restore evidence must cover audit integrity,
+redaction/cache/media/search/export invalidation obligations, no cross-Tenant
+promotion, and the honest limit that unmanaged downloaded bytes cannot be
+remotely deleted.
+
+The following are explicit N/A for this candidate, with rationale:
+
+| Mechanism | Rationale |
+| --- | --- |
+| RLS | Not required for the current A2 contract; application Tenant predicates and negative tests remain mandatory. |
+| Auth provider and Global User persistence | Future and blocked by the A4/OD-03 boundary. |
+| Background runner/outbox implementation | Future and blocked by OD-08. |
+| Hosting/deployment provider selection | Not a Product decision and not selected by this Blueprint candidate. |
+| New migration or recovery execution | No schema/runtime work is authorized by R1. |
+
+## 24. Checkpoint, regression, and conformance discipline
+
+The candidate retains these historical bindings without rebinding them to the
+R1 commit:
+
+- A2: ed3674bc8689aacd1075161215d16cd4994efcac;
+- A4: 279a3b7d2f2e5fbe87e4d74025884ec9bd229060; and
+- B.2.4: 84c58cc2b525e1061fb4652906968c54ac3a00b3, with closure documentation
+  at 7016c345d3c0d0b1052bb80821de73e3e29c5e25.
+
+The documentation/governance regression set must assert that:
+
+- every carried-forward CH story and acceptance-criteria block remains present;
+- stable TI, GSC, lifecycle, error, D, GOV, Commercial, and Phase 2 identifiers
+  are not silently renumbered;
+- OD-01 preserves the Initial Provisioning Grant and blocks only unresolved
+  ordinary-grant branches;
+- OD-13 preserves the two supplied broad sponsorship branches and blocks only
+  the disputed verified-student branch;
+- GSC-14, CH-HOM-002, and feature gates agree that Save and Follow are in scope;
+- candidate status is pending review and never FROZEN;
+- no Product Spec statement is used to authorize a runtime feature without its
+  required checkpoint and open-decision evidence; and
+- migration head, frozen-file hashes, historical approvals, and changed-file
+  scope remain unchanged.
+
+This is the approved conformance mechanism for R1; it does not add a product
+feature or a new runtime test requirement.
 
 **REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**

@@ -94,7 +94,7 @@ The following decisions are intentionally unresolved:
 
 | ID | Decision required | Timing/status |
 | --- | --- | --- |
-| OD-01 | Capability bootstrap, first holder, grant authority, self-grant, expiry, and revocation. | **BLOCK BEFORE PUBLICATION CAPABILITY AUTHORIZATION** |
+| OD-01 | Ordinary post-provisioning capability grants, self-grant, renewal/re-grant, and any unsupplied rollover semantics. The frozen Initial Provisioning Grant is supplied authority, not an open whole-category question. | **PARTIALLY OPEN** — the supplied first-holder path remains available under its v1.2 safeguards; block only the unresolved ordinary-grant branches |
 | OD-02 | Privileged non-student Tenant authority for Custodian, University Official, staff Publisher, and moderator. | **BLOCK BEFORE PRIVILEGED USER PERSISTENCE/AUTHORIZATION** |
 | OD-03 | Contact-channel provenance boundary between Global User and Membership/evidence. | **BLOCK BEFORE AUTH / VERIFIED CHANNEL PERSISTENCE** |
 | OD-04 | Guild Term handover, delayed elections, grant activation, continuity, and rollover authority gap. | **BLOCK BEFORE GUILD TERM / GOVERNANCE FEATURE** and **BLOCK BEFORE PILOT** |
@@ -106,10 +106,14 @@ The following decisions are intentionally unresolved:
 | OD-10 | Priority Notice numeric cap. | **NEW/OPEN PRODUCT DECISION REQUIRED**; no number is selected. |
 | OD-11 | A1 Poll response privacy, storage/linkability, thresholds, and transparency wording. | **BLOCK BEFORE POLL IMPLEMENTATION** |
 | OD-12 | A10 daily XP cap and allocation semantics. | **NEW/OPEN PRODUCT DECISION REQUIRED**; no number or allocator is selected. |
+| OD-13 | Sponsorship audience contradiction: v1.2 supplies entire-university, specific-campus, and all product-defined verified-student audiences while also prohibiting assurance-level targeting. | **PARTIALLY BLOCKED** — preserve the first two supplied branches; block the disputed verified-student branch pending an explicit Product Owner/security/privacy decision |
 
-OD-01 through OD-08 and OD-11 are blockers at the stated future boundary. OD-09,
-OD-10, and OD-12 remain open numeric/product decisions; this record does not
-turn a recommendation into a chosen value.
+OD-01 is a partial blocker: the frozen Initial Provisioning Grant remains
+available, while ordinary post-provisioning grant semantics remain unresolved.
+OD-02 through OD-08 and OD-11 are blockers at their stated future boundaries.
+OD-09, OD-10, and OD-12 remain open numeric/product decisions, and OD-13 is a
+partial sponsorship blocker. This record does not turn a recommendation into a
+chosen value or silently delete a supplied product branch.
 
 ## 6. Feature-gate and Pilot registers
 
@@ -118,13 +122,14 @@ The v1.3 Product Specification contains:
 - a feature-gated audit register in §16 covering Home ranking, stale
   Membership recovery, assurance copy, Save/Follow, Events, Opportunities,
   Daily Quiz, Voice, verification/manual review, Me/settings/session safety,
-  notifications, search, Sports, sponsorship, non-Voice moderation, and
-  analytics; and
+  notifications, search, Sports, sponsorship/OD-13, non-Voice moderation, and
+  analytics; GSC-14 consistently covers Poll, Voice, RSVP, Save, Follow, and
+  Daily Quiz; and
 - a Pilot readiness register in §17 covering Guild Term continuity, roster
   authority, Custodian safeguards, moderation, legal/privacy, hosting,
   Transparency accuracy, sessions/shared devices, data rights, active Tenant
   isolation, analytics definitions, abuse/escalation, A1, Voice readiness,
-  and paid-launch continuity.
+  sponsorship/OD-13, and paid-launch continuity.
 
 These registers track gates and evidence. They do not decide the unresolved
 questions and do not claim that an absent feature is implemented.
@@ -146,6 +151,100 @@ The refreeze preserves, without marking implemented:
 - A4 future obligations;
 - TI-1 governance for future Tenant-sensitive surfaces; and
 - separate A1/Poll gating.
+
+## 7A. Independent-review remediation R1
+
+This section records the controlled remediation of the independent v1.3
+refreeze review. It is traceability evidence, not a product approval, security
+approval, or frozen-document declaration.
+
+### V13-REV-01 — OD-01 was too broad
+
+- **Severity:** HIGH — governing authority correction.
+- **Affected candidate sections:** Product Specification §§9.4, 18.1,
+  18.20, 40.2, and 41 OD-01; Implementation Blueprint §§7, 19, 20, and 24;
+  this register §5.
+- **Source authority:** Frozen v1.2 Product Specification §9.4 and
+  CH-TEN-001 / CH-GOV-001, with the supplied term-bound expiry and revocation
+  safeguards in CH-GOV-002 and CH-GOV-004.
+- **Remediation:** **CORRECTION — EXISTING PRODUCT AUTHORITY RESTORED.** The
+  Initial Provisioning Grant is expressly retained for a suitably authorized
+  Platform Operator during explicit Tenant/module provisioning when no valid
+  holder exists. It can seed the first valid Guild Administrator, Voice
+  Moderator(s), separately granted Priority Notice holder, or Tenant Custodian
+  through the supplied safeguarded process. OD-01 now blocks only ordinary
+  post-provisioning grantability, non-holder Guild Administrator grant
+  authority, self-grant, renewal/re-grant, and unsupplied rollover details.
+- **Product behavior changed?:** NO. Existing supplied authority was restored;
+  no new grant rule was invented.
+- **Runtime impact:** NONE.
+- **Blocker disposition:** Partial blocker. The initial-provisioning path is
+  not blocked by this remediation; ordinary-grant implementation remains
+  blocked until Product Owner/governance/security authority supplies the exact
+  decision and the affected CH-GOV contract is reviewed.
+
+### V13-REV-02 — Sponsorship contradiction was silently resolved
+
+- **Severity:** HIGH — product authority contradiction.
+- **Affected candidate sections:** Product Specification CH-SPN-003,
+  §§26.2, 26.3, 27.10, 34.1, 36, 40.3, and 41 OD-13; feature gate FG-14;
+  Pilot readiness PR-16; Implementation Blueprint §19; this register §§5–6.
+- **Source authority:** Frozen v1.2 CH-SPN-003 and TI-4, which supply the
+  entire-university, specific-campus, and all product-defined verified-student
+  branches while also prohibiting assurance-level targeting.
+- **Remediation:** OD-13 now preserves entire university and specific campus,
+  and marks the all product-defined verified-students branch
+  **PARTIALLY BLOCKED / PRODUCT DECISION REQUIRED**. No option was selected
+  among removal, a narrowly justified TI-4 exception, or another approved
+  interpretation.
+- **Product behavior changed?:** NO PRODUCT DECISION MADE — EXISTING v1.2
+  INTERNAL CONTRADICTION EXPOSED AND PARTIALLY BLOCKED.
+- **Runtime impact:** NONE.
+- **Blocker disposition:** Block the disputed branch before sponsorship
+  implementation or Pilot activation; close only through an explicit Product
+  Owner/security/privacy decision, updated CH-SPN-003/TI-4/transparency text,
+  and review evidence.
+
+### V13-REV-03 — v1.3 Product Specification canonical completeness
+
+- **Severity:** HIGH — canonical document completeness.
+- **Affected candidate sections:** The complete Product Specification candidate,
+  especially §§1–39 and new §§40–45; Blueprint §§19–24; this record's
+  traceability and preservation sections.
+- **Source authority:** Frozen v1.2 Product Specification as the carried-forward
+  normative base, together with the controlled v1.3 change record.
+- **Remediation:** The v1.3 Product Specification candidate was rebuilt as a
+  complete carried-forward canonical document rather than a representative
+  summary. It retains all active v1.2 story IDs, acceptance criteria,
+  Trust Invariants, Global Story Contracts, state machines, and acceptance
+  language, applies CR-01 through CR-17 traceably, and records only explicit
+  corrections/open branches. The current inventory is 124 CH story IDs, 615
+  canonical Given acceptance-criteria bullets, and 124 acceptance-criteria
+  blocks; no stable identifier was silently renumbered.
+- **Product behavior changed?:** NO new product behavior. Canonical active v1.2
+  authority was restored in one understandable candidate document.
+- **Runtime impact:** NONE.
+- **Blocker disposition:** Candidate remains pending independent product and
+  architecture review; the historical v1.2 file remains unchanged.
+
+### V13-REV-04 — Participation / GSC-14 scope inconsistency
+
+- **Severity:** MEDIUM — internal contract consistency.
+- **Affected candidate sections:** Product Specification GSC-14, CH-HOM-002,
+  §§40.4, 42 FG-04, and 44; Blueprint §§8, 19, and 24; this register §6.
+- **Source authority:** Frozen v1.2 participation contract, CH-HOM-002, and
+  the server-authoritative participation rules carried into the candidate.
+- **Remediation:** GSC-14 now has one canonical scope: Poll, Voice, RSVP,
+  Save, Follow, and Daily Quiz all use the shared ordered evaluator. CH-HOM-002,
+  the feature-gate register, Blueprint traceability, and the governance
+  assertion `V13-GSC14-01` use the same scope and do not leave Save or Follow
+  ambiguous.
+- **Product behavior changed?:** NO. The candidate now states the same
+  carried-forward participation contract consistently.
+- **Runtime impact:** NONE.
+- **Blocker disposition:** Closed as a documentation-consistency finding for
+  this remediation; any future implementation still requires the applicable
+  story, evaluator evidence, and ordinary feature gates.
 
 ## 8. Preservation and validation record
 
