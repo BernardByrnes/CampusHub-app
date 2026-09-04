@@ -2,18 +2,23 @@
 
 ## Status
 
-`READY FOR INDEPENDENT SECURITY RE-REVIEW`
+`APPROVED WITH NONBLOCKING OBLIGATIONS`
 
-This package is a reviewer handoff, not an approval record. The exact review
-SHA is supplied in the external handoff after this package is committed; it is
-intentionally not embedded in the same commit.
+This package records the independent B.2.4.9 security re-review of the
+implementation at SHA `84c58cc2b525e1061fb4652906968c54ac3a00b3`. This
+documentation commit occurs after that reviewed SHA and does not rebind the
+implementation review to the documentation commit.
 
-The independent B.2.4.9 review identified blocking `B24-MED-01` for mixed-version
-audience confirmation and advisory `B24-LOW-01` for direct resolver Membership
-rebinding. Remediation R1 makes readiness and confirmation transaction/version-
-consistent and hardens direct Membership rebinding. The exact remediation SHA is
-supplied externally after the remediation commit. This package does not claim
-B.2.4 approval; it is ready for the independent security re-review.
+The initial independent review identified blocking `B24-MED-01` for
+mixed-version audience confirmation and advisory `B24-LOW-01` for direct
+resolver Membership rebinding. Both findings are `CLOSED` at Remediation R1
+SHA `84c58cc2b525e1061fb4652906968c54ac3a00b3`.
+
+Independent final verdict: `B2_4_APPROVED_WITH_NONBLOCKING_OBLIGATIONS`.
+The final re-review found zero Critical / High / Medium / Low-Advisory
+findings.
+
+`B.2.4 TARGETED PUBLICATION AUDIENCE — APPROVED WITH NONBLOCKING OBLIGATIONS AT 84c58cc2b525e1061fb4652906968c54ac3a00b3`
 
 ## Authority
 
@@ -25,8 +30,9 @@ B.2.4 approval; it is ready for the independent security re-review.
   reviewed SHA.
 - A4 is independently approved with nonblocking obligations at its historical
   reviewed SHA.
-- B.2.4.9 is the exact independent final review still required. This package
-  does not approve A2, A4, or B.2.4.
+- B.2.4.9 is the completed independent final review at the implementation SHA
+  recorded above. This package records the B.2.4 approval with nonblocking
+  obligations; it does not issue a new A2 or A4 approval.
 
 ## Implementation chain
 
@@ -116,7 +122,8 @@ no RLS requirement for this A2-approved invariant.
 2. No real external Publication publish transport/capability authorization
    exists yet.
 3. `publication.create` and future publish still require real capability
-   enforcement.
+   enforcement; confirmation must execute inside the eventual authoritative
+   publish transaction.
 4. A publish-time target-label snapshot remains a future obligation at the
    authoritative publish/lock transition.
 5. Scheduled-fire audience revalidation/hold behavior remains future job work;
