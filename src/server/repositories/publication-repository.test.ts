@@ -11,6 +11,7 @@ import {
   publicationAudienceCriteria,
   publications,
 } from "@/server/db/schema/publication";
+import { memberships } from "@/server/db/schema/membership";
 
 import { DrizzlePublicationRepository } from "./publication-repository";
 
@@ -99,7 +100,136 @@ function repositoryFor(
   );
 }
 
+function transactionalRepositoryFor(
+  publicationRows: readonly PublicationRow[],
+  criteriaRows: readonly PublicationAudienceCriteriaRow[],
+  membershipCount: number,
+) {
+  const selectedTables: unknown[] = [];
+  let lockedPublicationQueries = 0;
+
+  const transaction = {
+    select: () => {
+      let selectedTable: unknown;
+      return {
+        from: (table: unknown) => {
+          selectedTable = table;
+          selectedTables.push(table);
+          return {
+            where: () => {
+              const rows =
+                selectedTable === publications
+                  ? publicationRows
+                  : selectedTable === publicationAudienceCriteria
+                    ? criteriaRows
+                    : selectedTable === memberships
+                      ? [{ count: membershipCount }]
+                      : [];
+              const promise = Promise.resolve(rows);
+              const query = {
+                for: (mode: string) => {
+                  if (selectedTable === publications && mode === "update") {
+                    lockedPublicationQueries += 1;
+                  }
+                  return query;
+                },
+                limit: async () => rows,
+                orderBy: async () => rows,
+                then: promise.then.bind(promise),
+              };
+              return query;
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const database = {
+    select: () => {
+      throw new Error("atomic audience reads must use the transaction handle");
+    },
+    transaction: async (
+      callback: (value: typeof transaction) => Promise<unknown>,
+    ) => callback(transaction),
+  };
+
+  return {
+    database,
+    selectedTables,
+    get lockedPublicationQueries() {
+      return lockedPublicationQueries;
+    },
+  };
+}
+
 describe("DrizzlePublicationRepository audience persistence mapping", () => {
+  it("fails closed when an atomic audience transaction errors", async () => {
+    const repository = new DrizzlePublicationRepository({
+      transaction: async () => {
+        throw new Error("database details must not escape");
+      },
+    } as never);
+
+    await expect(
+      repository.readPublicationAudienceReadinessSnapshotForTenant(
+        tenantId,
+        publicationId,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      repository.validatePublicationAudienceConfirmationAtomicallyForTenant(
+        tenantId,
+        publicationId,
+        { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("uses one row-locked transaction handle for the readiness snapshot and confirmation", async () => {
+    const entireTenantPublication = {
+      ...publicationRow,
+      audienceMode: "entire_tenant" as const,
+    };
+    const transactional = transactionalRepositoryFor(
+      [entireTenantPublication],
+      [],
+      7,
+    );
+    const repository = new DrizzlePublicationRepository(
+      transactional.database as never,
+    );
+
+    await expect(
+      repository.readPublicationAudienceReadinessSnapshotForTenant(
+        tenantId,
+        publicationId,
+      ),
+    ).resolves.toMatchObject({
+      publication: { id: publicationId, tenantId, version: 1 },
+      definition: { mode: "entire_tenant", groups: [] },
+      targetsCurrentlyValid: true,
+      estimatedRecipientCount: 7,
+    });
+    await expect(
+      repository.validatePublicationAudienceConfirmationAtomicallyForTenant(
+        tenantId,
+        publicationId,
+        { expectedPublicationVersion: 1, confirmedRecipientCount: 7 },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect(transactional.lockedPublicationQueries).toBe(2);
+    expect(transactional.selectedTables).toEqual([
+      publications,
+      publicationAudienceCriteria,
+      memberships,
+      publications,
+      publicationAudienceCriteria,
+      memberships,
+    ]);
+  });
+
   it("returns entire-tenant only when the criteria set is empty", async () => {
     const entireTenantPublication = {
       ...publicationRow,

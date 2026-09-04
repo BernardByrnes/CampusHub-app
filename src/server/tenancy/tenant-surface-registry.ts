@@ -847,6 +847,32 @@ export const tenantSurfaceRegistry = [
       "DrizzlePublicationRepository.countPublicationAudienceMembershipsForTenant",
   },
   {
+    id: "publication.repository.audience-readiness-snapshot",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.readPublicationAudienceReadinessSnapshotForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "A single Tenant-bound PostgreSQL transaction locks the exact Publication and reads its canonical criteria, target validity, and scalar Membership count through the same transaction handle.",
+    requiredNegativeTestIds: ["publication.audience-atomic"],
+    operation:
+      "DrizzlePublicationRepository.readPublicationAudienceReadinessSnapshotForTenant",
+  },
+  {
+    id: "publication.repository.audience-confirmation-atomic",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.validatePublicationAudienceConfirmationAtomicallyForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Confirmation locks the exact Tenant-bound Publication and compares expected version, target validity, and scalar count before the transaction releases the consistent snapshot.",
+    requiredNegativeTestIds: ["publication.audience-atomic"],
+    operation:
+      "DrizzlePublicationRepository.validatePublicationAudienceConfirmationAtomicallyForTenant",
+  },
+  {
     id: "publication.audience-readiness",
     category: "application_service",
     implementationPath: "src/application/content/publication-audience-readiness.ts",

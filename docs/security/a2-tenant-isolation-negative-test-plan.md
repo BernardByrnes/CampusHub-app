@@ -86,6 +86,8 @@ registry is metadata and does not grant authorization.
 - `DrizzlePublicationRepository.replaceDraftPublicationAudienceForTenant`.
 - `DrizzlePublicationRepository.arePublicationAudienceTargetsCurrentlyValidForTenant`.
 - `DrizzlePublicationRepository.countPublicationAudienceMembershipsForTenant`.
+- `DrizzlePublicationRepository.readPublicationAudienceReadinessSnapshotForTenant`.
+- `DrizzlePublicationRepository.validatePublicationAudienceConfirmationAtomicallyForTenant`.
 - `getPublicationAudienceReadinessForTenant` and
   `validatePublicationAudienceConfirmationForTenant`.
 
@@ -130,9 +132,9 @@ behavior.
 
 ## Current registry and probe evidence
 
-The live registry contains 43 entries: 9 model declarations, 37
-operation-bearing declarations, 32 `TENANT_SCOPED` entries, 32 required probe
-obligations represented by 24 distinct probe IDs, and 8 reviewed
+The live registry contains 45 entries: 9 model declarations, 39
+operation-bearing declarations, 34 `TENANT_SCOPED` entries, 34 required probe
+obligations represented by 25 distinct probe IDs, and 8 reviewed
 `GLOBAL_NON_TENANT` exemptions. The migration entry declares the complete
 history through `drizzle/0008_loving_dagger.sql`.
 
@@ -153,7 +155,7 @@ The current B.2.4 evidence map is:
 | Typed hierarchy | Same-Tenant parent/merge/Programme links; stable typed tables; no generic hierarchy nodes or fake non-resident row. | `tests/integration/tenant-hierarchy.test.ts` |
 | Audience persistence | Normalized criteria, exact dimension payloads, duplicate rejection, same-Tenant Publication/target FKs. | `src/server/repositories/publication-repository.test.ts`, `tests/integration/publication-audience.test.ts` |
 | Canonical evaluator | Exactly five dimensions; AND across dimensions; OR within a dimension; exact provenance and Residence semantics; malformed definitions fail closed. | `src/domain/authorization/publication-audience.test.ts`, `src/domain/membership/membership-audience.test.ts` |
-| Readiness/count/confirmation | Canonical definition and current target validity; scalar count only; exact version/count confirmation; stale writes return `VERSION_CONFLICT`. | `src/application/content/publication-audience-readiness.test.ts`, `tests/integration/publication-audience.test.ts` |
+| Readiness/count/confirmation | Canonical definition and current target validity; scalar count only; one row-locked transaction snapshot for readiness/confirmation; exact version/count confirmation; stale writes return `VERSION_CONFLICT`. | `src/application/content/publication-audience-readiness.test.ts`, `src/server/repositories/publication-repository.test.ts`, `tests/integration/publication-audience.test.ts` |
 | Direct read | Tenant-bound Publication → exposure → pre-audience authorization → persisted definition/Membership facts → canonical evaluator → final authorization; wrong/foreign/hidden results normalize safely. | `src/application/content/read-publication.test.ts`, `src/application/content/publication-read-resolvers.test.ts`, `tests/integration/publication-audience.test.ts`, `tests/integration/postgresql-foundation.test.ts` |
 | Collections | Bounded Tenant/keyset candidates → batch exposure → pre-audience authorization → targeted-only batch audience resolution → final canonical authorization; entire-Tenant and denied candidates never enter the targeted batch. | `src/application/content/list-publications.test.ts`, `tests/integration/publication-audience.test.ts`, `tests/integration/postgresql-foundation.test.ts` |
 | ACTIVE/ARCHIVE | Targeted filtering applies equally to active and historical surfaces; ineligible viewers see no targeted Publication. | `tests/integration/publication-audience.test.ts` |

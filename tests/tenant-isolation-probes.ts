@@ -18,6 +18,7 @@ import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
 } from "@/application/content/publication-audience-readiness";
+import { validatePublicationAudienceConfirmation } from "@/domain/authorization/publication-audience-confirmation";
 import { RequestContextService } from "@/application/context/resolve-request-context";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { CampusHubDatabase } from "@/server/db/client";
@@ -562,26 +563,58 @@ async function publicationAudienceCountProbe(): Promise<void> {
   expect(selectCalls).toBe(1);
 }
 
+async function publicationAudienceAtomicProbe(): Promise<void> {
+  const repository = new DrizzlePublicationRepository(
+    publicationAudienceNoSqlDatabase(),
+  );
+
+  await expect(
+    repository.readPublicationAudienceReadinessSnapshotForTenant(
+      "banana",
+      publicationId,
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.readPublicationAudienceReadinessSnapshotForTenant(
+      tenantAId,
+      "banana",
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.validatePublicationAudienceConfirmationAtomicallyForTenant(
+      "banana",
+      publicationId,
+      { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
+    ),
+  ).resolves.toBeNull();
+  await expect(
+    repository.validatePublicationAudienceConfirmationAtomicallyForTenant(
+      tenantAId,
+      "banana",
+      { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
+    ),
+  ).resolves.toBeNull();
+}
+
 async function publicationAudienceReadinessProbe(): Promise<void> {
   const calls: string[] = [];
   const dependencies = {
     publications: {
-      findPublicationByIdForTenant: async (tenantId: string, id: string) => {
-        calls.push(`publication:${tenantId}:${id}`);
-        return id === publicationId && tenantId === tenantAId ? publicationA : null;
+      readPublicationAudienceReadinessSnapshotForTenant: async (
+        tenantId: string,
+        id: string,
+      ) => {
+        calls.push(`snapshot:${tenantId}:${id}`);
+        return id === publicationId && tenantId === tenantAId
+          ? {
+              publication: publicationA,
+              definition: null,
+              targetsCurrentlyValid: false,
+              estimatedRecipientCount: null,
+            }
+          : null;
       },
-      findPublicationAudienceDefinitionForTenant: async () => {
-        calls.push("definition");
-        return null;
-      },
-      arePublicationAudienceTargetsCurrentlyValidForTenant: async () => {
-        calls.push("targets");
-        return true;
-      },
-      countPublicationAudienceMembershipsForTenant: async () => {
-        calls.push("count");
-        return 1;
-      },
+      validatePublicationAudienceConfirmationAtomicallyForTenant: async () => null,
     },
   };
 
@@ -604,26 +637,28 @@ async function publicationAudienceReadinessProbe(): Promise<void> {
     estimatedRecipientCount: null,
   });
   expect(calls).toEqual([
-    `publication:${tenantAId}:${foreignPublicationId}`,
-    `publication:${tenantAId}:${publicationId}`,
-    "definition",
+    `snapshot:${tenantAId}:${foreignPublicationId}`,
+    `snapshot:${tenantAId}:${publicationId}`,
   ]);
 }
 
 async function publicationAudienceConfirmationProbe(): Promise<void> {
-  const definition = {
-    tenantId: tenantAId,
-    publicationId,
-    mode: "entire_tenant" as const,
-    groups: [],
-  };
   const dependencies = {
     publications: {
-      findPublicationByIdForTenant: async (tenantId: string, id: string) =>
-        tenantId === tenantAId && id === publicationId ? publicationA : null,
-      findPublicationAudienceDefinitionForTenant: async () => definition,
-      arePublicationAudienceTargetsCurrentlyValidForTenant: async () => true,
-      countPublicationAudienceMembershipsForTenant: async () => 2,
+      readPublicationAudienceReadinessSnapshotForTenant: async () => null,
+      validatePublicationAudienceConfirmationAtomicallyForTenant: async (
+        tenantId: string,
+        id: string,
+        input: unknown,
+      ) =>
+        tenantId === tenantAId && id === publicationId
+          ? validatePublicationAudienceConfirmation(input, {
+              publicationVersion: 1,
+              estimatedRecipientCount: 2,
+              audienceDefinitionValid: true,
+              targetsCurrentlyValid: true,
+            })
+          : null,
     },
   };
 
@@ -1130,6 +1165,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.audience-replacement": publicationAudienceReplacementProbe,
   "publication.audience-target-validity": publicationAudienceTargetValidityProbe,
   "publication.audience-count": publicationAudienceCountProbe,
+  "publication.audience-atomic": publicationAudienceAtomicProbe,
   "publication.audience-readiness": publicationAudienceReadinessProbe,
   "publication.audience-confirmation": publicationAudienceConfirmationProbe,
 };

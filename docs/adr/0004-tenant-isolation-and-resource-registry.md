@@ -219,7 +219,8 @@ than silently becoming global.
 | Publication create operation | `TENANT_SCOPED` | Trusted context/requested Tenant match before repository write; scope validation is not capability authorization. |
 | Audience definition read and batch read | `TENANT_SCOPED` | Publication and criteria reads use explicit Tenant predicates; malformed, missing, foreign, and conflicting definitions fail closed. |
 | Audience replacement | `TENANT_SCOPED` | Draft/scheduled-only, row-locked Tenant-bound transaction with expected-version conflict protection and atomic mode/criteria/version update. |
-| Audience target validity, scalar count, readiness, and confirmation | `TENANT_SCOPED` | Current hierarchy/Membership facts and persisted definition drive validation; count is scalar and confirmation requires exact version/count. |
+| Audience target validity and scalar count | `TENANT_SCOPED` | Current hierarchy/Membership facts and persisted definition drive validation; count is scalar and returns no recipient identities. |
+| Audience readiness snapshot and confirmation | `TENANT_SCOPED` | Exact Publication row lock binds one transaction-consistent canonical definition, target-validity result, scalar Membership count, and expected-version confirmation. |
 | `RequestContext` and resolver wiring | `TENANT_SCOPED` | Server-owned identity/Tenant binding and mismatch rejection. |
 | Health route/service, DB client, config, schema barrel, migration history | `GLOBAL_NON_TENANT` | Specific infrastructure exemptions; no Tenant resource data. |
 
@@ -229,8 +230,8 @@ operations. The reserved categories `jobs`, `exports`, `search`, `cache`,
 `media`, `notifications`, `analytics`, and `backups/restore` are
 `FUTURE_NOT_IMPLEMENTED`; no fake implementation is added by B.2.4.
 
-The current registry contains 43 entries: 32 `TENANT_SCOPED` entries, 24
-distinct required negative-probe IDs (32 probe obligations), and 8 reviewed
+The current registry contains 45 entries: 34 `TENANT_SCOPED` entries, 25
+distinct required negative-probe IDs (34 probe obligations), and 8 reviewed
 `GLOBAL_NON_TENANT` exemptions. The registry remains metadata and does not
 grant authorization.
 

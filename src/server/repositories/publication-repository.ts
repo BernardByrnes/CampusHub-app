@@ -23,6 +23,11 @@ import {
   parsePublicationAudienceProvenancePolicy,
 } from "@/domain/authorization/publication-audience";
 import {
+  validatePublicationAudienceConfirmation,
+  type PublicationAudienceConfirmationResult,
+} from "@/domain/authorization/publication-audience-confirmation";
+import type { PublicationAudienceReadinessSnapshot } from "@/domain/authorization/publication-audience-readiness";
+import {
   isPublication,
   parsePublicationAudienceMode,
   parsePublicationLifecycle,
@@ -770,6 +775,121 @@ function isPositivePublicationVersion(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
+async function countAudienceMemberships(
+  database: SelectOnlyDatabase,
+  definition: PublicationAudienceDefinition,
+): Promise<number | null> {
+  const scope =
+    definition.mode === "entire_tenant"
+      ? eq(memberships.tenantId, definition.tenantId)
+      : buildTargetedMembershipPredicate(definition);
+  if (scope === null || scope === undefined) {
+    return null;
+  }
+
+  try {
+    const rows = await database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(memberships)
+      .where(scope);
+    const rawCount = rows[0]?.count;
+    const count =
+      typeof rawCount === "number"
+        ? rawCount
+        : typeof rawCount === "string" && /^\d+$/.test(rawCount)
+          ? Number(rawCount)
+          : NaN;
+    return Number.isSafeInteger(count) && count >= 0 ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readPublicationAudienceReadinessSnapshot(
+  database: SelectOnlyDatabase,
+  tenantId: string,
+  publicationId: string,
+): Promise<PublicationAudienceReadinessSnapshot | null> {
+  const lockedRows = await database
+    .select()
+    .from(publications)
+    .where(
+      and(
+        eq(publications.tenantId, tenantId),
+        eq(publications.id, publicationId),
+      ),
+    )
+    .for("update")
+    .limit(1);
+  const publication = lockedRows[0] ? toPublication(lockedRows[0]) : null;
+  if (publication === null) {
+    return null;
+  }
+
+  const criteriaRows = await database
+    .select()
+    .from(publicationAudienceCriteria)
+    .where(
+      and(
+        eq(publicationAudienceCriteria.tenantId, tenantId),
+        eq(publicationAudienceCriteria.publicationId, publicationId),
+      ),
+    )
+    .orderBy(
+      asc(publicationAudienceCriteria.dimension),
+      asc(publicationAudienceCriteria.id),
+    );
+  const definition = mapAudienceCriteria(
+    tenantId,
+    publicationId,
+    publication,
+    criteriaRows,
+  );
+
+  if (
+    definition === null ||
+    !isPublicationAudienceDefinition(definition) ||
+    definition.tenantId !== tenantId ||
+    definition.publicationId !== publicationId ||
+    definition.mode !== publication.audienceMode
+  ) {
+    return {
+      publication,
+      definition: null,
+      targetsCurrentlyValid: false,
+      estimatedRecipientCount: null,
+    };
+  }
+
+  let targetsCurrentlyValid = definition.mode === "entire_tenant";
+  if (definition.mode === "targeted") {
+    try {
+      targetsCurrentlyValid = await validateAudienceTargets(database, definition);
+    } catch {
+      targetsCurrentlyValid = false;
+    }
+  }
+
+  if (!targetsCurrentlyValid) {
+    return {
+      publication,
+      definition,
+      targetsCurrentlyValid: false,
+      estimatedRecipientCount: null,
+    };
+  }
+
+  return {
+    publication,
+    definition,
+    targetsCurrentlyValid: true,
+    estimatedRecipientCount: await countAudienceMemberships(
+      database,
+      definition,
+    ),
+  };
+}
+
 export class DrizzlePublicationRepository {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
@@ -1014,6 +1134,59 @@ export class DrizzlePublicationRepository {
     return definitions;
   }
 
+  public async readPublicationAudienceReadinessSnapshotForTenant(
+    tenantId: string,
+    publicationId: string,
+  ): Promise<PublicationAudienceReadinessSnapshot | null> {
+    if (!isUuid(tenantId) || !isUuid(publicationId)) {
+      return null;
+    }
+
+    try {
+      return await this.database.transaction((transaction) =>
+        readPublicationAudienceReadinessSnapshot(
+          transaction,
+          tenantId,
+          publicationId,
+        ),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  public async validatePublicationAudienceConfirmationAtomicallyForTenant(
+    tenantId: string,
+    publicationId: string,
+    input: unknown,
+  ): Promise<PublicationAudienceConfirmationResult | null> {
+    if (!isUuid(tenantId) || !isUuid(publicationId)) {
+      return null;
+    }
+
+    try {
+      return await this.database.transaction(async (transaction) => {
+        const snapshot = await readPublicationAudienceReadinessSnapshot(
+          transaction,
+          tenantId,
+          publicationId,
+        );
+        if (snapshot === null) {
+          return null;
+        }
+
+        return validatePublicationAudienceConfirmation(input, {
+          publicationVersion: snapshot.publication.version,
+          estimatedRecipientCount: snapshot.estimatedRecipientCount,
+          audienceDefinitionValid: snapshot.definition !== null,
+          targetsCurrentlyValid: snapshot.targetsCurrentlyValid,
+        });
+      });
+    } catch {
+      return null;
+    }
+  }
+
   public async replaceDraftPublicationAudienceForTenant(
     tenantId: string,
     publicationId: string,
@@ -1160,30 +1333,7 @@ export class DrizzlePublicationRepository {
       return null;
     }
 
-    const scope =
-      definition.mode === "entire_tenant"
-        ? eq(memberships.tenantId, tenantId)
-        : buildTargetedMembershipPredicate(definition);
-    if (scope === null || scope === undefined) {
-      return null;
-    }
-
-    try {
-      const rows = await this.database
-        .select({ count: sql<number>`count(*)::int` })
-        .from(memberships)
-        .where(scope);
-      const rawCount = rows[0]?.count;
-      const count =
-        typeof rawCount === "number"
-          ? rawCount
-          : typeof rawCount === "string" && /^\d+$/.test(rawCount)
-            ? Number(rawCount)
-            : NaN;
-      return Number.isSafeInteger(count) && count >= 0 ? count : null;
-    } catch {
-      return null;
-    }
+    return countAudienceMemberships(this.database, definition);
   }
 
   public async listPublicationCandidatesForTenant(

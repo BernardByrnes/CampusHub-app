@@ -17,7 +17,6 @@ import {
 import { isPublication, type Publication } from "@/domain/content/publication";
 import { MAX_PUBLICATION_CANDIDATES_SCANNED } from "@/domain/content/publication-collection";
 import { isUuid } from "@/domain/identifiers/uuid";
-import type { MembershipAudienceFacts } from "@/domain/membership/membership-audience";
 import { isMembershipAudienceFacts } from "@/domain/membership/membership-audience";
 
 export type PersistedPublicationAudienceDefinitionReader = Readonly<{
@@ -191,9 +190,17 @@ export class PersistedPublicationAudienceResolver
       return ineligibleAudience();
     }
 
+    if (
+      !isMembershipAudienceFacts(membershipFacts) ||
+      membershipFacts.tenantId !== publication.tenantId ||
+      membershipFacts.membershipId !== viewer.context.membershipId
+    ) {
+      return ineligibleAudience();
+    }
+
     return evaluatePublicationAudience(
       definition,
-      membershipFacts as MembershipAudienceFacts | null,
+      membershipFacts,
     );
   }
 }

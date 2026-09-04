@@ -165,6 +165,31 @@ async function expectPostgresCode(
   expect(getPostgresCode(caught)).toBe(expectedCode);
 }
 
+async function waitForDatabaseLockWait(queryFragment: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await getDatabase().execute(sql`
+      select 1
+      from pg_stat_activity
+      where pid <> pg_backend_pid()
+        and state = 'active'
+        and wait_event_type = 'Lock'
+        and query ilike ${`%${queryFragment}%`}
+      limit 1
+    `);
+    if (result.rows.length > 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  throw new Error("Timed out waiting for the atomic audience lock request.");
+}
+
+async function waitForPublicationRowLockWait(): Promise<void> {
+  return waitForDatabaseLockWait("for update");
+}
+
 async function createTenant(
   overrides: Partial<NewTenantRow> = {},
 ): Promise<TenantRow> {
@@ -1994,6 +2019,275 @@ describe("real PostgreSQL Publication audience persistence", () => {
       ),
     ).resolves.toEqual({ ok: false, error: "RECONFIRM_REQUIRED" });
   });
+
+  it("rejects stale confirmation after a locked replacement commits a new audience", async () => {
+    const tenant = await createTenant();
+    const campusA = await createCampus(tenant.id);
+    const campusB = await createCampus(tenant.id);
+    const memberA = await createMembership(tenant.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+    });
+    const memberB = await createMembership(tenant.id, {
+      campusId: campusB,
+      campusProvenance: "roster_derived",
+    });
+    const publication = await createPublication(tenant.id, "targeted");
+    await insertCriterion({
+      ...baseCriterion(tenant.id, publication.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+
+    const initialReadiness = await getPublicationAudienceReadinessForTenant(
+      { publications: audienceRepository },
+      tenant.id,
+      publication.id,
+    );
+    expect(initialReadiness).toMatchObject({
+      publicationVersion: 1,
+      estimatedRecipientCount: 1,
+      audienceDefinitionValid: true,
+      targetsCurrentlyValid: true,
+    });
+    expect(memberA.id).not.toBe(memberB.id);
+
+    let replacementReady!: () => void;
+    const replacementIsReady = new Promise<void>((resolve) => {
+      replacementReady = resolve;
+    });
+    let allowReplacementCommit!: () => void;
+    const replacementMayCommit = new Promise<void>((resolve) => {
+      allowReplacementCommit = resolve;
+    });
+
+    const replacementTransaction = getDatabase().transaction(async (transaction) => {
+      const lockedRows = await transaction
+        .select({ id: publications.id, version: publications.version })
+        .from(publications)
+        .where(
+          and(
+            eq(publications.tenantId, tenant.id),
+            eq(publications.id, publication.id),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      expect(lockedRows[0]?.version).toBe(1);
+
+      await transaction
+        .update(publications)
+        .set({
+          audienceMode: "targeted",
+          version: sql`${publications.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(publications.tenantId, tenant.id),
+            eq(publications.id, publication.id),
+          ),
+        );
+      await transaction
+        .delete(publicationAudienceCriteria)
+        .where(
+          and(
+            eq(publicationAudienceCriteria.tenantId, tenant.id),
+            eq(publicationAudienceCriteria.publicationId, publication.id),
+          ),
+        );
+      await transaction.insert(publicationAudienceCriteria).values({
+        ...baseCriterion(tenant.id, publication.id),
+        dimension: "campus",
+        campusId: campusB,
+        academicYear: null,
+      });
+
+      replacementReady();
+      await replacementMayCommit;
+    });
+
+    await replacementIsReady;
+    const staleConfirmation = validatePublicationAudienceConfirmationForTenant(
+      { publications: audienceRepository },
+      tenant.id,
+      publication.id,
+      { expectedPublicationVersion: 1, confirmedRecipientCount: 1 },
+    );
+    let lockWaitError: unknown;
+    try {
+      await waitForPublicationRowLockWait();
+    } catch (error) {
+      lockWaitError = error;
+    } finally {
+      allowReplacementCommit();
+    }
+
+    await replacementTransaction;
+    if (lockWaitError !== undefined) {
+      throw lockWaitError;
+    }
+    await expect(staleConfirmation).resolves.toEqual({
+      ok: false,
+      error: "VERSION_CONFLICT",
+    });
+
+    const currentReadiness = await getPublicationAudienceReadinessForTenant(
+      { publications: audienceRepository },
+      tenant.id,
+      publication.id,
+    );
+    expect(currentReadiness).toMatchObject({
+      publicationVersion: 2,
+      estimatedRecipientCount: 1,
+      audienceDefinitionValid: true,
+      targetsCurrentlyValid: true,
+    });
+    await expect(
+      audienceRepository.findPublicationAudienceDefinitionForTenant(
+        tenant.id,
+        publication.id,
+      ),
+    ).resolves.toEqual(
+      targetedDefinition(tenant.id, publication.id, [
+        {
+          dimension: "campus",
+          provenancePolicy: "authoritative_only",
+          campusIds: [campusB],
+        },
+      ]),
+    );
+  }, 120_000);
+
+  it("keeps replacement behind an authoritative confirmation lock", async () => {
+    const tenant = await createTenant();
+    const campusA = await createCampus(tenant.id);
+    const campusB = await createCampus(tenant.id);
+    await createMembership(tenant.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+    });
+    await createMembership(tenant.id, {
+      campusId: campusB,
+      campusProvenance: "roster_derived",
+    });
+    const publication = await createPublication(tenant.id, "targeted");
+    const definitionA = targetedDefinition(tenant.id, publication.id, [
+      {
+        dimension: "campus",
+        provenancePolicy: "authoritative_only",
+        campusIds: [campusA],
+      },
+    ]);
+    const definitionB = targetedDefinition(tenant.id, publication.id, [
+      {
+        dimension: "campus",
+        provenancePolicy: "authoritative_only",
+        campusIds: [campusB],
+      },
+    ]);
+    await insertCriterion({
+      ...baseCriterion(tenant.id, publication.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+
+    const initialReadiness = await getPublicationAudienceReadinessForTenant(
+      { publications: audienceRepository },
+      tenant.id,
+      publication.id,
+    );
+    expect(initialReadiness).toMatchObject({
+      publicationVersion: 1,
+      estimatedRecipientCount: 1,
+    });
+
+    let tableLockReady!: () => void;
+    const tableLockIsReady = new Promise<void>((resolve) => {
+      tableLockReady = resolve;
+    });
+    let releaseTableLock!: () => void;
+    const tableLockMayRelease = new Promise<void>((resolve) => {
+      releaseTableLock = resolve;
+    });
+    const tableLockTransaction = getDatabase().transaction(async (transaction) => {
+      await transaction.execute(
+        sql`lock table "memberships" in access exclusive mode`,
+      );
+      tableLockReady();
+      await tableLockMayRelease;
+    });
+
+    await tableLockIsReady;
+    const authoritativeConfirmation =
+      validatePublicationAudienceConfirmationForTenant(
+        { publications: audienceRepository },
+        tenant.id,
+        publication.id,
+        { expectedPublicationVersion: 1, confirmedRecipientCount: 1 },
+      );
+
+    let orchestrationError: unknown;
+    let replacementPromise: Promise<unknown> | undefined;
+    try {
+      await waitForDatabaseLockWait("count(*)");
+      replacementPromise = audienceRepository.replaceDraftPublicationAudienceForTenant(
+        tenant.id,
+        publication.id,
+        1,
+        definitionB,
+      );
+      await waitForPublicationRowLockWait();
+    } catch (error) {
+      orchestrationError = error;
+    } finally {
+      releaseTableLock();
+    }
+
+    await tableLockTransaction;
+    let confirmationResult: unknown;
+    let confirmationError: unknown;
+    try {
+      confirmationResult = await authoritativeConfirmation;
+    } catch (error) {
+      confirmationError = error;
+    }
+    let replacementResult: unknown;
+    let replacementError: unknown;
+    if (replacementPromise !== undefined) {
+      try {
+        replacementResult = await replacementPromise;
+      } catch (error) {
+        replacementError = error;
+      }
+    }
+
+    if (orchestrationError !== undefined) {
+      throw orchestrationError;
+    }
+    if (confirmationError !== undefined) {
+      throw confirmationError;
+    }
+    if (replacementError !== undefined) {
+      throw replacementError;
+    }
+
+    expect(confirmationResult).toEqual({ ok: true });
+    expect(replacementResult).toMatchObject({ ok: true, version: 2 });
+    expect(definitionA).not.toEqual(definitionB);
+    await expect(
+      getPublicationAudienceReadinessForTenant(
+        { publications: audienceRepository },
+        tenant.id,
+        publication.id,
+      ),
+    ).resolves.toMatchObject({
+      publicationVersion: 2,
+      estimatedRecipientCount: 1,
+    });
+  }, 120_000);
 
   it("authorizes real targeted Publication reads from persisted definitions and Membership facts", async () => {
     const { ReadPublicationService } = await import(

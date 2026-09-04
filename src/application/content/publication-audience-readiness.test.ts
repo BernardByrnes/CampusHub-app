@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PublicationAudienceDefinition } from "@/domain/authorization/publication-audience";
+import type { PublicationAudienceConfirmationResult } from "@/domain/authorization/publication-audience-confirmation";
 import type { Publication } from "@/domain/content/publication";
 
 import {
@@ -42,14 +43,21 @@ function repositoryFor(
   overrides: Partial<PublicationAudienceReadinessRepository> = {},
 ): PublicationAudienceReadinessRepository {
   return {
-    findPublicationByIdForTenant: vi.fn(async (requestedTenantId, requestedPublicationId) =>
-      requestedTenantId === tenantId && requestedPublicationId === publicationId
-        ? publication
-        : null,
+    readPublicationAudienceReadinessSnapshotForTenant: vi.fn(
+      async (requestedTenantId, requestedPublicationId) =>
+        requestedTenantId === tenantId &&
+        requestedPublicationId === publicationId
+          ? {
+              publication,
+              definition: entireDefinition,
+              targetsCurrentlyValid: true,
+              estimatedRecipientCount: 7,
+            }
+          : null,
     ),
-    findPublicationAudienceDefinitionForTenant: vi.fn(async () => entireDefinition),
-    arePublicationAudienceTargetsCurrentlyValidForTenant: vi.fn(async () => true),
-    countPublicationAudienceMembershipsForTenant: vi.fn(async () => 7),
+    validatePublicationAudienceConfirmationAtomicallyForTenant: vi.fn(
+      async (): Promise<PublicationAudienceConfirmationResult> => ({ ok: true }),
+    ),
     ...overrides,
   };
 }
@@ -83,14 +91,19 @@ describe("publication audience readiness", () => {
         publicationId,
       ),
     ).resolves.toBeNull();
-    expect(repository.findPublicationAudienceDefinitionForTenant).not.toHaveBeenCalled();
+    expect(
+      repository.readPublicationAudienceReadinessSnapshotForTenant,
+    ).toHaveBeenCalledWith(foreignTenantId, publicationId);
   });
 
   it("does not count an invalid or missing canonical definition", async () => {
-    const count = vi.fn(async () => 7);
     const repository = repositoryFor({
-      findPublicationAudienceDefinitionForTenant: vi.fn(async () => null),
-      countPublicationAudienceMembershipsForTenant: count,
+      readPublicationAudienceReadinessSnapshotForTenant: vi.fn(async () => ({
+        publication,
+        definition: null,
+        targetsCurrentlyValid: false,
+        estimatedRecipientCount: null,
+      })),
     });
     await expect(
       getPublicationAudienceReadinessForTenant(
@@ -104,7 +117,6 @@ describe("publication audience readiness", () => {
       estimatedRecipientCount: null,
       requiresAudienceSizeConfirmation: false,
     });
-    expect(count).not.toHaveBeenCalled();
   });
 
   it("does not estimate a targeted audience whose current target is invalid", async () => {
@@ -120,13 +132,14 @@ describe("publication audience readiness", () => {
         },
       ],
     };
-    const count = vi.fn(async () => 7);
     const targetedPublication = { ...publication, audienceMode: "targeted" as const };
     const repository = repositoryFor({
-      findPublicationByIdForTenant: vi.fn(async () => targetedPublication),
-      findPublicationAudienceDefinitionForTenant: vi.fn(async () => targeted),
-      arePublicationAudienceTargetsCurrentlyValidForTenant: vi.fn(async () => false),
-      countPublicationAudienceMembershipsForTenant: count,
+      readPublicationAudienceReadinessSnapshotForTenant: vi.fn(async () => ({
+        publication: targetedPublication,
+        definition: targeted,
+        targetsCurrentlyValid: false,
+        estimatedRecipientCount: null,
+      })),
     });
     await expect(
       getPublicationAudienceReadinessForTenant(
@@ -140,12 +153,13 @@ describe("publication audience readiness", () => {
       targetsCurrentlyValid: false,
       estimatedRecipientCount: null,
     });
-    expect(count).not.toHaveBeenCalled();
   });
 
   it("re-evaluates the scalar estimate for confirmation", async () => {
     const repository = repositoryFor({
-      countPublicationAudienceMembershipsForTenant: vi.fn(async () => 7),
+      validatePublicationAudienceConfirmationAtomicallyForTenant: vi.fn(
+        async () => ({ ok: false, error: "RECONFIRM_REQUIRED" as const }),
+      ),
     });
     await expect(
       validatePublicationAudienceConfirmationForTenant(
@@ -155,5 +169,14 @@ describe("publication audience readiness", () => {
         { expectedPublicationVersion: 4, confirmedRecipientCount: 6 },
       ),
     ).resolves.toEqual({ ok: false, error: "RECONFIRM_REQUIRED" });
+    expect(
+      repository.validatePublicationAudienceConfirmationAtomicallyForTenant,
+    ).toHaveBeenCalledWith(tenantId, publicationId, {
+      expectedPublicationVersion: 4,
+      confirmedRecipientCount: 6,
+    });
+    expect(
+      repository.readPublicationAudienceReadinessSnapshotForTenant,
+    ).not.toHaveBeenCalled();
   });
 });

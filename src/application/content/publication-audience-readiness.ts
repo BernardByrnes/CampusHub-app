@@ -1,34 +1,24 @@
 import "server-only";
 
-import {
-  isPublicationAudienceDefinition,
-  type PublicationAudienceDefinition,
-} from "@/domain/authorization/publication-audience";
-import {
-  validatePublicationAudienceConfirmation,
-  type PublicationAudienceConfirmationResult,
-} from "@/domain/authorization/publication-audience-confirmation";
-import type { PublicationAudienceReadiness } from "@/domain/authorization/publication-audience-readiness";
-import type { Publication } from "@/domain/content/publication";
+import { isPublicationAudienceDefinition } from "@/domain/authorization/publication-audience";
+import type { PublicationAudienceConfirmationResult } from "@/domain/authorization/publication-audience-confirmation";
+import type {
+  PublicationAudienceReadiness,
+  PublicationAudienceReadinessSnapshot,
+} from "@/domain/authorization/publication-audience-readiness";
+import { isPublication, type Publication } from "@/domain/content/publication";
 import { isUuid } from "@/domain/identifiers/uuid";
 
 export type PublicationAudienceReadinessRepository = Readonly<{
-  findPublicationByIdForTenant(
+  readPublicationAudienceReadinessSnapshotForTenant(
     tenantId: string,
     publicationId: string,
-  ): Promise<Publication | null>;
-  findPublicationAudienceDefinitionForTenant(
+  ): Promise<PublicationAudienceReadinessSnapshot | null>;
+  validatePublicationAudienceConfirmationAtomicallyForTenant(
     tenantId: string,
     publicationId: string,
-  ): Promise<PublicationAudienceDefinition | null>;
-  arePublicationAudienceTargetsCurrentlyValidForTenant(
-    tenantId: string,
-    definition: unknown,
-  ): Promise<boolean>;
-  countPublicationAudienceMembershipsForTenant(
-    tenantId: string,
-    publicationId: string,
-  ): Promise<number | null>;
+    input: unknown,
+  ): Promise<PublicationAudienceConfirmationResult | null>;
 }>;
 
 export type PublicationAudienceReadinessServiceDependencies = Readonly<{
@@ -59,43 +49,30 @@ function invalidReadiness(
   };
 }
 
-/**
- * Internal server-side readiness calculation. It returns scalar readiness
- * facts only; publication reads and collections intentionally do not consume
- * this seam yet.
- */
-export async function getPublicationAudienceReadinessForTenant(
-  dependencies: PublicationAudienceReadinessServiceDependencies,
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function readinessFromSnapshot(
+  snapshot: unknown,
   tenantId: string,
   publicationId: string,
-): Promise<PublicationAudienceReadiness | null> {
-  if (!isValidIdentifierPair(tenantId, publicationId)) {
+): PublicationAudienceReadiness | null {
+  if (typeof snapshot !== "object" || snapshot === null) {
     return null;
   }
 
-  let publication: Publication | null;
-  try {
-    publication = await dependencies.publications.findPublicationByIdForTenant(
-      tenantId,
-      publicationId,
-    );
-  } catch {
-    return null;
-  }
-  if (publication === null) {
+  const candidate = snapshot as Record<string, unknown>;
+  const publication = candidate.publication;
+  if (
+    !isPublication(publication) ||
+    publication.tenantId !== tenantId ||
+    publication.id !== publicationId
+  ) {
     return null;
   }
 
-  let definition: PublicationAudienceDefinition | null;
-  try {
-    definition =
-      await dependencies.publications.findPublicationAudienceDefinitionForTenant(
-        tenantId,
-        publicationId,
-      );
-  } catch {
-    return null;
-  }
+  const definition = candidate.definition;
   if (
     definition === null ||
     !isPublicationAudienceDefinition(definition) ||
@@ -106,34 +83,24 @@ export async function getPublicationAudienceReadinessForTenant(
     return invalidReadiness(publication, tenantId, publicationId);
   }
 
-  let targetsCurrentlyValid: boolean;
-  try {
-    targetsCurrentlyValid =
-      definition.mode === "entire_tenant"
-        ? true
-        : await dependencies.publications.arePublicationAudienceTargetsCurrentlyValidForTenant(
-            tenantId,
-            definition,
-          );
-  } catch {
-    targetsCurrentlyValid = false;
-  }
-  if (!targetsCurrentlyValid) {
+  const targetsCurrentlyValid = candidate.targetsCurrentlyValid;
+  const estimatedRecipientCount = candidate.estimatedRecipientCount;
+  if (
+    typeof targetsCurrentlyValid !== "boolean" ||
+    (estimatedRecipientCount !== null &&
+      !isNonNegativeInteger(estimatedRecipientCount))
+  ) {
     return {
       ...invalidReadiness(publication, tenantId, publicationId),
       audienceDefinitionValid: true,
     };
   }
 
-  let estimatedRecipientCount: number | null;
-  try {
-    estimatedRecipientCount =
-      await dependencies.publications.countPublicationAudienceMembershipsForTenant(
-        tenantId,
-        publicationId,
-      );
-  } catch {
-    estimatedRecipientCount = null;
+  if (!targetsCurrentlyValid) {
+    return {
+      ...invalidReadiness(publication, tenantId, publicationId),
+      audienceDefinitionValid: true,
+    };
   }
 
   return {
@@ -149,8 +116,39 @@ export async function getPublicationAudienceReadinessForTenant(
 }
 
 /**
- * Re-reads readiness immediately before validating a future publish command.
- * A missing or foreign publication is intentionally represented as absence.
+ * Internal server-side readiness calculation. It consumes one repository-owned
+ * transaction snapshot; publication, definition, target validity, and count
+ * are never composed from independent reads here.
+ */
+export async function getPublicationAudienceReadinessForTenant(
+  dependencies: PublicationAudienceReadinessServiceDependencies,
+  tenantId: string,
+  publicationId: string,
+): Promise<PublicationAudienceReadiness | null> {
+  if (!isValidIdentifierPair(tenantId, publicationId)) {
+    return null;
+  }
+
+  let snapshot: PublicationAudienceReadinessSnapshot | null;
+  try {
+    snapshot =
+      await dependencies.publications.readPublicationAudienceReadinessSnapshotForTenant(
+        tenantId,
+        publicationId,
+      );
+  } catch {
+    return null;
+  }
+
+  return snapshot === null
+    ? null
+    : readinessFromSnapshot(snapshot, tenantId, publicationId);
+}
+
+/**
+ * Confirmation is evaluated inside the repository's row-locked transaction,
+ * so the expected version and scalar count come from the same authoritative
+ * snapshot.
  */
 export async function validatePublicationAudienceConfirmationForTenant(
   dependencies: PublicationAudienceReadinessServiceDependencies,
@@ -158,12 +156,17 @@ export async function validatePublicationAudienceConfirmationForTenant(
   publicationId: string,
   input: unknown,
 ): Promise<PublicationAudienceConfirmationResult | null> {
-  const readiness = await getPublicationAudienceReadinessForTenant(
-    dependencies,
-    tenantId,
-    publicationId,
-  );
-  return readiness === null
-    ? null
-    : validatePublicationAudienceConfirmation(input, readiness);
+  if (!isValidIdentifierPair(tenantId, publicationId)) {
+    return null;
+  }
+
+  try {
+    return await dependencies.publications.validatePublicationAudienceConfirmationAtomicallyForTenant(
+      tenantId,
+      publicationId,
+      input,
+    );
+  } catch {
+    return null;
+  }
 }

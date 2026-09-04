@@ -170,6 +170,28 @@ describe("PersistedPublicationAudienceResolver", () => {
       }),
     ).resolves.toEqual({ evaluated: true, eligible: false });
 
+    const foreignTenantFacts = createResolver(definition, {
+      ...facts,
+      tenantId: foreignTenantId,
+    });
+    await expect(
+      foreignTenantFacts.resolver.resolveAudience({
+        publication: targetedPublication,
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual({ evaluated: true, eligible: false });
+
+    const sameTenantWrongMembershipId = createResolver(definition, {
+      ...facts,
+      membershipId: foreignMembershipId,
+    });
+    await expect(
+      sameTenantWrongMembershipId.resolver.resolveAudience({
+        publication: targetedPublication,
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual({ evaluated: true, eligible: false });
+
     const foreignViewer: ResourceReadViewer = {
       kind: "membership",
       context: {

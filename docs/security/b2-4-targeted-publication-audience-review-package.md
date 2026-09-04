@@ -2,11 +2,18 @@
 
 ## Status
 
-`READY FOR INDEPENDENT SECURITY REVIEW`
+`READY FOR INDEPENDENT SECURITY RE-REVIEW`
 
 This package is a reviewer handoff, not an approval record. The exact review
 SHA is supplied in the external handoff after this package is committed; it is
 intentionally not embedded in the same commit.
+
+The independent B.2.4.9 review identified blocking `B24-MED-01` for mixed-version
+audience confirmation and advisory `B24-LOW-01` for direct resolver Membership
+rebinding. Remediation R1 makes readiness and confirmation transaction/version-
+consistent and hardens direct Membership rebinding. The exact remediation SHA is
+supplied externally after the remediation commit. This package does not claim
+B.2.4 approval; it is ready for the independent security re-review.
 
 ## Authority
 
@@ -33,6 +40,7 @@ intentionally not embedded in the same commit.
 | B.2.4.6 | Tenant-bound direct Publication reads with visibility/exposure before persisted audience evaluation. |
 | B.2.4.7 | Bounded ACTIVE/ARCHIVE targeted collections, batch audience definition reads, pre-audience filtering, canonical final authorization, and keyset pagination. |
 | B.2.4.8 | Final regression, A2/A4 governance evidence, migration immutability audit, synchronized security documentation, and this review package. |
+| B.2.4.9 R1 | Transaction/version-consistent readiness and confirmation, plus exact Tenant/Membership rebinding in the direct resolver. |
 
 ## Security invariants
 
@@ -49,6 +57,14 @@ intentionally not embedded in the same commit.
   draft/scheduled replacement is allowed under expected-version protection.
 - Replacement locks the Tenant-bound Publication and updates mode, criteria,
   and version atomically.
+- Readiness and confirmation lock the exact Tenant-bound Publication and use one
+  transaction-consistent Publication, criteria, target-validity, and scalar
+  Membership-count snapshot; stale expected versions fail closed.
+- Direct audience resolution accepts Membership facts only when their Tenant and
+  Membership ID exactly match the bound viewer before canonical evaluation.
+- When real publishing is introduced, confirmation must execute in the same
+  authoritative transaction as the lifecycle transition; a committed
+  confirmation followed by an unrelated publish transaction is not permitted.
 - Collections use bounded Tenant/keyset reads, targeted-only batch resolution,
   and no direct-read-per-item or unbounded candidate scan.
 - Audience estimates/counts are scalar and return no Membership IDs,
