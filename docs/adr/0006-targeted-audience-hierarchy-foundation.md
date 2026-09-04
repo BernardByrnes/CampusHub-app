@@ -1,8 +1,12 @@
 # ADR 0006: Targeted-Publication Audience Hierarchy Foundation
 
-- Status: **IMPLEMENTED — PENDING SOL REVIEW**
+- Status: **IMPLEMENTED — SOL REVIEWED / CLOSED**
+- Reviewed implementation SHA: `230b553065f5aeb15c1f068d590c251e02e20b5e`
 - Date: 2026-09-03
 - Scope: B.2.4.2 typed Tenant hierarchy foundation
+
+This checkpoint closure is not a whole-lane approval; final independent
+security review of B.2.4 remains B.2.4.9.
 
 ## Decision
 
@@ -14,9 +18,10 @@ explicit one- or two-level contract, and relational composite foreign keys
 preserve same-Tenant ownership for parents, merge targets, and Programme
 affiliation.
 
-Residences are real optional entities; `non_resident` remains a future
-Membership state and is not represented by a Residence row. Academic years use
-a Tenant-owned numeric minimum/maximum range with no fabricated default rows.
+Residences are real optional entities. B.2.4.3 subsequently introduced
+`non_resident` as a first-class Membership residence state; it is not
+represented by a fabricated Residence row. Academic years use a Tenant-owned
+numeric minimum/maximum range with no fabricated default rows.
 This checkpoint stores current labels and non-destructive merge metadata only;
 it does not rewrite historical attribution, redirect references, or add label
 history.
