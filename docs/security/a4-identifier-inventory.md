@@ -30,6 +30,13 @@ key, even if a future account model contains it.
 | `RequestContext.membershipId` | Trusted active context | One active Membership UUID for `RequestContext.tenantId`. | `CURRENT` |
 | `publication.id` | Publication resource | PostgreSQL UUID primary key; direct and collection reads are Tenant-scoped. | `CURRENT` |
 | `publication.tenantId` | Publication ownership | PostgreSQL UUID FK to `tenant.id`. | `CURRENT` |
+| `publicationAudienceCriteria.id` | Publication audience criterion resource | PostgreSQL UUID primary key; every criterion is Tenant- and Publication-bound. | `CURRENT` |
+| `publicationAudienceCriteria.tenantId` | Audience criterion ownership | PostgreSQL UUID paired with `publicationAudienceCriteria.publicationId` for the same-Tenant Publication FK. | `CURRENT` |
+| `publicationAudienceCriteria.publicationId` | Audience criterion Publication relation | PostgreSQL UUID paired with `publicationAudienceCriteria.tenantId`; never an unscoped audience relation. | `CURRENT` |
+| `publicationAudienceCriteria.campusId` | Audience Campus target | Nullable PostgreSQL UUID populated only for the `campus` dimension and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
+| `publicationAudienceCriteria.academicDivisionId` | Audience Academic Division target | Nullable PostgreSQL UUID populated only for the `academic_division` dimension and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
+| `publicationAudienceCriteria.programmeId` | Audience Programme target | Nullable PostgreSQL UUID populated only for the `programme` dimension and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
+| `publicationAudienceCriteria.residenceId` | Audience Residence target | Nullable PostgreSQL UUID populated only for a `specific_residence` target and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
 | `campus.id` | Campus resource | PostgreSQL UUID primary key; stable across label changes and owned by one Tenant. | `CURRENT` |
 | `campus.tenantId` | Campus ownership | PostgreSQL UUID FK to `tenant.id`; downstream references use the Tenant-first composite identity. | `CURRENT` |
 | `academicDivision.id` | Academic Division resource | PostgreSQL UUID primary key; stable across label changes and non-destructive merges. | `CURRENT` |
@@ -51,6 +58,11 @@ key, even if a future account model contains it.
 | `memberships.(tenant_id,programme_id,academic_division_id) -> programmes.(tenant_id,id,academic_division_id)` | Same-Tenant Membership Programme/Division FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `memberships.(tenant_id,residence_id) -> residences.(tenant_id,id)` | Same-Tenant Membership Residence FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `publications.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `publication_audience_criteria.(tenant_id,publication_id) -> publications.(tenant_id,id)` | Same-Tenant audience Publication FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `publication_audience_criteria.(tenant_id,campus_id) -> campuses.(tenant_id,id)` | Same-Tenant audience Campus FK | Composite target constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `publication_audience_criteria.(tenant_id,academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant audience Academic Division FK | Composite target constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `publication_audience_criteria.(tenant_id,programme_id) -> programmes.(tenant_id,id)` | Same-Tenant audience Programme FK | Composite target constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `publication_audience_criteria.(tenant_id,residence_id) -> residences.(tenant_id,id)` | Same-Tenant audience Residence FK | Composite target constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `campuses.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `academic_divisions.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `academic_divisions.(tenant_id,parent_academic_division_id) -> academic_divisions.(tenant_id,id)` | Same-Tenant parent FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -62,9 +74,11 @@ key, even if a future account model contains it.
 | `tenant_academic_year_config.tenant_id -> tenants.id` | One-to-one ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
-`campuses`, `academic_divisions`, `programmes`, `residences`, and
-`tenant_academic_year_config`, with `tenants` as their Tenant root. There is no
-current Global User, account, session, credential, OAuth, or MFA table.
+`publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
+`residences`, and `tenant_academic_year_config`, with `tenants` as their Tenant
+root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
+audience attribute, not an entity identifier. There is no current Global User,
+account, session, credential, OAuth, or MFA table.
 
 ## Future identifier classes
 

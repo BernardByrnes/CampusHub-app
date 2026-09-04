@@ -65,11 +65,14 @@ an ad hoc route or repository shortcut.
 
 ## G. Database ownership and foreign keys
 
-The current Tenant-owned tables are `memberships` and `publications`; both
-declare non-null `tenant_id` ownership and foreign-key ownership to `tenants.id`.
-`tenants` is the Tenant root. Structural discovery in the A2 meta-test derives
-this declaration from the Drizzle schema and fails if a Tenant-owned model is
-not registered. No schema migration is introduced by A2.
+The current Tenant-owned tables are `memberships`, `publications`,
+`publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
+`residences`, and `tenant_academic_year_config`; `tenants` is the Tenant root.
+The Drizzle schema and A2 structural discovery require each child model to be
+registered with its Tenant ownership contract. The B.2.4 audience criteria use
+normalized rows with same-Tenant composite foreign keys to Publications and
+typed hierarchy targets. A2 itself introduced no schema migration; B.2.4
+added the append-only 0005–0008 migration history described below.
 
 ## H. Future jobs Tenant context
 
@@ -204,13 +207,19 @@ than silently becoming global.
 | Surface | Classification | Current isolation contract |
 | --- | --- | --- |
 | `tenants` model and Tenant repository | `TENANT_ROOT` | Canonical Tenant ID/slug resolution; root owns child namespace. |
-| `memberships` model | `TENANT_SCOPED` | Non-null `tenant_id` FK; structural model probe. |
+| `memberships` model | `TENANT_SCOPED` | Non-null `tenant_id` FK; Tenant-owned affiliation/provenance fields and structural model probe. |
 | Membership identity + Tenant lookup | `TENANT_SCOPED` | Identity and Tenant are joint repository predicates; context binding probe. |
 | Membership + Tenant + ID lookup | `TENANT_SCOPED` | Tenant and Membership ID are joint predicates; malformed/foreign IDs fail closed. |
-| `publications` model | `TENANT_SCOPED` | Non-null `tenant_id` FK; structural model probe. |
-| Publication direct read | `TENANT_SCOPED` | Tenant + Publication ID query, then canonical exposure/audience policy. |
-| Publication ACTIVE/ARCHIVE collection | `TENANT_SCOPED` | Tenant + lifecycle + keyset query, bounded orchestration, then policy. |
+| Membership audience-facts read | `TENANT_SCOPED` | Tenant + Membership ID lookup maps complete current affiliation/provenance into canonical audience facts; incomplete Campus fails closed. |
+| `campuses`, `academic_divisions`, `programmes`, `residences`, `tenant_academic_year_config` models | `TENANT_SCOPED` | Typed Tenant-owned hierarchy/config tables with same-Tenant structural constraints. |
+| `publications` model | `TENANT_SCOPED` | Non-null `tenant_id` FK, Publication version, lifecycle, and audience mode; structural model probe. |
+| `publication_audience_criteria` model | `TENANT_SCOPED` | Tenant + Publication-owned normalized criteria with exact dimension payload checks, duplicate protections, and same-Tenant target FKs. |
+| Publication direct read and persisted audience resolver | `TENANT_SCOPED` | Tenant-bound Publication and exposure precede canonical persisted-definition/Membership-facts evaluation. |
+| Publication ACTIVE/ARCHIVE collection and batch resolver | `TENANT_SCOPED` | Bounded Tenant/keyset candidates, exposure/pre-audience filtering, set-based targeted audience resolution, then final policy. |
 | Publication create operation | `TENANT_SCOPED` | Trusted context/requested Tenant match before repository write; scope validation is not capability authorization. |
+| Audience definition read and batch read | `TENANT_SCOPED` | Publication and criteria reads use explicit Tenant predicates; malformed, missing, foreign, and conflicting definitions fail closed. |
+| Audience replacement | `TENANT_SCOPED` | Draft/scheduled-only, row-locked Tenant-bound transaction with expected-version conflict protection and atomic mode/criteria/version update. |
+| Audience target validity, scalar count, readiness, and confirmation | `TENANT_SCOPED` | Current hierarchy/Membership facts and persisted definition drive validation; count is scalar and confirmation requires exact version/count. |
 | `RequestContext` and resolver wiring | `TENANT_SCOPED` | Server-owned identity/Tenant binding and mismatch rejection. |
 | Health route/service, DB client, config, schema barrel, migration history | `GLOBAL_NON_TENANT` | Specific infrastructure exemptions; no Tenant resource data. |
 
@@ -218,7 +227,12 @@ The current route/application/repository/schema/config files under the governed
 roots are all declared by the registry, including their discovered public
 operations. The reserved categories `jobs`, `exports`, `search`, `cache`,
 `media`, `notifications`, `analytics`, and `backups/restore` are
-`FUTURE_NOT_IMPLEMENTED`; no fake implementation is added by A2.
+`FUTURE_NOT_IMPLEMENTED`; no fake implementation is added by B.2.4.
+
+The current registry contains 43 entries: 32 `TENANT_SCOPED` entries, 24
+distinct required negative-probe IDs (32 probe obligations), and 8 reviewed
+`GLOBAL_NON_TENANT` exemptions. The registry remains metadata and does not
+grant authorization.
 
 ## Threat and failure matrix
 
@@ -268,7 +282,9 @@ The following obligations remain nonblocking:
 
 ## Review boundary
 
-A2 is approved with nonblocking obligations. B.2.4 is unblocked by this
-approval record; its implementation is outside this documentation-only
-commit. A4 remains separately approved with nonblocking future obligations in
-ADR 0005.
+A2 was independently approved with nonblocking obligations at its historical
+reviewed SHA. That approval unblocked B.2.4, but it did not approve later
+implementation work. B.2.4.1–.8 now provide the targeted-audience chain and
+regression/evidence packet under the approved A2 invariant; the final
+independent B.2.4.9 review remains required. A4 remains separately approved
+with nonblocking future obligations in ADR 0005.

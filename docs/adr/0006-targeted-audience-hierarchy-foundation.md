@@ -21,10 +21,11 @@ This checkpoint stores current labels and non-destructive merge metadata only;
 it does not rewrite historical attribution, redirect references, or add label
 history.
 
-B.2.4.1 audience boolean/provenance semantics remain the approved contract,
-but Publication audience criteria, Membership affiliation fields, and audience
-read integration are deferred to later checkpoints. TI-1 Tenant-isolation
-registry and negative evidence accompany each implemented Tenant-owned model.
+B.2.4.1 audience boolean/provenance semantics remain the approved contract.
+Later B.2.4.3–.7 checkpoints now persist Tenant Membership affiliation and
+normalized Publication audience criteria and connect them to readiness, direct
+read, and collection evaluation. TI-1 Tenant-isolation registry and negative
+evidence accompany each implemented Tenant-owned model and operation.
 
 The second-level parent invariant that cannot be expressed by the simple
 PostgreSQL checks alone belongs to the future canonical hierarchy mutation

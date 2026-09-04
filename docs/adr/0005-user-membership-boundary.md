@@ -12,9 +12,11 @@
 The frozen Product Specification is authoritative for this decision, especially
 the Global User/Membership hard invariant in §10 and TI-12, the explicit active
 Tenant context, Tenant-local notifications and analytics, transfer behavior,
-support boundary, and audit/security constraints. ADR 0004 remains
-`PROPOSED — READY FOR INDEPENDENT RE-REVIEW`; this ADR records A4 only and does
-not approve A2, authentication, or any later implementation phase.
+support boundary, and audit/security constraints. ADR 0004 records the later
+independent A2 approval at its historical reviewed SHA. This ADR records A4
+only; it does not approve authentication, Global User persistence, or the later
+B.2.4 implementation. B.2.4.1–.7 have since implemented Tenant-Membership-owned
+audience behavior, and B.2.4.9 remains the required independent final review.
 
 ## Independent review record
 
@@ -56,8 +58,14 @@ presence does not grant a Tenant, Membership, or operation authority.
 A Membership represents the identity’s relationship with one Tenant and owns
 university-specific profile, assurance, lifecycle, and behavioral data. The
 current Membership fields are `id`, `tenantId`, `identitySubjectId`,
-`assuranceLevel`, `lifecycle`, `createdAt`, and `updatedAt`. The identifier
-inventory records which of these are identifiers and how they are scoped.
+`assuranceLevel`, `lifecycle`, `campusId`, `campusProvenance`,
+`academicDivisionId`, `academicDivisionProvenance`, `programmeId`,
+`programmeProvenance`, `academicYear`, `academicYearProvenance`,
+`residenceState`, `residenceId`, `residenceProvenance`, `createdAt`, and
+`updatedAt`. These Campus, Academic Division, Programme, Academic Year, and
+Residence affiliation/provenance fields remain Tenant Membership-owned. The
+identifier inventory records which fields are identifiers, ordinary
+attributes, or behavioral facts and how they are scoped.
 
 ## C. Active Tenant context
 
@@ -99,7 +107,8 @@ identity seam used to locate a Membership only together with an explicit
 Tenant. Publication IDs are Tenant-scoped. Collection cursors carry only a
 keyset position and never carry authority or a Tenant override. Database
 foreign keys preserve Tenant ownership from Memberships and Publications to
-the Tenant root.
+the Tenant root. B.2.4 also preserves same-Tenant ownership for typed hierarchy,
+academic-year configuration, and normalized Publication audience criteria.
 
 Future identifier classes remain unformatted until their governing phase
 defines them. A global User ID may identify an account, but it is explicitly
@@ -237,6 +246,8 @@ support/admin, jobs, and transfer/closure workflows remain explicit
 ## Review boundary
 
 This ADR is approved for A4 with the nonblocking future obligations recorded
-above. It does not close those obligations or approve A2. A2 remains
-`READY_FOR_INDEPENDENT_REVIEW`, and B.2.4 must remain blocked until independent
-re-review approves A2 as well.
+above. It does not close those obligations or grant a new A2/A4 approval. A2
+was subsequently independently approved at its historical reviewed SHA, which
+unblocked B.2.4. B.2.4.1–.8 now implement and document Tenant-Membership-owned
+targeted audience behavior; B.2.4 still awaits the final independent B.2.4.9
+review.
