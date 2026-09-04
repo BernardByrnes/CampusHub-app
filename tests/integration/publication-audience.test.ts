@@ -10,6 +10,8 @@ import {
   evaluatePublicationAudience,
   type PublicationAudienceDefinition,
 } from "@/domain/authorization/publication-audience";
+import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
+import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -31,6 +33,7 @@ import {
   type NewAcademicDivisionRow,
   type NewCampusRow,
   type NewMembershipRow,
+  type NewPublicationRow,
   type NewProgrammeRow,
   type NewResidenceRow,
   type NewTenantAcademicYearConfigRow,
@@ -190,6 +193,7 @@ async function createPublication(
   audienceMode: "entire_tenant" | "targeted" = "entire_tenant",
   lifecycle: "draft" | "scheduled" | "published" | "expired" | "archived" =
     "draft",
+  overrides: Partial<NewPublicationRow> = {},
 ): Promise<PublicationRow> {
   const rows = await getDatabase()
     .insert(publications)
@@ -203,6 +207,7 @@ async function createPublication(
       lifecycle,
       audienceMode,
       authorOfficeLabel: "Communications",
+      ...overrides,
     })
     .returning();
   const row = rows[0];
@@ -435,6 +440,33 @@ function targetedDefinition(
     publicationId,
     mode: "targeted",
     groups,
+  };
+}
+
+function directReadFacts(tenantId: string): ResolvedTenantReadFacts {
+  return {
+    tenantId,
+    tenantStatus: "active",
+    publicSurfacePermitted: true,
+    onLeaveReadEnabled: true,
+    alumniPublicReadEnabled: true,
+  };
+}
+
+function directReadMembershipViewer(
+  tenantId: string,
+  membership: MembershipRow,
+): ResourceReadViewer {
+  return {
+    kind: "membership",
+    context: {
+      identitySubjectId: membership.identitySubjectId,
+      tenantId,
+      tenantStatus: "active",
+      membershipId: membership.id,
+      assuranceLevel: membership.assuranceLevel,
+      membershipStatus: membership.lifecycle,
+    },
   };
 }
 
@@ -1961,5 +1993,307 @@ describe("real PostgreSQL Publication audience persistence", () => {
         { expectedPublicationVersion: 1, confirmedRecipientCount: 0 },
       ),
     ).resolves.toEqual({ ok: false, error: "RECONFIRM_REQUIRED" });
+  });
+
+  it("authorizes real targeted Publication reads from persisted definitions and Membership facts", async () => {
+    const { ReadPublicationService } = await import(
+      "@/application/content/read-publication"
+    );
+    const { PersistedPublicationAudienceResolver } = await import(
+      "@/application/content/publication-read-resolvers"
+    );
+    const { DrizzleMembershipRepository } = await import(
+      "@/server/repositories/membership-repository"
+    );
+
+    const tenantA = await createTenant();
+    const tenantB = await createTenant();
+    const campusA = await createCampus(tenantA.id);
+    const divisionA = await createDivision(tenantA.id);
+    const programmeA = await createProgramme(tenantA.id, divisionA.id);
+    const residenceA = await createResidence(tenantA.id);
+    const eligibleMembership = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+      academicDivisionId: divisionA.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programmeA.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "institution_verified",
+      residenceState: "resident",
+      residenceId: residenceA,
+      residenceProvenance: "roster_derived",
+    });
+    const ineligibleMembership = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+      academicDivisionId: divisionA.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programmeA.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 3,
+      academicYearProvenance: "institution_verified",
+      residenceState: "resident",
+      residenceId: residenceA,
+      residenceProvenance: "roster_derived",
+    });
+    const incompleteMembership = await createMembership(tenantA.id);
+    const foreignMembership = await createMembership(tenantB.id);
+    const publication = await createPublication(
+      tenantA.id,
+      "targeted",
+      "published",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      },
+    );
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, publication.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, publication.id),
+      dimension: "programme",
+      programmeId: programmeA.id,
+      academicYear: null,
+    });
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, publication.id),
+      dimension: "academic_year",
+      academicYear: 2,
+    });
+
+    const membershipRepository = new DrizzleMembershipRepository(
+      getDatabase() as never,
+    );
+    const service = new ReadPublicationService({
+      publications: audienceRepository,
+      exposureResolver: {
+        resolveExposure: (candidates) =>
+          new Map(
+            candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+          ),
+      },
+      audienceResolver: new PersistedPublicationAudienceResolver({
+        publications: audienceRepository,
+        memberships: membershipRepository,
+      }),
+    });
+
+    await expect(
+      service.getPublicationForRead(
+        {
+          tenantId: tenantA.id,
+          publicationId: publication.id,
+          viewer: directReadMembershipViewer(tenantA.id, eligibleMembership),
+          tenantFacts: directReadFacts(tenantA.id),
+          now: new Date("2026-01-15T12:00:00.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({ outcome: "FOUND" });
+    await expect(
+      service.getPublicationForRead({
+        tenantId: tenantA.id,
+        publicationId: publication.id,
+        viewer: directReadMembershipViewer(tenantA.id, ineligibleMembership),
+        tenantFacts: directReadFacts(tenantA.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead({
+        tenantId: tenantA.id,
+        publicationId: publication.id,
+        viewer: directReadMembershipViewer(tenantA.id, foreignMembership),
+        tenantFacts: directReadFacts(tenantA.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead({
+        tenantId: tenantA.id,
+        publicationId: publication.id,
+        viewer: directReadMembershipViewer(tenantA.id, incompleteMembership),
+        tenantFacts: directReadFacts(tenantA.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    await expect(
+      service.getPublicationForRead({
+        tenantId: tenantA.id,
+        publicationId: publication.id,
+        viewer: { kind: "anonymous", tenantId: tenantA.id },
+        tenantFacts: directReadFacts(tenantA.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+  });
+
+  it("keeps direct-read provenance and Residence decisions on the canonical evaluator", async () => {
+    const { ReadPublicationService } = await import(
+      "@/application/content/read-publication"
+    );
+    const { PersistedPublicationAudienceResolver } = await import(
+      "@/application/content/publication-read-resolvers"
+    );
+    const { DrizzleMembershipRepository } = await import(
+      "@/server/repositories/membership-repository"
+    );
+
+    const tenant = await createTenant();
+    const campus = await createCampus(tenant.id);
+    const division = await createDivision(tenant.id);
+    const programme = await createProgramme(tenant.id, division.id);
+    const residence = await createResidence(tenant.id);
+    const otherResidence = await createResidence(tenant.id);
+    const selfDeclaredMembership = await createMembership(tenant.id, {
+      campusId: campus,
+      campusProvenance: "self_declared",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programme.id,
+      programmeProvenance: "self_declared",
+      academicYear: 2,
+      academicYearProvenance: "institution_verified",
+      residenceState: "resident",
+      residenceId: residence,
+      residenceProvenance: "roster_derived",
+    });
+    const rightResidenceMembership = await createMembership(tenant.id, {
+      campusId: campus,
+      campusProvenance: "roster_derived",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programme.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "institution_verified",
+      residenceState: "resident",
+      residenceId: residence,
+      residenceProvenance: "roster_derived",
+    });
+    const wrongResidenceMembership = await createMembership(tenant.id, {
+      campusId: campus,
+      campusProvenance: "roster_derived",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programme.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "institution_verified",
+      residenceState: "resident",
+      residenceId: otherResidence,
+      residenceProvenance: "roster_derived",
+    });
+    const nonResidentMembership = await createMembership(tenant.id, {
+      campusId: campus,
+      campusProvenance: "roster_derived",
+      academicDivisionId: division.id,
+      academicDivisionProvenance: "roster_derived",
+      programmeId: programme.id,
+      programmeProvenance: "roster_derived",
+      academicYear: 2,
+      academicYearProvenance: "institution_verified",
+      residenceState: "non_resident",
+      residenceId: null,
+      residenceProvenance: "roster_derived",
+    });
+    const unknownResidenceMembership = await createMembership(tenant.id);
+
+    const service = new ReadPublicationService({
+      publications: audienceRepository,
+      exposureResolver: {
+        resolveExposure: (candidates) =>
+          new Map(
+            candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+          ),
+      },
+      audienceResolver: new PersistedPublicationAudienceResolver({
+        publications: audienceRepository,
+        memberships: new DrizzleMembershipRepository(getDatabase() as never),
+      }),
+    });
+    const read = (publicationId: string, membership: MembershipRow) =>
+      service.getPublicationForRead({
+        tenantId: tenant.id,
+        publicationId,
+        viewer: directReadMembershipViewer(tenant.id, membership),
+        tenantFacts: directReadFacts(tenant.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+      });
+    const createPublishedTargeted = () =>
+      createPublication(tenant.id, "targeted", "published", {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      });
+
+    const authoritativePublication = await createPublishedTargeted();
+    await insertCriterion({
+      ...baseCriterion(tenant.id, authoritativePublication.id),
+      dimension: "programme",
+      provenancePolicy: "authoritative_only",
+      programmeId: programme.id,
+      academicYear: null,
+    });
+    const allowSelfPublication = await createPublishedTargeted();
+    await insertCriterion({
+      ...baseCriterion(tenant.id, allowSelfPublication.id),
+      dimension: "programme",
+      provenancePolicy: "allow_self_declared",
+      programmeId: programme.id,
+      academicYear: null,
+    });
+    await expect(read(authoritativePublication.id, selfDeclaredMembership)).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
+    await expect(read(allowSelfPublication.id, selfDeclaredMembership)).resolves.toMatchObject({
+      outcome: "FOUND",
+    });
+
+    const specificResidencePublication = await createPublishedTargeted();
+    await insertCriterion({
+      ...baseCriterion(tenant.id, specificResidencePublication.id),
+      dimension: "residence",
+      residenceTarget: "specific_residence",
+      residenceId: residence,
+      academicYear: null,
+    });
+    await expect(read(specificResidencePublication.id, rightResidenceMembership)).resolves.toMatchObject({
+      outcome: "FOUND",
+    });
+    await expect(read(specificResidencePublication.id, wrongResidenceMembership)).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
+
+    const anyResidentPublication = await createPublishedTargeted();
+    await insertCriterion({
+      ...baseCriterion(tenant.id, anyResidentPublication.id),
+      dimension: "residence",
+      residenceTarget: "any_resident",
+      residenceId: null,
+      academicYear: null,
+    });
+    await expect(read(anyResidentPublication.id, wrongResidenceMembership)).resolves.toMatchObject({
+      outcome: "FOUND",
+    });
+
+    const nonResidentPublication = await createPublishedTargeted();
+    await insertCriterion({
+      ...baseCriterion(tenant.id, nonResidentPublication.id),
+      dimension: "residence",
+      residenceTarget: "non_resident",
+      residenceId: null,
+      academicYear: null,
+    });
+    await expect(read(nonResidentPublication.id, nonResidentMembership)).resolves.toMatchObject({
+      outcome: "FOUND",
+    });
+    await expect(read(nonResidentPublication.id, unknownResidenceMembership)).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
   });
 });

@@ -56,10 +56,12 @@ export type ResourceReadAudience =
   | Readonly<{ restricted: true; eligible: boolean }>;
 
 /**
- * Minimal authoritative facts needed for a generic resource READ decision.
+ * Authoritative resource facts needed before a targeted audience can be
+ * resolved. Audience is deliberately absent so a caller cannot smuggle an
+ * unevaluated or fabricated audience result into the pre-audience policy.
  * It deliberately does not model Publication, Event, or any other resource.
  */
-export type ResourceAccessFacts = Readonly<{
+export type ResourceReadPreAudienceFacts = Readonly<{
   resourceId: string;
   tenantId: string;
   tenantStatus: TenantLifecycle;
@@ -69,6 +71,14 @@ export type ResourceAccessFacts = Readonly<{
   archiveNoticeState?: ArchiveNoticeState;
   onLeaveReadEnabled: boolean;
   alumniPublicReadEnabled: boolean;
+}>;
+
+/**
+ * Minimal authoritative facts needed for the complete generic resource READ
+ * decision. The final audience result is attached only after pre-audience
+ * authorization succeeds.
+ */
+export type ResourceAccessFacts = ResourceReadPreAudienceFacts & Readonly<{
   audience: ResourceReadAudience;
 }>;
 
@@ -89,6 +99,11 @@ export type ResourceReadViewer =
 
 export type ResourceReadPolicyInput = Readonly<{
   resource: ResourceAccessFacts;
+  viewer: ResourceReadViewer;
+}>;
+
+export type ResourceReadPreAudiencePolicyInput = Readonly<{
+  resource: ResourceReadPreAudienceFacts;
   viewer: ResourceReadViewer;
 }>;
 
@@ -144,7 +159,9 @@ function isResourceReadAudience(value: unknown): value is ResourceReadAudience {
   );
 }
 
-function isResourceAccessFacts(value: unknown): value is ResourceAccessFacts {
+function isResourceReadFactsBase(
+  value: unknown,
+): value is ResourceReadPreAudienceFacts {
   if (!isRecord(value)) {
     return false;
   }
@@ -160,8 +177,7 @@ function isResourceAccessFacts(value: unknown): value is ResourceAccessFacts {
     typeof value.readable !== "boolean" ||
     typeof value.publicSurfacePermitted !== "boolean" ||
     typeof value.onLeaveReadEnabled !== "boolean" ||
-    typeof value.alumniPublicReadEnabled !== "boolean" ||
-    !isResourceReadAudience(value.audience)
+    typeof value.alumniPublicReadEnabled !== "boolean"
   ) {
     return false;
   }
@@ -175,6 +191,20 @@ function isResourceAccessFacts(value: unknown): value is ResourceAccessFacts {
 
   return tenantStatus !== "archived" ||
     parseArchiveNoticeState(archiveNoticeState) !== null;
+}
+
+function isResourceReadPreAudienceFacts(
+  value: unknown,
+): value is ResourceReadPreAudienceFacts {
+  return isResourceReadFactsBase(value) &&
+    !hasOwn(value as Record<string, unknown>, "audience");
+}
+
+function isResourceAccessFacts(value: unknown): value is ResourceAccessFacts {
+  return (
+    isResourceReadFactsBase(value) &&
+    isResourceReadAudience((value as Record<string, unknown>).audience)
+  );
 }
 
 function isTrustedRequestContext(
@@ -218,8 +248,18 @@ function isResourceReadPolicyInput(
   );
 }
 
+function isResourceReadPreAudiencePolicyInput(
+  value: unknown,
+): value is ResourceReadPreAudiencePolicyInput {
+  return (
+    isRecord(value) &&
+    isResourceReadPreAudienceFacts(value.resource) &&
+    isResourceReadViewer(value.viewer)
+  );
+}
+
 function tenantReadDenial(
-  resource: ResourceAccessFacts,
+  resource: ResourceReadPreAudienceFacts,
 ): ResourceReadDenialCode | null {
   if (
     resource.tenantStatus === "archived" &&
@@ -232,7 +272,7 @@ function tenantReadDenial(
 }
 
 function membershipReadDenial(
-  resource: ResourceAccessFacts,
+  resource: ResourceReadPreAudienceFacts,
   viewer: TrustedMembershipViewer,
 ): ResourceReadDenialCode | null {
   const { membershipStatus } = viewer.context;
@@ -266,19 +306,10 @@ function membershipReadDenial(
     : "MEMBERSHIP_NOT_ELIGIBLE";
 }
 
-/**
- * Authorizes only resource READ exposure. It intentionally has no transport,
- * persistence, clock, or participation semantics and returns no resource
- * details on denial.
- */
-export function authorizeResourceRead(
-  input: ResourceReadPolicyInput,
+function authorizeResourceReadBeforeAudienceFacts(
+  resource: ResourceReadPreAudienceFacts,
+  viewer: ResourceReadViewer,
 ): ResourceReadDecision {
-  if (!isResourceReadPolicyInput(input)) {
-    return denied("INVALID_INPUT");
-  }
-
-  const { resource, viewer } = input;
   const viewerTenantId =
     viewer.kind === "anonymous" ? viewer.tenantId : viewer.context.tenantId;
 
@@ -329,7 +360,48 @@ export function authorizeResourceRead(
     }
   }
 
-  if (resource.audience.restricted && !resource.audience.eligible) {
+  return { allowed: true };
+}
+
+/**
+ * Authorizes the canonical resource READ rules that must precede targeted
+ * audience resolution. It intentionally has no transport, persistence, clock,
+ * participation, or audience semantics and returns no resource details on
+ * denial.
+ */
+export function authorizeResourceReadBeforeAudience(
+  input: ResourceReadPreAudiencePolicyInput,
+): ResourceReadDecision {
+  if (!isResourceReadPreAudiencePolicyInput(input)) {
+    return denied("INVALID_INPUT");
+  }
+
+  return authorizeResourceReadBeforeAudienceFacts(input.resource, input.viewer);
+}
+
+/**
+ * Authorizes only resource READ exposure. It intentionally has no transport,
+ * persistence, clock, or participation semantics and returns no resource
+ * details on denial. The pre-audience rules are shared with
+ * authorizeResourceReadBeforeAudience so visibility cannot drift between the
+ * preflight and final decisions.
+ */
+export function authorizeResourceRead(
+  input: ResourceReadPolicyInput,
+): ResourceReadDecision {
+  if (!isResourceReadPolicyInput(input)) {
+    return denied("INVALID_INPUT");
+  }
+
+  const preAudienceDecision = authorizeResourceReadBeforeAudienceFacts(
+    input.resource,
+    input.viewer,
+  );
+  if (!preAudienceDecision.allowed) {
+    return preAudienceDecision;
+  }
+
+  if (input.resource.audience.restricted && !input.resource.audience.eligible) {
     return denied("AUDIENCE_INELIGIBLE");
   }
 

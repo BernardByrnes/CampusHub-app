@@ -1,12 +1,16 @@
 import "server-only";
 
 import {
+  authorizeResourceReadBeforeAudience,
   authorizeResourceRead,
   isResourceReadViewer,
   type ResourceReadDenialCode,
   type ResourceReadViewer,
 } from "@/domain/authorization/resource-read-policy";
-import { mapPublicationToResourceAccessFacts } from "@/domain/authorization/publication-read-mapper";
+import {
+  mapPublicationToPreAudienceResourceAccessFacts,
+  mapPublicationToResourceAccessFacts,
+} from "@/domain/authorization/publication-read-mapper";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import {
   isPublicationAudienceDecision,
@@ -146,6 +150,25 @@ export class ReadPublicationService {
       exposureById.get(publication.id),
     );
     if (contentExposure === null) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    const preAudienceResource =
+      mapPublicationToPreAudienceResourceAccessFacts(
+        publication,
+        input.tenantFacts,
+        contentExposure,
+        input.now,
+      );
+    if (preAudienceResource === null) {
+      return { outcome: "NOT_FOUND" };
+    }
+
+    const preAudienceDecision = authorizeResourceReadBeforeAudience({
+      resource: preAudienceResource,
+      viewer: input.viewer,
+    });
+    if (!preAudienceDecision.allowed) {
       return { outcome: "NOT_FOUND" };
     }
 

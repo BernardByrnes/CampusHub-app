@@ -44,12 +44,19 @@ export type PublicationAudienceDecision = Readonly<{
 export function isPublicationAudienceDecision(
   value: unknown,
 ): value is PublicationAudienceDecision {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
   return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>).evaluated === true &&
-    Object.prototype.hasOwnProperty.call(value, "eligible") &&
-    typeof (value as Record<string, unknown>).eligible === "boolean"
+    Object.prototype.hasOwnProperty.call(candidate, "evaluated") &&
+    candidate.evaluated === true &&
+    Object.prototype.hasOwnProperty.call(candidate, "eligible") &&
+    typeof candidate.eligible === "boolean" &&
+    Object.keys(candidate).every(
+      (key) => key === "evaluated" || key === "eligible",
+    )
   );
 }
 

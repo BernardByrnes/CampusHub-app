@@ -397,6 +397,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     defaultInitializerIdentifiers: [null],
   },
   {
+    implementationPath: "src/application/content/publication-read-resolvers.ts",
+    classIdentity: "PersistedPublicationAudienceResolver",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["PersistedPublicationAudienceResolverDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
     implementationPath: "src/server/repositories/membership-repository.ts",
     classIdentity: "DrizzleMembershipRepository",
     constructorModifiers: ["public"],
@@ -708,6 +718,17 @@ export const tenantSurfaceRegistry = [
     tenantScope: "TENANT_SCOPED",
     isolationStrategy: "Authorization-critical exposure and audience facts are server-owned dependencies.",
     requiredNegativeTestIds: ["publication.direct"],
+  },
+  {
+    id: "publication.audience.resolver",
+    category: "application_service",
+    implementationPath: "src/application/content/publication-read-resolvers.ts",
+    surface: "PersistedPublicationAudienceResolver.resolveAudience",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The persisted audience definition and Membership facts are both loaded through the Publication Tenant before canonical audience evaluation.",
+    requiredNegativeTestIds: ["publication.audience-resolver"],
+    operation: "PersistedPublicationAudienceResolver.resolveAudience",
   },
   {
     id: "publication.repository.create",

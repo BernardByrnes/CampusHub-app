@@ -4,6 +4,7 @@ import { expect, vi } from "vitest";
 vi.mock("@/server/db/client", () => ({ db: {} }));
 
 import { validateRequestContext } from "@/domain/authorization/context-policy";
+import { PersistedPublicationAudienceResolver } from "@/application/content/publication-read-resolvers";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
@@ -637,6 +638,172 @@ async function publicationDirectProbe(): Promise<void> {
   );
   expect(hidden).toEqual({ outcome: "NOT_FOUND" });
   expect(hidden).toEqual(nonexistent);
+
+  const targetedPublication = {
+    ...publicationA,
+    visibility: "PUBLIC" as const,
+    lifecycle: "published" as const,
+    audienceMode: "targeted" as const,
+    publishAt: new Date("2026-01-10T12:00:00.000Z"),
+  };
+  let definitionCalls = 0;
+  let membershipFactsCalls = 0;
+  const audienceResolver = new PersistedPublicationAudienceResolver({
+    publications: {
+      findPublicationAudienceDefinitionForTenant: async (tenantId, id) => {
+        definitionCalls += 1;
+        return {
+          tenantId,
+          publicationId: id,
+          mode: "targeted" as const,
+          groups: [
+            {
+              dimension: "campus" as const,
+              provenancePolicy: "authoritative_only" as const,
+              campusIds: ["00000000-0000-4000-8000-000000000031"],
+            },
+          ],
+        };
+      },
+    },
+    memberships: {
+      findMembershipAudienceFactsByIdForTenant: async () => {
+        membershipFactsCalls += 1;
+        return null;
+      },
+    },
+  });
+  const targetedService = new ReadPublicationService({
+    publications: {
+      findPublicationByIdForTenant: async () => targetedPublication,
+    },
+    exposureResolver: {
+      resolveExposure: (candidates) =>
+        new Map(candidates.map((candidate) => [candidate.id, "READABLE" as const])),
+    },
+    audienceResolver,
+  });
+  await expect(
+    targetedService.getPublicationForRead({
+      tenantId: tenantAId,
+      publicationId,
+      viewer: anonymousViewerA,
+      tenantFacts: tenantFactsA,
+      now,
+    }),
+  ).resolves.toEqual({ outcome: "NOT_FOUND" });
+  expect(definitionCalls).toBe(1);
+  expect(membershipFactsCalls).toBe(0);
+}
+
+async function publicationAudienceResolverProbe(): Promise<void> {
+  const targetedPublication = {
+    ...publicationA,
+    visibility: "PUBLIC" as const,
+    lifecycle: "published" as const,
+    audienceMode: "targeted" as const,
+    publishAt: new Date("2026-01-10T12:00:00.000Z"),
+  };
+  const definition = {
+    tenantId: tenantAId,
+    publicationId,
+    mode: "targeted" as const,
+    groups: [
+      {
+        dimension: "campus" as const,
+        provenancePolicy: "authoritative_only" as const,
+        campusIds: ["00000000-0000-4000-8000-000000000031"],
+      },
+    ],
+  };
+  const membershipViewerA: Extract<
+    ResourceReadViewer,
+    { kind: "membership" }
+  > = {
+    kind: "membership",
+    context: {
+      identitySubjectId: "identity-a",
+      tenantId: tenantAId,
+      tenantStatus: "active",
+      membershipId: membershipAId,
+      assuranceLevel: "L2",
+      membershipStatus: "verified",
+    },
+  };
+  const membershipViewerB: Extract<
+    ResourceReadViewer,
+    { kind: "membership" }
+  > = {
+    kind: "membership",
+    context: {
+      ...membershipViewerA.context,
+      tenantId: tenantBId,
+      membershipId: membershipBId,
+    },
+  };
+  const definitionCalls: Array<readonly [string, string]> = [];
+  const membershipFactsCalls: Array<readonly [string, string]> = [];
+  const resolver = new PersistedPublicationAudienceResolver({
+    publications: {
+      findPublicationAudienceDefinitionForTenant: async (tenantId, id) => {
+        definitionCalls.push([tenantId, id]);
+        return definition;
+      },
+    },
+    memberships: {
+      findMembershipAudienceFactsByIdForTenant: async (tenantId, id) => {
+        membershipFactsCalls.push([tenantId, id]);
+        return null;
+      },
+    },
+  });
+
+  await expect(
+    resolver.resolveAudience({
+      publication: targetedPublication,
+      viewer: membershipViewerB,
+    }),
+  ).resolves.toEqual({ evaluated: true, eligible: false });
+  expect(definitionCalls).toEqual([]);
+  expect(membershipFactsCalls).toEqual([]);
+
+  await expect(
+    resolver.resolveAudience({
+      publication: targetedPublication,
+      viewer: anonymousViewerA,
+    }),
+  ).resolves.toEqual({ evaluated: true, eligible: false });
+  expect(definitionCalls).toEqual([[tenantAId, publicationId]]);
+  expect(membershipFactsCalls).toEqual([]);
+
+  await expect(
+    resolver.resolveAudience({
+      publication: targetedPublication,
+      viewer: membershipViewerA,
+    }),
+  ).resolves.toEqual({ evaluated: true, eligible: false });
+  expect(definitionCalls).toEqual([
+    [tenantAId, publicationId],
+    [tenantAId, publicationId],
+  ]);
+  expect(membershipFactsCalls).toEqual([[tenantAId, membershipAId]]);
+
+  const malformedResolver = new PersistedPublicationAudienceResolver({
+    publications: {
+      findPublicationAudienceDefinitionForTenant: async () => null,
+    },
+    memberships: {
+      findMembershipAudienceFactsByIdForTenant: async () => {
+        throw new Error("Membership lookup must not run for malformed definition");
+      },
+    },
+  });
+  await expect(
+    malformedResolver.resolveAudience({
+      publication: targetedPublication,
+      viewer: membershipViewerA,
+    }),
+  ).resolves.toEqual({ evaluated: true, eligible: false });
 }
 
 async function publicationCollectionProbe(): Promise<void> {
@@ -788,6 +955,7 @@ export const tenantIsolationProbeRegistry: Readonly<
     expectForeignKey(tenantAcademicYearConfig, ["tenant_id"], ["id"]);
   },
   "publication.direct": publicationDirectProbe,
+  "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,

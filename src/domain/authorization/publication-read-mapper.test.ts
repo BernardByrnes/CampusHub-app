@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { Publication } from "@/domain/content/publication";
 
-import { mapPublicationToResourceAccessFacts } from "./publication-read-mapper";
+import {
+  mapPublicationToPreAudienceResourceAccessFacts,
+  mapPublicationToResourceAccessFacts,
+} from "./publication-read-mapper";
 import type {
   PublicationAudienceDecision,
   ResolvedTenantReadFacts,
@@ -53,6 +56,27 @@ function map(
 }
 
 describe("Publication read mapper", () => {
+  it("maps the shared Publication lifecycle and exposure facts before audience resolution", () => {
+    expect(
+      mapPublicationToPreAudienceResourceAccessFacts(
+        basePublication,
+        baseTenantFacts,
+        "READABLE",
+        now,
+      ),
+    ).toEqual({
+      resourceId: basePublication.id,
+      tenantId,
+      tenantStatus: "active",
+      visibility: "MEMBERS",
+      readable: true,
+      publicSurfacePermitted: true,
+      archiveNoticeState: undefined,
+      onLeaveReadEnabled: true,
+      alumniPublicReadEnabled: true,
+    });
+  });
+
   it("maps an entire-Tenant Publication to unrestricted readable facts", () => {
     expect(map()).toEqual({
       resourceId: "00000000-0000-4000-8000-000000000011",

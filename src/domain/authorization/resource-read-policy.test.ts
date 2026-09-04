@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   ARCHIVE_NOTICE_STATES,
+  authorizeResourceReadBeforeAudience,
   authorizeResourceRead,
   RESOURCE_READ_DENIAL_CODES,
   RESOURCE_VISIBILITIES,
   type ResourceAccessFacts,
+  type ResourceReadPreAudienceFacts,
+  type ResourceReadPreAudiencePolicyInput,
   type ResourceReadPolicyInput,
   type ResourceReadViewer,
 } from "./resource-read-policy";
@@ -51,6 +54,26 @@ function input(
     resource: { ...baseResource, ...resourceOverrides },
     viewer,
   };
+}
+
+function preAudienceInput(
+  resourceOverrides: Partial<ResourceReadPreAudienceFacts> = {},
+  viewer: ResourceReadViewer = membershipViewer,
+): ResourceReadPreAudiencePolicyInput {
+  const resource: ResourceReadPreAudienceFacts = {
+    resourceId: baseResource.resourceId,
+    tenantId: baseResource.tenantId,
+    tenantStatus: baseResource.tenantStatus,
+    visibility: baseResource.visibility,
+    readable: baseResource.readable,
+    publicSurfacePermitted: baseResource.publicSurfacePermitted,
+    archiveNoticeState: baseResource.archiveNoticeState,
+    onLeaveReadEnabled: baseResource.onLeaveReadEnabled,
+    alumniPublicReadEnabled: baseResource.alumniPublicReadEnabled,
+    ...resourceOverrides,
+  };
+
+  return { resource, viewer };
 }
 
 function expectDenied(
@@ -347,6 +370,52 @@ describe("resource-read authorization contract", () => {
       "AUDIENCE_INELIGIBLE",
     );
   });
+
+  it("allows pre-audience authorization without an audience result", () => {
+    expect(authorizeResourceReadBeforeAudience(preAudienceInput())).toEqual({
+      allowed: true,
+    });
+  });
+
+  it.each([
+    ["Tenant mismatch", { tenantId: "tenant-beta" }, "TENANT_SCOPE_NOT_FOUND"],
+    ["invalid Tenant state", { tenantStatus: "archived", archiveNoticeState: undefined }, "INVALID_INPUT"],
+    ["unavailable Tenant", { tenantStatus: "archived", archiveNoticeState: "ENDED" }, "TENANT_UNAVAILABLE"],
+    ["unreadable resource", { readable: false }, "RESOURCE_NOT_AVAILABLE"],
+    ["anonymous member-only visibility", { visibility: "MEMBERS" }, "MEMBERSHIP_REQUIRED"],
+    ["insufficient assurance", { visibility: "VERIFIED_MEMBERS" }, "ASSURANCE_INSUFFICIENT"],
+  ] as const)(
+    "shares the %s result between pre-audience and full policy",
+    (label, resourceOverrides, expectedCode) => {
+      const viewer =
+        label === "anonymous member-only visibility"
+          ? anonymousViewer
+          : label === "insufficient assurance"
+            ? {
+                ...membershipViewer,
+                context: { ...baseContext, assuranceLevel: "L1" as const },
+              }
+            : membershipViewer;
+      const preAudienceResult = authorizeResourceReadBeforeAudience(
+        preAudienceInput(resourceOverrides, viewer),
+      );
+      const fullResult = authorizeResourceRead(
+        input(
+          {
+            ...resourceOverrides,
+            audience: { restricted: true, eligible: false },
+          },
+          viewer,
+        ),
+      );
+
+      expect(preAudienceResult).toEqual({
+        allowed: false,
+        code: expectedCode,
+      });
+      expect(fullResult).toEqual(preAudienceResult);
+    },
+  );
 
   it("fails closed for unreadable resources", () => {
     expectDenied(

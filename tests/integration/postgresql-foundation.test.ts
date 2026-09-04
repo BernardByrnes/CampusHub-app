@@ -546,6 +546,9 @@ beforeAll(async () => {
   const publicationReadModule = await import(
     "@/application/content/read-publication"
   );
+  const publicationReadResolversModule = await import(
+    "@/application/content/publication-read-resolvers"
+  );
   const publicationCollectionModule = await import(
     "@/application/content/list-publications"
   );
@@ -569,9 +572,10 @@ beforeAll(async () => {
       resolveExposure: (candidates) =>
         new Map(candidates.map((candidate) => [candidate.id, "READABLE" as const])),
     },
-    audienceResolver: {
-      resolveAudience: () => ({ evaluated: true, eligible: true }),
-    },
+    audienceResolver: new publicationReadResolversModule.PersistedPublicationAudienceResolver({
+      publications: getPublicationRepository(),
+      memberships: getMembershipRepository(),
+    }),
   });
   readPublicationServiceClass = publicationReadModule.ReadPublicationService;
   listPublicationsService = new publicationCollectionModule.ListPublicationsService({
@@ -1442,10 +1446,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       getReadPublicationService().getPublicationForRead(
         readInput(tenant.id, publication.id, viewer),
       ),
-    ).resolves.toMatchObject({
-      outcome: "FOUND",
-      publication: { id: publication.id },
-    });
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
   });
 
   it("preserves PUBLIC, membership, and assurance policy outcomes", async () => {

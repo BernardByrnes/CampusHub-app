@@ -154,6 +154,92 @@ describe("ReadPublicationService", () => {
     ).resolves.toEqual({ outcome: "NOT_FOUND" });
   });
 
+  it("performs visibility and assurance authorization before targeted audience resolution", async () => {
+    const audienceResolver: PublicationAudienceResolver = {
+      resolveAudience: vi.fn(() => ({ evaluated: true as const, eligible: true })),
+    };
+    const service = createService(
+      {
+        ...publication,
+        visibility: "VERIFIED_MEMBERS",
+        audienceMode: "targeted",
+      },
+      [],
+      { audienceResolver },
+    );
+
+    const result = await service.getPublicationForRead(
+      input({
+        viewer: {
+          ...viewer,
+          context: { ...viewer.context, assuranceLevel: "L1" },
+        },
+      }),
+    );
+
+    expect(result).toEqual({ outcome: "NOT_FOUND" });
+    expect(audienceResolver.resolveAudience).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve targeted audience after Membership lifecycle denial", async () => {
+    const audienceResolver: PublicationAudienceResolver = {
+      resolveAudience: vi.fn(() => ({ evaluated: true as const, eligible: true })),
+    };
+    const service = createService(
+      { ...publication, audienceMode: "targeted" },
+      [],
+      { audienceResolver },
+    );
+
+    await expect(
+      service.getPublicationForRead(
+        input({
+          viewer: {
+            ...viewer,
+            context: { ...viewer.context, membershipStatus: "suspended" },
+          },
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "NOT_FOUND" });
+    expect(audienceResolver.resolveAudience).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve targeted audience after exposure failure", async () => {
+    const audienceResolver: PublicationAudienceResolver = {
+      resolveAudience: vi.fn(() => ({ evaluated: true as const, eligible: true })),
+    };
+    const service = createService(
+      { ...publication, audienceMode: "targeted" },
+      [],
+      {
+        audienceResolver,
+        exposureResolver: {
+          resolveExposure: () => {
+            throw new Error("exposure failure");
+          },
+        },
+      },
+    );
+
+    await expect(service.getPublicationForRead(input())).resolves.toEqual({
+      outcome: "NOT_FOUND",
+    });
+    expect(audienceResolver.resolveAudience).not.toHaveBeenCalled();
+  });
+
+  it("does not call targeted audience resolution for an entire-Tenant Publication", async () => {
+    const audienceResolver: PublicationAudienceResolver = {
+      resolveAudience: vi.fn(() => ({ evaluated: true as const, eligible: true })),
+    };
+    const service = createService(publication, [], { audienceResolver });
+
+    await expect(service.getPublicationForRead(input())).resolves.toEqual({
+      outcome: "FOUND",
+      publication,
+    });
+    expect(audienceResolver.resolveAudience).not.toHaveBeenCalled();
+  });
+
   it("makes same-Tenant hidden reads equivalent to a random nonexistent ID", async () => {
     const nonexistent = await createService(null).getPublicationForRead(
       input({ publicationId: missingPublicationId }),
@@ -386,6 +472,16 @@ describe("ReadPublicationService", () => {
 
   it.each([
     ["invalid", { resolveAudience: () => ({ eligible: true }) }],
+    [
+      "extra fields",
+      {
+        resolveAudience: () => ({
+          evaluated: true,
+          eligible: true,
+          identitySubjectId: "must-not-be-accepted",
+        }),
+      },
+    ],
     ["ineligible", { resolveAudience: () => ({ evaluated: true, eligible: false }) }],
     ["throws", { resolveAudience: () => { throw new Error("resolver failure"); } }],
   ] as const)("fails closed for %s audience resolver output", async (_label, resolver) => {
