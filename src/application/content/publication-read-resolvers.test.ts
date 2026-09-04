@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Publication } from "@/domain/content/publication";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
-import { PersistedPublicationAudienceResolver } from "./publication-read-resolvers";
+import {
+  PersistedPublicationAudienceBatchResolver,
+  PersistedPublicationAudienceResolver,
+} from "./publication-read-resolvers";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
 const foreignTenantId = "00000000-0000-4000-8000-000000000002";
@@ -270,6 +273,256 @@ describe("PersistedPublicationAudienceResolver", () => {
         viewer: membershipViewer,
       }),
     ).resolves.toEqual({ evaluated: true, eligible: false });
+    expect(definitionReader).not.toHaveBeenCalled();
+    expect(factsReader).not.toHaveBeenCalled();
+  });
+});
+
+describe("PersistedPublicationAudienceBatchResolver", () => {
+  function secondPublication(): Publication {
+    return {
+      ...targetedPublication,
+      id: "00000000-0000-4000-8000-000000000012",
+      title: "Second targeted publication",
+    };
+  }
+
+  function definitionFor(
+    id: string,
+    groups: typeof definition.groups = definition.groups,
+  ) {
+    return { ...definition, publicationId: id, groups };
+  }
+
+  function createBatchResolver(
+    definitions: unknown = new Map([
+      [publicationId, definition],
+      [secondPublication().id, definitionFor(secondPublication().id)],
+    ]),
+    persistedFacts: unknown = facts,
+  ) {
+    const definitionReader = vi.fn(async () => definitions);
+    const factsReader = vi.fn(async () => persistedFacts);
+    const resolver = new PersistedPublicationAudienceBatchResolver({
+      publications: {
+        findPublicationAudienceDefinitionsForTenant: definitionReader,
+      },
+      memberships: {
+        findMembershipAudienceFactsByIdForTenant: factsReader,
+      },
+    });
+
+    return { resolver, definitionReader, factsReader };
+  }
+
+  it("resolves multiple targeted Publications through one definition and Membership batch", async () => {
+    const { resolver, definitionReader, factsReader } = createBatchResolver();
+    const second = secondPublication();
+
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication, second],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([
+        [publicationId, { evaluated: true, eligible: true }],
+        [second.id, { evaluated: true, eligible: true }],
+      ]),
+    );
+    expect(definitionReader).toHaveBeenCalledTimes(1);
+    expect(definitionReader).toHaveBeenCalledWith(tenantId, [
+      publicationId,
+      second.id,
+    ]);
+    expect(factsReader).toHaveBeenCalledTimes(1);
+    expect(factsReader).toHaveBeenCalledWith(tenantId, membershipId);
+  });
+
+  it("keeps malformed and missing definitions ineligible without corrupting valid decisions", async () => {
+    const second = secondPublication();
+    const { resolver, factsReader } = createBatchResolver(
+      new Map<string, unknown>([
+        [publicationId, definition],
+        [second.id, { ...definition, publicationId: second.id, groups: "bad" }],
+      ]),
+    );
+
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication, second],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([
+        [publicationId, { evaluated: true, eligible: true }],
+        [second.id, { evaluated: true, eligible: false }],
+      ]),
+    );
+    expect(factsReader).toHaveBeenCalledTimes(1);
+
+    const missing = createBatchResolver(new Map([[publicationId, definition]]));
+    await expect(
+      missing.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication, second],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([
+        [publicationId, { evaluated: true, eligible: true }],
+        [second.id, { evaluated: true, eligible: false }],
+      ]),
+    );
+  });
+
+  it("uses the canonical evaluator for provenance and Residence behavior", async () => {
+    const selfDeclaredFacts = {
+      ...facts,
+      programme: { value: programmeId, provenance: "self_declared" as const },
+    };
+    const authoritative = createBatchResolver(definition, selfDeclaredFacts);
+    await expect(
+      authoritative.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: false }]]),
+    );
+
+    const allowSelfDeclaredDefinition = {
+      ...definition,
+      groups: definition.groups.map((group) =>
+        group.dimension === "programme"
+          ? { ...group, provenancePolicy: "allow_self_declared" as const }
+          : group,
+      ),
+    };
+    const allowSelfDeclared = createBatchResolver(
+      new Map([[publicationId, allowSelfDeclaredDefinition]]),
+      selfDeclaredFacts,
+    );
+    await expect(
+      allowSelfDeclared.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: true }]]),
+    );
+
+    const anyResidentDefinition = {
+      ...definition,
+      groups: definition.groups.map((group) =>
+        group.dimension === "residence"
+          ? { ...group, residenceTargets: [{ kind: "any_resident" as const }] }
+          : group,
+      ),
+    };
+    const anyResident = createBatchResolver(
+      new Map([[publicationId, anyResidentDefinition]]),
+    );
+    await expect(
+      anyResident.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: true }]]),
+    );
+  });
+
+  it("fails closed for missing or incomplete Membership facts", async () => {
+    const missing = createBatchResolver(new Map([[publicationId, definition]]), null);
+    await expect(
+      missing.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: false }]]),
+    );
+
+    const foreignFacts = createBatchResolver(new Map([[publicationId, definition]]), {
+      ...facts,
+      tenantId: foreignTenantId,
+    });
+    await expect(
+      foreignFacts.resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: false }]]),
+    );
+  });
+
+  it("does not query for anonymous, cross-Tenant, entire-Tenant, duplicate, or excessive input", async () => {
+    const { resolver, definitionReader, factsReader } = createBatchResolver();
+    const second = secondPublication();
+    const foreignViewer: ResourceReadViewer = {
+      kind: "membership",
+      context: { ...membershipViewer.context, tenantId: foreignTenantId },
+    };
+
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: anonymousViewer,
+      }),
+    ).resolves.toEqual(
+      new Map([[publicationId, { evaluated: true, eligible: false }]]),
+    );
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication],
+        viewer: foreignViewer,
+      }),
+    ).resolves.toEqual(new Map());
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [{ ...targetedPublication, tenantId: foreignTenantId }],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(new Map());
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [
+          { ...targetedPublication, audienceMode: "entire_tenant" as const },
+        ],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(new Map());
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: [targetedPublication, targetedPublication],
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(new Map());
+    await expect(
+      resolver.resolveAudienceBatch({
+        tenantId,
+        publications: Array.from({ length: 151 }, (_, index) => ({
+          ...targetedPublication,
+          id: `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+        })),
+        viewer: membershipViewer,
+      }),
+    ).resolves.toEqual(new Map());
+    expect(second.id).not.toBe(publicationId);
     expect(definitionReader).not.toHaveBeenCalled();
     expect(factsReader).not.toHaveBeenCalled();
   });

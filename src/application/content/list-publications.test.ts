@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  PublicationAudienceDecision,
   ResolvedTenantReadFacts,
 } from "@/domain/authorization/publication-read-contract";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
@@ -18,6 +19,7 @@ import {
   type PublicationCollectionRepository,
   type PublicationExposureResolver,
 } from "./list-publications";
+import type { PublicationAudienceBatchResolver } from "./publication-read-resolvers";
 
 const now = new Date("2026-01-15T12:00:00.000Z");
 const tenantAlphaId = "00000000-0000-4000-8000-000000000001";
@@ -91,6 +93,7 @@ function createService(
   exposureById: ReadonlyMap<string, "READABLE" | "SUPPRESSED"> = new Map(),
   queries: PublicationCollectionQuery[] = [],
   exposureCalls: Publication[][] = [],
+  audienceBatchResolver?: PublicationAudienceBatchResolver,
 ) {
   const repository: PublicationCollectionRepository = {
     listPublicationCandidatesForTenant: vi.fn(async (query) => {
@@ -118,6 +121,7 @@ function createService(
     service: new ListPublicationsService({
       publications: repository,
       exposureResolver,
+      audienceBatchResolver,
     }),
     repository,
     exposureResolver,
@@ -341,5 +345,179 @@ describe("ListPublicationsService", () => {
 
     expect(queries20[0]?.limit).toBe(60);
     expect(queries50[0]?.limit).toBe(150);
+  });
+
+  it("includes eligible targeted candidates while preserving mixed ordering", async () => {
+    const entire = publication("00000000-0000-4000-8000-000000000401", {
+      visibility: "PUBLIC",
+    });
+    const targetedEligible = publication(
+      "00000000-0000-4000-8000-000000000402",
+      { audienceMode: "targeted" },
+    );
+    const targetedIneligible = publication(
+      "00000000-0000-4000-8000-000000000403",
+      { audienceMode: "targeted" },
+    );
+    const resolver: PublicationAudienceBatchResolver = {
+      resolveAudienceBatch: vi.fn(
+        async ({ publications }: { publications: readonly Publication[] }): Promise<
+          ReadonlyMap<string, PublicationAudienceDecision>
+        > =>
+          new Map<string, PublicationAudienceDecision>(
+            publications.map((candidate) => [
+              candidate.id,
+              {
+                evaluated: true as const,
+                eligible: candidate.id === targetedEligible.id,
+              },
+            ]),
+          ),
+      ),
+    };
+    const { service } = createService(
+      [{
+        items: [entire, targetedEligible, targetedIneligible],
+        hasMoreCandidateRows: false,
+      }],
+      new Map(),
+      [],
+      [],
+      resolver,
+    );
+
+    await expect(
+      service.listPublications(input(membershipViewer, { limit: 10 })),
+    ).resolves.toEqual({
+      outcome: "OK",
+      items: [entire, targetedEligible],
+      nextCursor: null,
+    });
+    expect(resolver.resolveAudienceBatch).toHaveBeenCalledTimes(1);
+    expect(resolver.resolveAudienceBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: tenantAlphaId,
+        publications: [targetedEligible, targetedIneligible],
+        viewer: membershipViewer,
+      }),
+    );
+  });
+
+  it("does not send pre-audience-denied or entire-Tenant candidates to the audience batch", async () => {
+    const deniedTargeted = publication("00000000-0000-4000-8000-000000000411", {
+      audienceMode: "targeted",
+      visibility: "VERIFIED_MEMBERS",
+    });
+    const allowedEntire = publication("00000000-0000-4000-8000-000000000412", {
+      audienceMode: "entire_tenant",
+      visibility: "PUBLIC",
+    });
+    const resolver: PublicationAudienceBatchResolver = {
+      resolveAudienceBatch: vi.fn(
+        async (): Promise<ReadonlyMap<string, PublicationAudienceDecision>> =>
+          new Map(),
+      ),
+    };
+    const { service } = createService(
+      [{ items: [deniedTargeted, allowedEntire], hasMoreCandidateRows: false }],
+      new Map(),
+      [],
+      [],
+      resolver,
+    );
+
+    await expect(
+      service.listPublications(input(anonymousViewer, { limit: 10 })),
+    ).resolves.toEqual({
+      outcome: "OK",
+      items: [allowedEntire],
+      nextCursor: null,
+    });
+    expect(resolver.resolveAudienceBatch).not.toHaveBeenCalled();
+  });
+
+  it("advances past hidden targeted candidates without duplicate or skipped visible rows", async () => {
+    const candidates = [
+      publication("00000000-0000-4000-8000-000000000421", {
+        audienceMode: "targeted",
+      }),
+      publication("00000000-0000-4000-8000-000000000422", {
+        audienceMode: "targeted",
+      }),
+      publication("00000000-0000-4000-8000-000000000423", {
+        visibility: "PUBLIC",
+      }),
+      publication("00000000-0000-4000-8000-000000000424", {
+        audienceMode: "targeted",
+      }),
+      publication("00000000-0000-4000-8000-000000000425", {
+        visibility: "PUBLIC",
+      }),
+    ];
+    const queries: PublicationCollectionQuery[] = [];
+    const resolver: PublicationAudienceBatchResolver = {
+      resolveAudienceBatch: vi.fn(
+        async ({ publications }: { publications: readonly Publication[] }): Promise<
+          ReadonlyMap<string, PublicationAudienceDecision>
+        > =>
+          new Map<string, PublicationAudienceDecision>(
+            publications.map((candidate) => [
+              candidate.id,
+              {
+                evaluated: true as const,
+                eligible: candidate.id === candidates[3]?.id,
+              },
+            ]),
+          ),
+      ),
+    };
+    const repository: PublicationCollectionRepository = {
+      listPublicationCandidatesForTenant: vi.fn(async (query) => {
+        queries.push(query);
+        const start =
+          query.cursor === null
+            ? 0
+            : candidates.findIndex(
+                (candidate) => candidate.id === query.cursor?.id,
+              ) + 1;
+        const items = candidates.slice(start, start + query.limit);
+        return {
+          items,
+          hasMoreCandidateRows: start + items.length < candidates.length,
+        };
+      }),
+    };
+    const service = new ListPublicationsService({
+      publications: repository,
+      exposureResolver: {
+        resolveExposure: (items) =>
+          new Map(items.map((candidate) => [candidate.id, "READABLE" as const])),
+      },
+      audienceBatchResolver: resolver,
+    });
+
+    const firstPage = await service.listPublications(
+      input(membershipViewer, { limit: 2 }),
+    );
+    expect(firstPage.outcome).toBe("OK");
+    if (firstPage.outcome !== "OK" || firstPage.nextCursor === null) {
+      throw new Error("Expected first-page cursor after hidden candidates.");
+    }
+    expect(firstPage.items).toEqual([candidates[2], candidates[3]]);
+    expect(decodePublicationCursor(firstPage.nextCursor)).toEqual({
+      publishAt: candidates[3]?.publishAt,
+      id: candidates[3]?.id,
+    });
+
+    const secondPage = await service.listPublications(
+      input(membershipViewer, { limit: 2, cursor: firstPage.nextCursor }),
+    );
+    expect(secondPage).toEqual({
+      outcome: "OK",
+      items: [candidates[4]],
+      nextCursor: null,
+    });
+    expect(queries).toHaveLength(2);
+    expect(new Set([...firstPage.items, ...(secondPage.outcome === "OK" ? secondPage.items : [])].map((item) => item.id)).size).toBe(3);
   });
 });

@@ -408,7 +408,8 @@ describe("server-only architecture boundary", () => {
 
     expect(source).toContain("listPublicationCandidatesForTenant");
     expect(source).toContain("eq(publications.tenantId, input.tenantId)");
-    expect(source).toContain('eq(publications.audienceMode, "entire_tenant")');
+    expect(source).not.toContain('eq(publications.audienceMode, "entire_tenant")');
+    expect(source).toContain("findPublicationAudienceDefinitionsForTenant");
     expect(source).toContain("orderBy(desc(publications.publishAt)");
     expect(source).not.toMatch(/listPublications\s*\(/);
     expect(source).not.toMatch(/\.offset\s*\(/i);

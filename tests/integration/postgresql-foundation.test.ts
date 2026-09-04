@@ -48,7 +48,10 @@ import type {
   ListPublicationsService,
   PublicationExposureResolver,
 } from "@/application/content/list-publications";
-import type { PublicationAudienceResolver } from "@/application/content/publication-read-resolvers";
+import {
+  PersistedPublicationAudienceBatchResolver,
+  type PublicationAudienceResolver,
+} from "@/application/content/publication-read-resolvers";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
@@ -253,6 +256,10 @@ function createCountingListPublicationsService(
       },
     },
     exposureResolver,
+    audienceBatchResolver: new PersistedPublicationAudienceBatchResolver({
+      publications: getPublicationRepository(),
+      memberships: getMembershipRepository(),
+    }),
   });
 }
 
@@ -586,6 +593,10 @@ beforeAll(async () => {
           candidates.map((candidate) => [candidate.id, "READABLE" as const]),
         ),
     },
+    audienceBatchResolver: new publicationReadResolversModule.PersistedPublicationAudienceBatchResolver({
+      publications: getPublicationRepository(),
+      memberships: getMembershipRepository(),
+    }),
   });
   listPublicationsServiceClass =
     publicationCollectionModule.ListPublicationsService;
@@ -1738,7 +1749,10 @@ describe("real Supabase PostgreSQL foundation", () => {
         limit: 50,
       });
 
-    expect(activePage.items.map((item) => item.id)).toEqual([active.id]);
+    expect(activePage.items.map((item) => item.id)).toEqual([
+      active.id,
+      targeted.id,
+    ]);
     expect(activePage.items.every((item) => item.tenantId === tenantA.id)).toBe(
       true,
     );
@@ -1756,7 +1770,6 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(activePage.items.map((item) => item.id)).not.toContain(
       publishedExpired.id,
     );
-    expect(activePage.items.map((item) => item.id)).not.toContain(targeted.id);
     expect(activePage.items.map((item) => item.id)).not.toContain(noPublishAt.id);
 
     expect(new Set(archivePage.items.map((item) => item.id))).toEqual(
@@ -1768,7 +1781,6 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(archivePage.items.map((item) => item.id)).not.toContain(
       scheduledPast.id,
     );
-    expect(archivePage.items.map((item) => item.id)).not.toContain(targeted.id);
 
     const archiveViewer = await membershipViewerFor(tenantA, membershipA);
     const archiveResult = await getListPublicationsService().listPublications(
@@ -2267,7 +2279,11 @@ describe("real Supabase PostgreSQL foundation", () => {
         cursor: null,
         limit: 150,
       });
-    expect(returnedIds).toEqual(expected.items.map((item) => item.id));
+    expect(returnedIds).toEqual(
+      expected.items
+        .filter((item) => item.audienceMode === "entire_tenant")
+        .map((item) => item.id),
+    );
     expect(returnedIds.every((id) => inserted.some((row) => row.id === id && row.tenantId === tenantA.id))).toBe(
       true,
     );
@@ -2295,7 +2311,6 @@ describe("real Supabase PostgreSQL foundation", () => {
       select "id"
       from "publications"
       where "tenant_id" = ${tenant.id}
-        and "audience_mode" = 'entire_tenant'
         and "lifecycle" = 'published'
         and "publish_at" is not null
         and "publish_at" <= ${READ_NOW}
@@ -2312,7 +2327,6 @@ describe("real Supabase PostgreSQL foundation", () => {
       select "id"
       from "publications"
       where "tenant_id" = ${tenant.id}
-        and "audience_mode" = 'entire_tenant'
         and "publish_at" is not null
         and "publish_at" <= ${READ_NOW}
         and (

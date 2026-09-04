@@ -16,6 +16,8 @@ import { DrizzlePublicationRepository } from "./publication-repository";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
 const publicationId = "00000000-0000-4000-8000-000000000002";
+const secondPublicationId = "00000000-0000-4000-8000-000000000003";
+const foreignPublicationId = "00000000-0000-4000-8000-000000000004";
 const campusA = "00000000-0000-4000-8000-000000000010";
 const campusB = "00000000-0000-4000-8000-000000000011";
 const programmeId = "00000000-0000-4000-8000-000000000012";
@@ -232,6 +234,169 @@ describe("DrizzlePublicationRepository audience persistence mapping", () => {
         },
       ],
     });
+  });
+
+  it("reconstructs multiple Tenant-bound definitions with one bounded batch read", async () => {
+    let selectCalls = 0;
+    const secondPublication: PublicationRow = {
+      ...publicationRow,
+      id: secondPublicationId,
+      title: "Second audience test publication",
+    };
+    const secondCriterion = criterion({
+      id: "00000000-0000-4000-8000-000000000038",
+      publicationId: secondPublicationId,
+      campusId: campusB,
+    });
+    const database = {
+      select: () => {
+        selectCalls += 1;
+        let selectedTable: unknown;
+        return {
+          from: (table: unknown) => {
+            selectedTable = table;
+            return {
+              where: () => ({
+                limit: async () =>
+                  selectedTable === publications
+                    ? [publicationRow, secondPublication]
+                    : [],
+                orderBy: async () =>
+                  selectedTable === publicationAudienceCriteria
+                    ? [criterion({}), secondCriterion]
+                    : [],
+              }),
+            };
+          },
+        };
+      },
+    };
+    const result = await new DrizzlePublicationRepository(
+      database as never,
+    ).findPublicationAudienceDefinitionsForTenant(tenantId, [
+      publicationId,
+      secondPublicationId,
+    ]);
+
+    expect(selectCalls).toBe(2);
+    expect(result).toEqual(
+      new Map([
+        [
+          publicationId,
+          {
+            tenantId,
+            publicationId,
+            mode: "targeted",
+            groups: [
+              {
+                dimension: "campus",
+                provenancePolicy: "authoritative_only",
+                campusIds: [campusA],
+              },
+            ],
+          },
+        ],
+        [
+          secondPublicationId,
+          {
+            tenantId,
+            publicationId: secondPublicationId,
+            mode: "targeted",
+            groups: [
+              {
+                dimension: "campus",
+                provenancePolicy: "authoritative_only",
+                campusIds: [campusB],
+              },
+            ],
+          },
+        ],
+      ]),
+    );
+  });
+
+  it("omits foreign, malformed, incomplete, and conflicting batch definitions independently", async () => {
+    const foreignPublication: PublicationRow = {
+      ...publicationRow,
+      id: foreignPublicationId,
+      tenantId: "00000000-0000-4000-8000-000000000005",
+    };
+    const noCriteriaPublication: PublicationRow = {
+      ...publicationRow,
+      id: secondPublicationId,
+    };
+    const result = await repositoryFor(
+      [publicationRow, foreignPublication, noCriteriaPublication],
+      [
+        criterion({}),
+        criterion({
+          id: "00000000-0000-4000-8000-000000000039",
+          publicationId: secondPublicationId,
+          campusId: campusB,
+        }),
+        criterion({
+          id: "00000000-0000-4000-8000-000000000040",
+          publicationId: secondPublicationId,
+          campusId: campusA,
+          provenancePolicy: "allow_self_declared",
+        }),
+      ],
+    ).findPublicationAudienceDefinitionsForTenant(tenantId, [
+      publicationId,
+      foreignPublicationId,
+      secondPublicationId,
+    ]);
+
+    expect(result).toEqual(
+      new Map([
+        [
+          publicationId,
+          {
+            tenantId,
+            publicationId,
+            mode: "targeted",
+            groups: [
+              {
+                dimension: "campus",
+                provenancePolicy: "authoritative_only",
+                campusIds: [campusA],
+              },
+            ],
+          },
+        ],
+      ]),
+    );
+  });
+
+  it("does not query for malformed, duplicate, or empty batch identifiers", async () => {
+    let selectCalls = 0;
+    const repository = new DrizzlePublicationRepository({
+      select: () => {
+        selectCalls += 1;
+        throw new Error("invalid batch identifier reached SQL");
+      },
+    } as never);
+
+    await expect(
+      repository.findPublicationAudienceDefinitionsForTenant("banana", [
+        publicationId,
+      ]),
+    ).resolves.toEqual(new Map());
+    await expect(
+      repository.findPublicationAudienceDefinitionsForTenant(tenantId, [
+        "banana",
+      ]),
+    ).resolves.toEqual(new Map());
+    await expect(
+      repository.findPublicationAudienceDefinitionsForTenant(tenantId, [
+        publicationId,
+        publicationId,
+      ]),
+    ).resolves.toEqual(new Map());
+    await expect(
+      repository.findPublicationAudienceDefinitionsForTenant(tenantId, []),
+    ).resolves.toEqual(new Map());
+    expect(selectCalls).toBe(0);
   });
 
   it("rejects conflicting policies, malformed rows, and foreign rows", async () => {

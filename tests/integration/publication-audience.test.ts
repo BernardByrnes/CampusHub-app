@@ -2296,4 +2296,308 @@ describe("real PostgreSQL Publication audience persistence", () => {
       outcome: "NOT_FOUND",
     });
   });
+
+  it("lists mixed targeted and entire-Tenant Publications on ACTIVE and ARCHIVE", async () => {
+    const { ListPublicationsService } = await import(
+      "@/application/content/list-publications"
+    );
+    const { PersistedPublicationAudienceBatchResolver } = await import(
+      "@/application/content/publication-read-resolvers"
+    );
+    const { DrizzleMembershipRepository } = await import(
+      "@/server/repositories/membership-repository"
+    );
+    const tenantA = await createTenant();
+    const tenantB = await createTenant();
+    const campusA = await createCampus(tenantA.id);
+    const campusB = await createCampus(tenantA.id);
+    const membership = await createMembership(tenantA.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+    });
+    const entire = await createPublication(tenantA.id, "entire_tenant", "published", {
+      visibility: "MEMBERS",
+      publishAt: new Date("2026-01-14T12:00:00.000Z"),
+    });
+    const eligibleTargeted = await createPublication(
+      tenantA.id,
+      "targeted",
+      "published",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-13T12:00:00.000Z"),
+      },
+    );
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, eligibleTargeted.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+    const ineligibleTargeted = await createPublication(
+      tenantA.id,
+      "targeted",
+      "published",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-12T12:00:00.000Z"),
+      },
+    );
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, ineligibleTargeted.id),
+      dimension: "campus",
+      campusId: campusB,
+      academicYear: null,
+    });
+    const malformedTargeted = await createPublication(
+      tenantA.id,
+      "targeted",
+      "published",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-11T12:00:00.000Z"),
+      },
+    );
+    const foreignPublication = await createPublication(
+      tenantB.id,
+      "entire_tenant",
+      "published",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-15T12:00:00.000Z"),
+      },
+    );
+    const archivedEligible = await createPublication(
+      tenantA.id,
+      "targeted",
+      "archived",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-10T12:00:00.000Z"),
+      },
+    );
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, archivedEligible.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+    const archivedIneligible = await createPublication(
+      tenantA.id,
+      "targeted",
+      "archived",
+      {
+        visibility: "MEMBERS",
+        publishAt: new Date("2026-01-09T12:00:00.000Z"),
+      },
+    );
+    await insertCriterion({
+      ...baseCriterion(tenantA.id, archivedIneligible.id),
+      dimension: "campus",
+      campusId: campusB,
+      academicYear: null,
+    });
+
+    const membershipRepository = new DrizzleMembershipRepository(
+      getDatabase() as never,
+    );
+    const service = new ListPublicationsService({
+      publications: audienceRepository,
+      exposureResolver: {
+        resolveExposure: (candidates) =>
+          new Map(
+            candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+          ),
+      },
+      audienceBatchResolver: new PersistedPublicationAudienceBatchResolver({
+        publications: audienceRepository,
+        memberships: membershipRepository,
+      }),
+    });
+    const viewer = directReadMembershipViewer(tenantA.id, membership);
+
+    const activeResult = await service.listPublications({
+      tenantId: tenantA.id,
+      surface: "ACTIVE",
+      viewer,
+      tenantFacts: directReadFacts(tenantA.id),
+      now: new Date("2026-01-15T12:00:00.000Z"),
+      limit: 50,
+    });
+    expect(activeResult).toMatchObject({ outcome: "OK", nextCursor: null });
+    if (activeResult.outcome === "OK") {
+      expect(activeResult.items.map((item) => item.id)).toEqual([
+        entire.id,
+        eligibleTargeted.id,
+      ]);
+      expect(activeResult.items.map((item) => item.id)).not.toContain(
+        ineligibleTargeted.id,
+      );
+      expect(activeResult.items.map((item) => item.id)).not.toContain(
+        malformedTargeted.id,
+      );
+      expect(activeResult.items.map((item) => item.id)).not.toContain(
+        foreignPublication.id,
+      );
+    }
+
+    const archiveResult = await service.listPublications({
+      tenantId: tenantA.id,
+      surface: "ARCHIVE",
+      viewer,
+      tenantFacts: directReadFacts(tenantA.id),
+      now: new Date("2026-01-15T12:00:00.000Z"),
+      limit: 50,
+    });
+    expect(archiveResult).toEqual({
+      outcome: "OK",
+      items: [expect.objectContaining({ id: archivedEligible.id })],
+      nextCursor: null,
+    });
+    expect(archiveResult.outcome === "OK" ? archiveResult.items.map((item) => item.id) : []).not.toContain(
+      archivedIneligible.id,
+    );
+  });
+
+  it("paginates real collections past hidden targeted rows without duplicates or skips", async () => {
+    const { ListPublicationsService } = await import(
+      "@/application/content/list-publications"
+    );
+    const { PersistedPublicationAudienceBatchResolver } = await import(
+      "@/application/content/publication-read-resolvers"
+    );
+    const { DrizzleMembershipRepository } = await import(
+      "@/server/repositories/membership-repository"
+    );
+    const tenant = await createTenant();
+    const campusA = await createCampus(tenant.id);
+    const campusB = await createCampus(tenant.id);
+    const membership = await createMembership(tenant.id, {
+      campusId: campusA,
+      campusProvenance: "roster_derived",
+    });
+    const hiddenLeading = await createPublication(tenant.id, "targeted", "published", {
+      publishAt: new Date("2026-01-14T12:00:00.000Z"),
+    });
+    await insertCriterion({
+      ...baseCriterion(tenant.id, hiddenLeading.id),
+      dimension: "campus",
+      campusId: campusB,
+      academicYear: null,
+    });
+    const entireFirst = await createPublication(tenant.id, "entire_tenant", "published", {
+      publishAt: new Date("2026-01-13T12:00:00.000Z"),
+    });
+    const eligibleMiddle = await createPublication(tenant.id, "targeted", "published", {
+      publishAt: new Date("2026-01-12T12:00:00.000Z"),
+    });
+    await insertCriterion({
+      ...baseCriterion(tenant.id, eligibleMiddle.id),
+      dimension: "campus",
+      campusId: campusA,
+      academicYear: null,
+    });
+    const hiddenMiddle = await createPublication(tenant.id, "targeted", "published", {
+      publishAt: new Date("2026-01-11T12:00:00.000Z"),
+    });
+    await insertCriterion({
+      ...baseCriterion(tenant.id, hiddenMiddle.id),
+      dimension: "campus",
+      campusId: campusB,
+      academicYear: null,
+    });
+    const entireSecond = await createPublication(tenant.id, "entire_tenant", "published", {
+      publishAt: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    const queries: Array<{ cursor: unknown; limit: number }> = [];
+    const definitionCalls: string[][] = [];
+    const membershipCalls: string[][] = [];
+    const baseMembershipRepository = new DrizzleMembershipRepository(
+      getDatabase() as never,
+    );
+    const collectionRepository = {
+      listPublicationCandidatesForTenant: async (query: {
+        tenantId: string;
+        surface: "ACTIVE" | "ARCHIVE";
+        now: Date;
+        cursor: { publishAt: Date; id: string } | null;
+        limit: number;
+      }) => {
+        queries.push({ cursor: query.cursor, limit: query.limit });
+        return audienceRepository.listPublicationCandidatesForTenant(query);
+      },
+      findPublicationAudienceDefinitionsForTenant: async (
+        tenantId: string,
+        publicationIds: readonly string[],
+      ) => {
+        definitionCalls.push([...publicationIds]);
+        return audienceRepository.findPublicationAudienceDefinitionsForTenant(
+          tenantId,
+          publicationIds,
+        );
+      },
+    };
+    const service = new ListPublicationsService({
+      publications: collectionRepository,
+      exposureResolver: {
+        resolveExposure: (candidates) =>
+          new Map(
+            candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+          ),
+      },
+      audienceBatchResolver: new PersistedPublicationAudienceBatchResolver({
+        publications: collectionRepository,
+        memberships: {
+          findMembershipAudienceFactsByIdForTenant: async (tenantId, membershipId) => {
+            membershipCalls.push([tenantId, membershipId]);
+            return baseMembershipRepository.findMembershipAudienceFactsByIdForTenant(
+              tenantId,
+              membershipId,
+            );
+          },
+        },
+      }),
+    });
+    const viewer = directReadMembershipViewer(tenant.id, membership);
+    const list = (cursor?: string | null) =>
+      service.listPublications({
+        tenantId: tenant.id,
+        surface: "ACTIVE",
+        viewer,
+        tenantFacts: directReadFacts(tenant.id),
+        now: new Date("2026-01-15T12:00:00.000Z"),
+        limit: 2,
+        cursor,
+      });
+
+    const pageOne = await list(null);
+    expect(pageOne.outcome).toBe("OK");
+    if (pageOne.outcome !== "OK" || pageOne.nextCursor === null) {
+      throw new Error("Expected page-one cursor for targeted collection.");
+    }
+    expect(pageOne.items.map((item) => item.id)).toEqual([
+      entireFirst.id,
+      eligibleMiddle.id,
+    ]);
+
+    const pageTwo = await list(pageOne.nextCursor);
+    expect(pageTwo).toMatchObject({ outcome: "OK", nextCursor: null });
+    if (pageTwo.outcome !== "OK") {
+      return;
+    }
+    expect(pageTwo.items.map((item) => item.id)).toEqual([entireSecond.id]);
+    expect(new Set([
+      ...pageOne.items.map((item) => item.id),
+      ...pageTwo.items.map((item) => item.id),
+    ]).size).toBe(3);
+    expect(queries).toHaveLength(2);
+    expect(definitionCalls).toEqual([
+      [hiddenLeading.id, eligibleMiddle.id, hiddenMiddle.id],
+      [hiddenMiddle.id],
+    ]);
+    expect(membershipCalls).toHaveLength(2);
+    expect(membershipCalls.every(([tenantId]) => tenantId === tenant.id)).toBe(
+      true,
+    );
+  });
 });

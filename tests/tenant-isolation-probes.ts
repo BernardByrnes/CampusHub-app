@@ -4,7 +4,10 @@ import { expect, vi } from "vitest";
 vi.mock("@/server/db/client", () => ({ db: {} }));
 
 import { validateRequestContext } from "@/domain/authorization/context-policy";
-import { PersistedPublicationAudienceResolver } from "@/application/content/publication-read-resolvers";
+import {
+  PersistedPublicationAudienceBatchResolver,
+  PersistedPublicationAudienceResolver,
+} from "@/application/content/publication-read-resolvers";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
@@ -402,6 +405,40 @@ async function publicationAudienceDefinitionProbe(): Promise<void> {
       foreignPublicationId,
     ),
   ).resolves.toBeNull();
+}
+
+async function publicationAudienceDefinitionBatchProbe(): Promise<void> {
+  let selectCalls = 0;
+  const database = {
+    select: () => {
+      selectCalls += 1;
+      throw new Error("invalid batch audience input reached SQL");
+    },
+  } as unknown as CampusHubDatabase;
+  const repository = new DrizzlePublicationRepository(database);
+
+  await expect(
+    repository.findPublicationAudienceDefinitionsForTenant(
+      "banana",
+      [publicationId],
+    ),
+  ).resolves.toEqual(new Map());
+  await expect(
+    repository.findPublicationAudienceDefinitionsForTenant(
+      tenantAId,
+      ["banana"],
+    ),
+  ).resolves.toEqual(new Map());
+  await expect(
+    repository.findPublicationAudienceDefinitionsForTenant(
+      tenantAId,
+      [publicationId, publicationId],
+    ),
+  ).resolves.toEqual(new Map());
+  await expect(
+    repository.findPublicationAudienceDefinitionsForTenant(tenantAId, []),
+  ).resolves.toEqual(new Map());
+  expect(selectCalls).toBe(0);
 }
 
 async function publicationAudienceReplacementProbe(): Promise<void> {
@@ -806,6 +843,134 @@ async function publicationAudienceResolverProbe(): Promise<void> {
   ).resolves.toEqual({ evaluated: true, eligible: false });
 }
 
+async function publicationAudienceBatchResolverProbe(): Promise<void> {
+  const targetedPublication = {
+    ...publicationA,
+    visibility: "PUBLIC" as const,
+    lifecycle: "published" as const,
+    audienceMode: "targeted" as const,
+    publishAt: new Date("2026-01-10T12:00:00.000Z"),
+  };
+  const entireTenantPublication = publicationA;
+  const definition = {
+    tenantId: tenantAId,
+    publicationId,
+    mode: "targeted" as const,
+    groups: [
+      {
+        dimension: "campus" as const,
+        provenancePolicy: "authoritative_only" as const,
+        campusIds: ["00000000-0000-4000-8000-000000000031"],
+      },
+    ],
+  };
+  const membershipFacts = {
+    membershipId: membershipAId,
+    tenantId: tenantAId,
+    campus: {
+      value: "00000000-0000-4000-8000-000000000031",
+      provenance: "roster_derived" as const,
+    },
+    residence: {
+      state: "non_resident" as const,
+      residenceId: null,
+      provenance: "roster_derived" as const,
+    },
+  };
+  const definitionCalls: Array<readonly [string, readonly string[]]> = [];
+  const membershipCalls: Array<readonly [string, string]> = [];
+  const resolver = new PersistedPublicationAudienceBatchResolver({
+    publications: {
+      findPublicationAudienceDefinitionsForTenant: async (tenantId, ids) => {
+        definitionCalls.push([tenantId, ids]);
+        return new Map([[publicationId, definition]]);
+      },
+    },
+    memberships: {
+      findMembershipAudienceFactsByIdForTenant: async (tenantId, id) => {
+        membershipCalls.push([tenantId, id]);
+        return membershipFacts;
+      },
+    },
+  });
+  const membershipViewerA: Extract<
+    ResourceReadViewer,
+    { kind: "membership" }
+  > = {
+    kind: "membership",
+    context: {
+      identitySubjectId: "identity-a",
+      tenantId: tenantAId,
+      tenantStatus: "active",
+      membershipId: membershipAId,
+      assuranceLevel: "L2",
+      membershipStatus: "verified",
+    },
+  };
+  const membershipViewerB: Extract<
+    ResourceReadViewer,
+    { kind: "membership" }
+  > = {
+    kind: "membership",
+    context: {
+      ...membershipViewerA.context,
+      tenantId: tenantBId,
+      membershipId: membershipBId,
+    },
+  };
+
+  await expect(
+    resolver.resolveAudienceBatch({
+      tenantId: tenantAId,
+      publications: [targetedPublication],
+      viewer: membershipViewerB,
+    }),
+  ).resolves.toEqual(new Map());
+  expect(definitionCalls).toEqual([]);
+  expect(membershipCalls).toEqual([]);
+
+  await expect(
+    resolver.resolveAudienceBatch({
+      tenantId: tenantAId,
+      publications: [targetedPublication],
+      viewer: anonymousViewerA,
+    }),
+  ).resolves.toEqual(
+    new Map([[publicationId, { evaluated: true, eligible: false }]]),
+  );
+  expect(definitionCalls).toEqual([]);
+  expect(membershipCalls).toEqual([]);
+
+  await expect(
+    resolver.resolveAudienceBatch({
+      tenantId: tenantAId,
+      publications: [targetedPublication],
+      viewer: membershipViewerA,
+    }),
+  ).resolves.toEqual(
+    new Map([[publicationId, { evaluated: true, eligible: true }]]),
+  );
+  expect(definitionCalls).toEqual([[tenantAId, [publicationId]]]);
+  expect(membershipCalls).toEqual([[tenantAId, membershipAId]]);
+
+  await expect(
+    resolver.resolveAudienceBatch({
+      tenantId: tenantAId,
+      publications: [entireTenantPublication],
+      viewer: membershipViewerA,
+    }),
+  ).resolves.toEqual(new Map());
+  await expect(
+    resolver.resolveAudienceBatch({
+      tenantId: tenantAId,
+      publications: [{ ...targetedPublication, tenantId: tenantBId }],
+      viewer: membershipViewerA,
+    }),
+  ).resolves.toEqual(new Map());
+  expect(definitionCalls).toHaveLength(1);
+  expect(membershipCalls).toHaveLength(1);
+}
+
 async function publicationCollectionProbe(): Promise<void> {
   const foreign = { ...publicationA, id: foreignPublicationId, tenantId: tenantBId };
   let observedTenantId: string | undefined;
@@ -959,6 +1124,9 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
+  "publication.audience-definition-batch":
+    publicationAudienceDefinitionBatchProbe,
+  "publication.audience-batch-resolver": publicationAudienceBatchResolverProbe,
   "publication.audience-replacement": publicationAudienceReplacementProbe,
   "publication.audience-target-validity": publicationAudienceTargetValidityProbe,
   "publication.audience-count": publicationAudienceCountProbe,

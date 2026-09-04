@@ -2,17 +2,22 @@ import "server-only";
 
 import {
   authorizeResourceRead,
+  authorizeResourceReadBeforeAudience,
   isResourceReadViewer,
   type ResourceReadDenialCode,
   type ResourceReadViewer,
 } from "@/domain/authorization/resource-read-policy";
 import {
+  isPublicationAudienceDecision,
   isResolvedTenantReadFacts,
   parsePublicationContentExposure,
   type PublicationContentExposure,
   type ResolvedTenantReadFacts,
 } from "@/domain/authorization/publication-read-contract";
-import { mapPublicationToResourceAccessFacts } from "@/domain/authorization/publication-read-mapper";
+import {
+  mapPublicationToPreAudienceResourceAccessFacts,
+  mapPublicationToResourceAccessFacts,
+} from "@/domain/authorization/publication-read-mapper";
 import {
   decodePublicationCursor,
   encodePublicationCursor,
@@ -30,7 +35,10 @@ import {
 } from "@/domain/content/publication-collection";
 import type { Publication } from "@/domain/content/publication";
 import { isUuid } from "@/domain/identifiers/uuid";
-import type { PublicationExposureResolver } from "./publication-read-resolvers";
+import type {
+  PublicationAudienceBatchResolver,
+  PublicationExposureResolver,
+} from "./publication-read-resolvers";
 
 export type { PublicationExposureResolver } from "./publication-read-resolvers";
 
@@ -43,6 +51,7 @@ export type PublicationCollectionRepository = Readonly<{
 export type ListPublicationsServiceDependencies = Readonly<{
   publications: PublicationCollectionRepository;
   exposureResolver?: PublicationExposureResolver;
+  audienceBatchResolver?: PublicationAudienceBatchResolver;
 }>;
 
 export type ListPublicationsInput = Readonly<{
@@ -228,29 +237,102 @@ export class ListPublicationsService {
         return denied("EXPOSURE_UNAVAILABLE");
       }
 
-      let stoppedInsideBatch = false;
-      for (
-        let index = 0;
-        index < candidatePage.items.length &&
-        scannedCandidates < MAX_PUBLICATION_CANDIDATES_SCANNED;
-        index += 1
-      ) {
-        const candidate = candidatePage.items[index];
-        scannedCandidates += 1;
-        lastScanned = candidate;
+      const preAudienceCandidates: Array<{
+        candidate: Publication;
+        contentExposure: PublicationContentExposure;
+      } | null> = [];
 
+      for (const candidate of candidatePage.items) {
         const contentExposure = parsePublicationContentExposure(
           exposureById.get(candidate.id),
         );
         if (contentExposure === null) {
+          preAudienceCandidates.push(null);
           continue;
+        }
+
+        const resource = mapPublicationToPreAudienceResourceAccessFacts(
+          candidate,
+          input.tenantFacts,
+          contentExposure,
+          input.now,
+        );
+        if (resource === null) {
+          preAudienceCandidates.push(null);
+          continue;
+        }
+
+        const preAudienceDecision = authorizeResourceReadBeforeAudience({
+          resource,
+          viewer: input.viewer,
+        });
+        if (!preAudienceDecision.allowed) {
+          preAudienceCandidates.push(null);
+          continue;
+        }
+
+        preAudienceCandidates.push({ candidate, contentExposure });
+      }
+
+      const targetedCandidates = preAudienceCandidates
+        .filter(
+          (
+            value,
+          ): value is {
+            candidate: Publication;
+            contentExposure: PublicationContentExposure;
+          } => value !== null && value.candidate.audienceMode === "targeted",
+        )
+        .map(({ candidate }) => candidate);
+      let audienceDecisions = new Map();
+      if (
+        targetedCandidates.length > 0 &&
+        this.dependencies.audienceBatchResolver !== undefined
+      ) {
+        try {
+          const resolved =
+            await this.dependencies.audienceBatchResolver.resolveAudienceBatch({
+              tenantId: input.tenantId,
+              publications: targetedCandidates,
+              viewer: input.viewer,
+            });
+          if (resolved instanceof Map) {
+            audienceDecisions = resolved;
+          }
+        } catch {
+          audienceDecisions = new Map();
+        }
+      }
+
+      let scannedThroughIndex = -1;
+      let stoppedInsideBatch = false;
+      for (let index = 0; index < preAudienceCandidates.length; index += 1) {
+        scannedThroughIndex = index;
+        const preAudienceCandidate = preAudienceCandidates[index];
+        if (preAudienceCandidate === null) {
+          continue;
+        }
+
+        const { candidate, contentExposure } = preAudienceCandidate;
+        let audienceDecision;
+        if (candidate.audienceMode === "targeted") {
+          let resolvedDecision: unknown;
+          try {
+            resolvedDecision = audienceDecisions.get(candidate.id);
+          } catch {
+            continue;
+          }
+          if (!isPublicationAudienceDecision(resolvedDecision)) {
+            continue;
+          }
+          audienceDecision = resolvedDecision;
         }
 
         const resource = mapPublicationToResourceAccessFacts(
           candidate,
           input.tenantFacts,
           contentExposure,
-          undefined,
+          audienceDecision,
           input.now,
         );
         if (resource === null) {
@@ -274,6 +356,12 @@ export class ListPublicationsService {
           break;
         }
       }
+
+      if (scannedThroughIndex < 0) {
+        return denied("INVALID_INPUT");
+      }
+      scannedCandidates += scannedThroughIndex + 1;
+      lastScanned = candidatePage.items[scannedThroughIndex] ?? null;
 
       if (stoppedInsideBatch || authorizedItems.length >= pageSize) {
         break;

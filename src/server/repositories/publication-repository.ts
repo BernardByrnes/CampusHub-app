@@ -909,6 +909,111 @@ export class DrizzlePublicationRepository {
     );
   }
 
+  public async findPublicationAudienceDefinitionsForTenant(
+    tenantId: string,
+    publicationIds: readonly string[],
+  ): Promise<ReadonlyMap<string, PublicationAudienceDefinition>> {
+    const definitions = new Map<string, PublicationAudienceDefinition>();
+
+    if (
+      !isUuid(tenantId) ||
+      !Array.isArray(publicationIds) ||
+      publicationIds.length === 0 ||
+      publicationIds.length > MAX_PUBLICATION_CANDIDATES_SCANNED ||
+      publicationIds.some((publicationId) => !isUuid(publicationId)) ||
+      new Set(publicationIds).size !== publicationIds.length
+    ) {
+      return definitions;
+    }
+
+    const requestedPublicationIds = new Set(publicationIds);
+
+    try {
+      const publicationRows = await this.database
+        .select()
+        .from(publications)
+        .where(
+          and(
+            eq(publications.tenantId, tenantId),
+            inArray(publications.id, [...requestedPublicationIds]),
+          ),
+        )
+        .limit(publicationIds.length);
+      const hydratedPublications = new Map<string, Publication>();
+
+      for (const row of publicationRows) {
+        const publication = toPublication(row);
+        if (
+          publication !== null &&
+          publication.tenantId === tenantId &&
+          requestedPublicationIds.has(publication.id)
+        ) {
+          hydratedPublications.set(publication.id, publication);
+        }
+      }
+
+      if (hydratedPublications.size === 0) {
+        return definitions;
+      }
+
+      const criteriaRows = await this.database
+        .select()
+        .from(publicationAudienceCriteria)
+        .where(
+          and(
+            eq(publicationAudienceCriteria.tenantId, tenantId),
+            inArray(
+              publicationAudienceCriteria.publicationId,
+              [...hydratedPublications.keys()],
+            ),
+          ),
+        )
+        .orderBy(
+          asc(publicationAudienceCriteria.publicationId),
+          asc(publicationAudienceCriteria.dimension),
+          asc(publicationAudienceCriteria.id),
+        );
+      const criteriaByPublicationId = new Map<
+        string,
+        PublicationAudienceCriteriaRow[]
+      >();
+
+      for (const row of criteriaRows) {
+        if (
+          row.tenantId !== tenantId ||
+          !hydratedPublications.has(row.publicationId)
+        ) {
+          continue;
+        }
+
+        const rows = criteriaByPublicationId.get(row.publicationId) ?? [];
+        rows.push(row);
+        criteriaByPublicationId.set(row.publicationId, rows);
+      }
+
+      for (const publicationId of publicationIds) {
+        const publication = hydratedPublications.get(publicationId);
+        if (publication === undefined) {
+          continue;
+        }
+
+        const definition = mapAudienceCriteria(
+          tenantId,
+          publicationId,
+          publication,
+          criteriaByPublicationId.get(publicationId) ?? [],
+        );
+        if (definition !== null) {
+          definitions.set(publicationId, definition);
+        }
+      }
+    } catch {
+      definitions.clear();
+    }
+
+    return definitions;
+  }
+
   public async replaceDraftPublicationAudienceForTenant(
     tenantId: string,
     publicationId: string,
@@ -1134,12 +1239,8 @@ export class DrizzlePublicationRepository {
               lt(publications.id, input.cursor.id),
             ),
           );
-    // Targeted Publications are intentionally excluded until CH-PUB-003 has
-    // a real audience evaluator. Direct B.2.2 reads may consume an explicit
-    // trusted audience decision; collection reads must not invent one.
     const scope = and(
       eq(publications.tenantId, input.tenantId),
-      eq(publications.audienceMode, "entire_tenant"),
       lifecycleAndTime,
       cursorAfter,
     );

@@ -407,6 +407,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     defaultInitializerIdentifiers: [null],
   },
   {
+    implementationPath: "src/application/content/publication-read-resolvers.ts",
+    classIdentity: "PersistedPublicationAudienceBatchResolver",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["PersistedPublicationAudienceBatchResolverDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
     implementationPath: "src/server/repositories/membership-repository.ts",
     classIdentity: "DrizzleMembershipRepository",
     constructorModifiers: ["public"],
@@ -731,6 +741,17 @@ export const tenantSurfaceRegistry = [
     operation: "PersistedPublicationAudienceResolver.resolveAudience",
   },
   {
+    id: "publication.audience.batch-resolver",
+    category: "application_service",
+    implementationPath: "src/application/content/publication-read-resolvers.ts",
+    surface: "PersistedPublicationAudienceBatchResolver.resolveAudienceBatch",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Bounded targeted candidates resolve through one Tenant-bound definition batch and at most one current Membership audience-facts read before canonical evaluation.",
+    requiredNegativeTestIds: ["publication.audience-batch-resolver"],
+    operation: "PersistedPublicationAudienceBatchResolver.resolveAudienceBatch",
+  },
+  {
     id: "publication.repository.create",
     category: "repository",
     implementationPath: "src/server/repositories/publication-repository.ts",
@@ -772,6 +793,19 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.audience-definition"],
     operation:
       "DrizzlePublicationRepository.findPublicationAudienceDefinitionForTenant",
+  },
+  {
+    id: "publication.repository.audience-definition-batch",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.findPublicationAudienceDefinitionsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "A bounded set-based Publication and criteria read requires the same explicit Tenant predicate; invalid, foreign, missing, or malformed definitions are omitted.",
+    requiredNegativeTestIds: ["publication.audience-definition-batch"],
+    operation:
+      "DrizzlePublicationRepository.findPublicationAudienceDefinitionsForTenant",
   },
   {
     id: "publication.repository.audience-replacement",
