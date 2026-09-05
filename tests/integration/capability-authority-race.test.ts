@@ -1,6 +1,6 @@
 import { loadEnvConfig } from "@next/env";
 import { eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 
 import type * as schema from "@/server/db/schema";
@@ -13,6 +13,10 @@ const NOW = new Date("2026-09-05T12:00:00.000Z");
 const TERM_START = new Date("2026-01-01T00:00:00.000Z");
 const TERM_END = new Date("2026-12-31T23:59:59.000Z");
 const GRANT_END = new Date("2026-12-01T00:00:00.000Z");
+const ONE_SECOND_AFTER_NOW = new Date("2026-09-05T12:00:01.000Z");
+const TWO_SECONDS_AFTER_NOW = new Date("2026-09-05T12:00:02.000Z");
+
+let capabilityNow = NOW;
 
 if (process.env.CAMPUSHUB_DB_INTEGRATION !== "1") {
   throw new Error(
@@ -252,7 +256,7 @@ beforeAll(async () => {
     memberships: membershipRepository,
     guildTerms: guildTermRepository,
     roleGrants: roleGrantRepository,
-    clock: { now: () => NOW },
+    clock: { now: () => capabilityNow },
   });
   AuthorizedPublicationCreateExecutor =
     executorModule.PostgresAuthorizedPublicationCreateExecutor;
@@ -283,6 +287,10 @@ afterAll(async () => {
 });
 
 describe("durable capability commit-time authorization", () => {
+  beforeEach(() => {
+    capabilityNow = NOW;
+  });
+
   it("AUTH-RACE-01 revocation wins and commits no Publication", async () => {
     const fixture = await createFixture();
     const request = requestFor(fixture);
@@ -410,6 +418,69 @@ describe("durable capability commit-time authorization", () => {
     } finally {
       closureClient.release();
     }
+    await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
+  });
+
+  it("AUTH-TIME-01 denies when a grant expires after locks but before the final check", async () => {
+    const fixture = await createFixture();
+    await getDatabase()
+      .update(tables.roleGrants)
+      .set({ expiresAt: ONE_SECOND_AFTER_NOW })
+      .where(eq(tables.roleGrants.id, fixture.grant.id));
+
+    let authorityWasLockedAt: Date | undefined;
+    const result = await executor(async () => {
+      authorityWasLockedAt = capabilityNow;
+      capabilityNow = TWO_SECONDS_AFTER_NOW;
+    }).createAuthorizedPublication(
+      requestFor(fixture),
+      fixture.tenant.id,
+      publicationInput("grant-expiry-freshness"),
+    );
+
+    expect(authorityWasLockedAt).toEqual(NOW);
+    expect(capabilityNow).toEqual(TWO_SECONDS_AFTER_NOW);
+    expect(result).toEqual({
+      outcome: "DENIED",
+      code: "PERMISSION_DENIED",
+    });
+    await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
+  });
+
+  it("denies natural Guild Term expiry without a status update", async () => {
+    const fixture = await createFixture();
+    await getDatabase()
+      .update(tables.guildTerms)
+      .set({ endsAt: ONE_SECOND_AFTER_NOW })
+      .where(eq(tables.guildTerms.id, fixture.term.id));
+    await getDatabase()
+      .update(tables.roleGrants)
+      .set({ expiresAt: ONE_SECOND_AFTER_NOW })
+      .where(eq(tables.roleGrants.id, fixture.grant.id));
+
+    let authorityWasLockedAt: Date | undefined;
+    const result = await executor(async () => {
+      authorityWasLockedAt = capabilityNow;
+      capabilityNow = TWO_SECONDS_AFTER_NOW;
+    }).createAuthorizedPublication(
+      requestFor(fixture),
+      fixture.tenant.id,
+      publicationInput("term-expiry-freshness"),
+    );
+
+    expect(authorityWasLockedAt).toEqual(NOW);
+    expect(result).toEqual({
+      outcome: "DENIED",
+      code: "PERMISSION_DENIED",
+    });
+    const termAfter = await getDatabase()
+      .select({ status: tables.guildTerms.status, endsAt: tables.guildTerms.endsAt })
+      .from(tables.guildTerms)
+      .where(eq(tables.guildTerms.id, fixture.term.id));
+    expect(termAfter[0]).toEqual({
+      status: "active",
+      endsAt: ONE_SECOND_AFTER_NOW,
+    });
     await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
   });
 

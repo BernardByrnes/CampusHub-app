@@ -205,6 +205,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
   public async authorizePublicationCreateInTransaction(
     database: CapabilityTransactionDatabase,
     request: CapabilityAuthorizationRequest,
+    beforeFinalCheck?: () => Promise<void>,
   ): Promise<Readonly<{ allowed: true }> | Readonly<{ allowed: false }>> {
     try {
       if (
@@ -219,8 +220,8 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         return { allowed: false };
       }
 
-      const now = this.dependencies.clock?.now() ?? new Date();
-      if (!isValidDate(now)) {
+      const initialNow = this.dependencies.clock?.now() ?? new Date();
+      if (!isValidDate(initialNow)) {
         return { allowed: false };
       }
 
@@ -271,8 +272,8 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           and(
             eq(guildTerms.tenantId, tenant.id),
             eq(guildTerms.status, "active"),
-            lte(guildTerms.startsAt, now),
-            gt(guildTerms.endsAt, now),
+            lte(guildTerms.startsAt, initialNow),
+            gt(guildTerms.endsAt, initialNow),
           ),
         )
         .orderBy(asc(guildTerms.id))
@@ -283,8 +284,8 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         term === undefined ||
         term.tenantId !== tenant.id ||
         term.status !== "active" ||
-        now < term.startsAt ||
-        now >= term.endsAt
+        initialNow < term.startsAt ||
+        initialNow >= term.endsAt
       ) {
         return { allowed: false };
       }
@@ -300,7 +301,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
             eq(roleGrants.capability, CAPABILITIES.PUBLICATION_CREATE),
             eq(roleGrants.moduleScope, "publication"),
             isNull(roleGrants.revokedAt),
-            gt(roleGrants.expiresAt, now),
+            gt(roleGrants.expiresAt, initialNow),
             lte(roleGrants.expiresAt, term.endsAt),
           ),
         )
@@ -315,13 +316,33 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           grant.capability === CAPABILITIES.PUBLICATION_CREATE &&
           grant.moduleScope === "publication" &&
           grant.revokedAt === null &&
-          grant.expiresAt > now &&
+          grant.expiresAt > initialNow &&
           grant.expiresAt <= term.endsAt,
       );
 
-      return currentGrant === undefined
-        ? { allowed: false }
-        : { allowed: true };
+      if (currentGrant === undefined) {
+        return { allowed: false };
+      }
+
+      // This hook is test-only and runs after every authority row is locked,
+      // but before the fresh time check immediately preceding the INSERT.
+      await beforeFinalCheck?.();
+
+      const finalNow = this.dependencies.clock?.now() ?? new Date();
+      if (!isValidDate(finalNow)) {
+        return { allowed: false };
+      }
+
+      return (
+        term.status === "active" &&
+        finalNow >= term.startsAt &&
+        finalNow < term.endsAt &&
+        currentGrant.revokedAt === null &&
+        currentGrant.expiresAt > finalNow &&
+        currentGrant.expiresAt <= term.endsAt
+      )
+        ? { allowed: true }
+        : { allowed: false };
     } catch {
       return { allowed: false };
     }

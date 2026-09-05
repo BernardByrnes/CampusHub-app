@@ -14,7 +14,7 @@ import { PostgresCapabilityAuthorizer } from "./postgres-capability-authorizer";
 export type PostgresAuthorizedPublicationCreateDependencies = Readonly<{
   database: CampusHubDatabase;
   authorizer: PostgresCapabilityAuthorizer;
-  /** Test-only gate used to prove the transaction remains open after locking. */
+  /** Test-only gate used after locking and before the final freshness check. */
   beforeInsert?: () => Promise<void>;
 }>;
 
@@ -54,12 +54,11 @@ export class PostgresAuthorizedPublicationCreateExecutor
           await this.dependencies.authorizer.authorizePublicationCreateInTransaction(
             transaction,
             request,
+            this.dependencies.beforeInsert,
           );
         if (!decision.allowed) {
           return { outcome: "DENIED", code: "PERMISSION_DENIED" } as const;
         }
-
-        await this.dependencies.beforeInsert?.();
 
         const publication = await new DrizzlePublicationRepository().createPublicationInTransaction(
           transaction,
