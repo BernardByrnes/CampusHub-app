@@ -226,11 +226,13 @@ describe("A4 User/Membership boundary", () => {
     expect(currentTableNames).toEqual([
       "academic_divisions",
       "campuses",
+      "guild_terms",
       "memberships",
       "programmes",
       "publication_audience_criteria",
       "publications",
       "residences",
+      "role_grants",
       "tenant_academic_year_config",
       "tenants",
     ]);
@@ -261,11 +263,13 @@ describe("A4 User/Membership boundary", () => {
     expect(tenantOwnedTables).toEqual([
       "academic_divisions",
       "campuses",
+      "guild_terms",
       "memberships",
       "programmes",
       "publication_audience_criteria",
       "publications",
       "residences",
+      "role_grants",
       "tenant_academic_year_config",
     ]);
     for (const identifier of [
@@ -294,6 +298,12 @@ describe("A4 User/Membership boundary", () => {
       "residence.id",
       "residence.tenantId",
       "tenantAcademicYearConfig.tenantId",
+      "guildTerm.id",
+      "guildTerm.tenantId",
+      "roleGrant.id",
+      "roleGrant.tenantId",
+      "roleGrant.guildTermId",
+      "roleGrant.membershipId",
       "RequestContext.tenantId",
       "RequestContext.membershipId",
       "Publication collection cursor.id",
@@ -313,6 +323,10 @@ describe("A4 User/Membership boundary", () => {
       "programmes.(tenant_id,merged_into_programme_id) -> programmes.(tenant_id,id)",
       "residences.tenant_id -> tenants.id",
       "tenant_academic_year_config.tenant_id -> tenants.id",
+      "guild_terms.tenant_id -> tenants.id",
+      "role_grants.tenant_id -> tenants.id",
+      "role_grants.(tenant_id,guild_term_id) -> guild_terms.(tenant_id,id)",
+      "role_grants.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

@@ -49,6 +49,8 @@ The structural model inventory is rooted at `tenants` and currently includes:
 | `programmes` | `programmes` | `TENANT_SCOPED`; same-Tenant Academic Division and merge references. |
 | `residences` | `residences` | `TENANT_SCOPED`; optional Residence identity; no fabricated non-resident row. |
 | `tenant_academic_year_config` | `tenant_academic_year_config` | `TENANT_SCOPED`; Tenant-owned numeric academic-year range. |
+| `guild_terms` | `guild_terms` | `TENANT_SCOPED`; bounded upcoming/active/closed governance term with at most one active term per Tenant. |
+| `role_grants` | `role_grants` | `TENANT_SCOPED`; Membership-backed capability rows with same-Tenant Guild Term and Membership FKs, revocation, and expiry. |
 
 Legacy Membership rows may still have `campus_id = NULL` and
 `campus_provenance = NULL`. No Campus is fabricated. Such a Membership cannot
@@ -68,6 +70,9 @@ registry is metadata and does not grant authorization.
 - `DrizzleMembershipRepository.findMembershipForIdentityAndTenant`.
 - `DrizzleMembershipRepository.findMembershipByIdForTenant`.
 - `DrizzleMembershipRepository.findMembershipAudienceFactsByIdForTenant`.
+- `DrizzleGuildTermRepository.findActiveGuildTermForTenant`.
+- `DrizzleRoleGrantRepository.findCapabilityGrantForTenant`.
+- `PostgresCapabilityAuthorizer.authorize`.
 
 ### Publication and audience
 

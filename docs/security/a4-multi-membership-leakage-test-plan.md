@@ -24,7 +24,8 @@ navigation or a global identity subject.
 
 The current Tenant-owned ID-bearing model set is `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
-`residences`, and `tenant_academic_year_config`, with `tenants` as root. The
+`residences`, `tenant_academic_year_config`, `guild_terms`, and `role_grants`,
+with `tenants` as root. The
 audience affiliation fields and per-field provenance for Campus, Academic
 Division, Programme, Academic Year, and Residence live on Tenant Membership.
 `TrustedRequestContext` remains narrow and carries no affiliation fields.

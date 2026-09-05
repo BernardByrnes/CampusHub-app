@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { AssuranceLevel } from "./assurance-level";
-import type { Capability } from "./capability";
+import type { Capability, CapabilityModuleScope } from "./capability";
 import type { MembershipLifecycle } from "@/domain/membership/membership";
 import type { TenantLifecycle } from "@/domain/tenancy/tenant";
 
@@ -25,7 +25,7 @@ export type CapabilityAuthorizationContext = Readonly<{
 /** Explicit Tenant/module/resource scope for a capability decision. */
 export type CapabilityAuthorizationScope = Readonly<{
   tenantId: string;
-  module: string;
+  module: CapabilityModuleScope;
   resource?: string;
 }>;
 

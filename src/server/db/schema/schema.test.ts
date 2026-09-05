@@ -10,6 +10,8 @@ import {
   academicDivisions,
   campusLifecycleEnum,
   campuses,
+  guildTermStatusEnum,
+  guildTerms,
   publicationLifecycleEnum,
   publicationPriorityEnum,
   publicationTypeEnum,
@@ -20,6 +22,10 @@ import {
   programmes,
   residenceLifecycleEnum,
   residences,
+  roleGrantCapabilityEnum,
+  roleGrantModuleScopeEnum,
+  roleGrantRoleEnum,
+  roleGrants,
   tenantAcademicYearConfig,
   tenantLifecycleEnum,
   tenants,
@@ -37,6 +43,8 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(getTableConfig(tenantAcademicYearConfig).name).toBe(
       "tenant_academic_year_config",
     );
+    expect(getTableConfig(guildTerms).name).toBe("guild_terms");
+    expect(getTableConfig(roleGrants).name).toBe("role_grants");
   });
 
   it("declares closed lifecycle and assurance values at the database boundary", () => {
@@ -94,6 +102,23 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "non_resident",
       "resident",
     ]);
+    expect(guildTermStatusEnum.enumValues).toEqual([
+      "upcoming",
+      "active",
+      "closed",
+    ]);
+    expect(roleGrantRoleEnum.enumValues).toEqual([
+      "publisher",
+      "guild_administrator",
+    ]);
+    expect(roleGrantCapabilityEnum.enumValues).toEqual([
+      "publication.create",
+      "publication.edit",
+      "publication.publish",
+      "publication.priority_publish",
+      "publication.retract",
+    ]);
+    expect(roleGrantModuleScopeEnum.enumValues).toContain("publication");
   });
 
   it("declares tenant ownership and justified tenant-first indexes", () => {
@@ -218,6 +243,54 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
         "memberships_academic_year_positive",
         "memberships_programme_requires_division",
         "memberships_residence_shape",
+      ]),
+    );
+  });
+
+  it("declares durable term and grant ownership constraints", () => {
+    const termConfig = getTableConfig(guildTerms);
+    const grantConfig = getTableConfig(roleGrants);
+
+    expect(termConfig.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+      "guild_terms_tenant_id_id_unique",
+    );
+    expect(termConfig.indexes.map((index) => index.config.name)).toEqual(
+      expect.arrayContaining([
+        "guild_terms_one_active_per_tenant",
+        "guild_terms_tenant_status",
+      ]),
+    );
+    expect(termConfig.checks.map((check) => check.name)).toEqual(
+      expect.arrayContaining([
+        "guild_terms_label_nonempty",
+        "guild_terms_range_valid",
+      ]),
+    );
+
+    expect(grantConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual(
+      expect.arrayContaining([
+        "role_grants_tenant_id_id_unique",
+        "role_grants_tenant_term_membership_capability_module_unique",
+      ]),
+    );
+    expect(grantConfig.foreignKeys.map((foreignKey) => {
+      const reference = foreignKey.reference();
+      return `${reference.columns.map((column) => column.name).join(",")} -> ${reference.foreignColumns.map((column) => column.name).join(",")}`;
+    })).toEqual(
+      expect.arrayContaining([
+        "tenant_id -> id",
+        "tenant_id,guild_term_id -> tenant_id,id",
+        "tenant_id,membership_id -> tenant_id,id",
+      ]),
+    );
+    for (const foreignKey of grantConfig.foreignKeys) {
+      expect(foreignKey.onDelete).toBe("restrict");
+      expect(foreignKey.onUpdate).toBe("cascade");
+    }
+    expect(grantConfig.checks.map((check) => check.name)).toEqual(
+      expect.arrayContaining([
+        "role_grants_expiry_after_creation",
+        "role_grants_revocation_after_creation",
       ]),
     );
   });

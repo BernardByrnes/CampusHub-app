@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0008_loving_dagger.sql",
+    implementationPath: "drizzle/0009_swift_salo.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -226,6 +226,36 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     expectedAstForm: "CallExpression",
   },
   {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "guildTermStatusEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "roleGrantRoleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "roleGrantCapabilityEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "roleGrantModuleScopeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "guildTerms",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/governance.ts",
+    exportName: "roleGrants",
+    expectedAstForm: "CallExpression",
+  },
+  {
     implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publicationTypeEnum",
     expectedAstForm: "CallExpression",
@@ -332,6 +362,11 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/index.ts",
     moduleSpecifier: "./organization",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./governance",
     exportForm: "ExportAllDeclaration",
   },
 ] as const;
@@ -445,6 +480,37 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterTypeTexts: ["CampusHubDatabase"],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath: "src/server/repositories/guild-term-repository.ts",
+    classIdentity: "DrizzleGuildTermRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath: "src/server/repositories/role-grant-repository.ts",
+    classIdentity: "DrizzleRoleGrantRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    classIdentity: "PostgresCapabilityAuthorizer",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["PostgresCapabilityAuthorizerDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
 ] as const satisfies readonly ReviewedNonOperationalConstructorContract[];
 
@@ -560,6 +626,30 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["membership.persistence"],
     databaseObjectName: "memberships",
     operation: "table:memberships",
+  },
+  {
+    id: "guild-term.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/governance.ts",
+    surface: "guild_terms",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Guild Terms require Tenant ownership, bounded lifecycle values, a valid time range, and at most one active term per Tenant.",
+    requiredNegativeTestIds: ["guild-term.persistence"],
+    databaseObjectName: "guild_terms",
+    operation: "table:guild_terms",
+  },
+  {
+    id: "role-grant.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/governance.ts",
+    surface: "role_grants",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Role Grants are Membership-backed, Tenant-owned rows with same-Tenant Guild Term and Membership foreign keys, closed capability/module values, and revocation/expiry fields.",
+    requiredNegativeTestIds: ["role-grant.persistence"],
+    databaseObjectName: "role_grants",
+    operation: "table:role_grants",
   },
   {
     id: "campus.persistence",
@@ -696,6 +786,40 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["membership.audience-facts"],
     operation:
       "DrizzleMembershipRepository.findMembershipAudienceFactsByIdForTenant",
+  },
+  {
+    id: "guild-term.repository.active",
+    category: "repository",
+    implementationPath: "src/server/repositories/guild-term-repository.ts",
+    surface: "DrizzleGuildTermRepository.findActiveGuildTermForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The active Guild Term lookup requires an explicit Tenant UUID and current time window; malformed and out-of-window terms fail closed.",
+    requiredNegativeTestIds: ["guild-term.active"],
+    operation: "DrizzleGuildTermRepository.findActiveGuildTermForTenant",
+  },
+  {
+    id: "role-grant.repository.capability",
+    category: "repository",
+    implementationPath: "src/server/repositories/role-grant-repository.ts",
+    surface: "DrizzleRoleGrantRepository.findCapabilityGrantForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Capability lookup binds Tenant, Guild Term, Membership, capability, module scope, revocation, and current expiry before hydration.",
+    requiredNegativeTestIds: ["role-grant.capability"],
+    operation: "DrizzleRoleGrantRepository.findCapabilityGrantForTenant",
+  },
+  {
+    id: "capability.authorization.postgres",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    surface: "PostgresCapabilityAuthorizer.authorize",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Each capability decision reloads current Tenant, Membership, active Guild Term, and Membership-backed RoleGrant state and denies on mismatch, revocation, expiry, closure, wrong module, or repository failure.",
+    requiredNegativeTestIds: ["capability.authorization"],
+    operation: "PostgresCapabilityAuthorizer.authorize",
   },
   {
     id: "publication.persistence",
@@ -1002,8 +1126,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0008_loving_dagger.sql",
-    surface: "Reviewed Drizzle migration history through 0008",
+    implementationPath: "drizzle/0009_swift_salo.sql",
+    surface: "Reviewed Drizzle migration history through 0009",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1018,8 +1142,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0006_unknown_psylocke.sql",
       "drizzle/0007_optimal_mockingbird.sql",
       "drizzle/0008_loving_dagger.sql",
+      "drizzle/0009_swift_salo.sql",
     ],
-    migrationHead: "drizzle/0008_loving_dagger.sql",
+    migrationHead: "drizzle/0009_swift_salo.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

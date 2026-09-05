@@ -25,23 +25,29 @@ import type { CampusHubDatabase } from "@/server/db/client";
 import {
   academicDivisions,
   campuses,
+  guildTerms,
   memberships,
   publicationAudienceCriteria,
   programmes,
   publications,
   residences,
+  roleGrants,
   tenantAcademicYearConfig,
   tenants,
   type MembershipRow,
 } from "@/server/db/schema";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
+import { DrizzleGuildTermRepository } from "@/server/repositories/guild-term-repository";
+import { DrizzleRoleGrantRepository } from "@/server/repositories/role-grant-repository";
+import { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
 import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
 const tenantBId = "00000000-0000-4000-8000-000000000002";
 const membershipAId = "00000000-0000-4000-8000-000000000011";
 const membershipBId = "00000000-0000-4000-8000-000000000012";
+const termId = "00000000-0000-4000-8000-000000000013";
 const publicationId = "00000000-0000-4000-8000-000000000021";
 const foreignPublicationId = "00000000-0000-4000-8000-000000000022";
 const now = new Date("2026-01-15T12:00:00.000Z");
@@ -1094,6 +1100,121 @@ async function publicationCreateProbe(): Promise<void> {
   ]);
 }
 
+async function guildTermActiveProbe(): Promise<void> {
+  const database = {
+    select: () => {
+      throw new Error("malformed Guild Term Tenant UUID reached SQL");
+    },
+  } as unknown as CampusHubDatabase;
+
+  await expect(
+    new DrizzleGuildTermRepository(database).findActiveGuildTermForTenant(
+      "banana",
+      now,
+    ),
+  ).resolves.toBeNull();
+}
+
+async function roleGrantCapabilityProbe(): Promise<void> {
+  const database = {
+    select: () => {
+      throw new Error("malformed Role Grant Tenant UUID reached SQL");
+    },
+  } as unknown as CampusHubDatabase;
+
+  await expect(
+    new DrizzleRoleGrantRepository(database).findCapabilityGrantForTenant({
+      tenantId: "banana",
+      guildTermId: termId,
+      membershipId: membershipAId,
+      capability: "publication.create",
+      moduleScope: "publication",
+      now,
+    }),
+  ).resolves.toBeNull();
+}
+
+async function capabilityAuthorizationProbe(): Promise<void> {
+  const authorizer = new PostgresCapabilityAuthorizer({
+    tenants: {
+      findTenantById: async () => tenantA,
+    },
+    memberships: {
+      findMembershipByIdForTenant: async () => membershipA,
+    },
+    guildTerms: {
+      findActiveGuildTermForTenant: async () => ({
+        id: termId,
+        tenantId: tenantAId,
+        label: "Term A",
+        startsAt: new Date("2026-01-01T00:00:00.000Z"),
+        endsAt: new Date("2026-12-31T23:59:59.000Z"),
+        status: "active" as const,
+        createdAt: tenantA.createdAt,
+        updatedAt: tenantA.updatedAt,
+      }),
+    },
+    roleGrants: {
+      findCapabilityGrantForTenant: async () => ({
+        id: "00000000-0000-4000-8000-000000000031",
+        tenantId: tenantAId,
+        guildTermId: termId,
+        membershipId: membershipAId,
+        role: "publisher" as const,
+        capability: "publication.create" as const,
+        moduleScope: "publication" as const,
+        expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+        revokedAt: null,
+        createdAt: tenantA.createdAt,
+        updatedAt: tenantA.updatedAt,
+      }),
+    },
+    clock: { now: () => now },
+  });
+
+  await expect(
+    authorizer.authorize({
+      actor: {
+        identitySubjectId: "same-identity",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+      },
+      context: {
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      capability: "publication.create",
+      scope: {
+        tenantId: tenantAId,
+        module: "publication",
+        resource: "publication",
+      },
+    }),
+  ).resolves.toEqual({ allowed: true });
+
+  await expect(
+    authorizer.authorize({
+      actor: {
+        identitySubjectId: "same-identity",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+      },
+      context: {
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      capability: "publication.create",
+      scope: {
+        tenantId: tenantBId,
+        module: "publication",
+        resource: "publication",
+      },
+    }),
+  ).resolves.toEqual({ allowed: false });
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -1157,6 +1278,27 @@ export const tenantIsolationProbeRegistry: Readonly<
     ).toBe(true);
     expectForeignKey(tenantAcademicYearConfig, ["tenant_id"], ["id"]);
   },
+  "guild-term.persistence": () => {
+    expectTenantOwnedTable(guildTerms);
+    expectTenantCompositeIdentity(guildTerms);
+  },
+  "role-grant.persistence": () => {
+    expectTenantOwnedTable(roleGrants);
+    expectTenantCompositeIdentity(roleGrants);
+    expectForeignKey(
+      roleGrants,
+      ["tenant_id", "guild_term_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      roleGrants,
+      ["tenant_id", "membership_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "guild-term.active": guildTermActiveProbe,
+  "role-grant.capability": roleGrantCapabilityProbe,
+  "capability.authorization": capabilityAuthorizationProbe,
   "publication.direct": publicationDirectProbe,
   "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,

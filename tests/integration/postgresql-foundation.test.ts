@@ -5,6 +5,10 @@ import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ASSURANCE_LEVELS } from "@/domain/authorization/assurance-level";
+import {
+  CAPABILITY_MODULE_SCOPES,
+  CAPABILITY_VALUES,
+} from "@/domain/authorization/capability-vocabulary";
 import { validateRequestContext } from "@/domain/authorization/context-policy";
 import { RESOURCE_VISIBILITIES } from "@/domain/authorization/resource-visibility";
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
@@ -24,10 +28,19 @@ import {
 } from "@/domain/content/publication-collection";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { MEMBERSHIP_LIFECYCLE_STATUSES } from "@/domain/membership/membership";
+import { GUILD_TERM_STATUSES } from "@/domain/governance/guild-term";
+import { ROLE_GRANT_ROLES } from "@/domain/governance/role-grant";
 import { TENANT_LIFECYCLE_STATUSES } from "@/domain/tenancy/tenant";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { memberships } from "@/server/db/schema/membership";
 import type { MembershipRow, NewMembershipRow } from "@/server/db/schema/membership";
+import { guildTerms, roleGrants } from "@/server/db/schema/governance";
+import type {
+  GuildTermRow,
+  NewGuildTermRow,
+  NewRoleGrantRow,
+  RoleGrantRow,
+} from "@/server/db/schema/governance";
 import { publications } from "@/server/db/schema/publication";
 import type {
   NewPublicationRow,
@@ -55,9 +68,13 @@ import {
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import type { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
+import type { DrizzleGuildTermRepository } from "@/server/repositories/guild-term-repository";
+import type { DrizzleRoleGrantRepository } from "@/server/repositories/role-grant-repository";
+import type { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
 
 const ROLLBACK_MARKER = "CAMPUSHUB_INTENTIONAL_ROLLBACK";
 const READ_NOW = new Date("2026-01-15T12:00:00.000Z");
+const CAPABILITY_NOW = new Date("2026-09-05T12:00:00.000Z");
 
 function loadIntegrationEnvironment() {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -133,6 +150,9 @@ let databaseHandle: CampusHubDatabase | undefined;
 let connectionPool: Pool | undefined;
 let tenantRepository: DrizzleTenantRepository | undefined;
 let membershipRepository: DrizzleMembershipRepository | undefined;
+let guildTermRepository: DrizzleGuildTermRepository | undefined;
+let roleGrantRepository: DrizzleRoleGrantRepository | undefined;
+let capabilityAuthorizer: PostgresCapabilityAuthorizer | undefined;
 let publicationRepository: DrizzlePublicationRepository | undefined;
 let contextService: RequestContextService | undefined;
 let readPublicationService: ReadPublicationService | undefined;
@@ -166,6 +186,30 @@ function getMembershipRepository(): DrizzleMembershipRepository {
   }
 
   return membershipRepository;
+}
+
+function getGuildTermRepository(): DrizzleGuildTermRepository {
+  if (!guildTermRepository) {
+    throw new Error("Guild Term repository was not initialized.");
+  }
+
+  return guildTermRepository;
+}
+
+function getRoleGrantRepository(): DrizzleRoleGrantRepository {
+  if (!roleGrantRepository) {
+    throw new Error("Role Grant repository was not initialized.");
+  }
+
+  return roleGrantRepository;
+}
+
+function getCapabilityAuthorizer(): PostgresCapabilityAuthorizer {
+  if (!capabilityAuthorizer) {
+    throw new Error("Capability authorizer was not initialized.");
+  }
+
+  return capabilityAuthorizer;
 }
 
 function getPublicationRepository(): DrizzlePublicationRepository {
@@ -423,6 +467,54 @@ async function createMembership(
   return row;
 }
 
+async function createGuildTerm(
+  tenantId: string,
+  overrides: Partial<NewGuildTermRow> = {},
+): Promise<GuildTermRow> {
+  const values: NewGuildTermRow = {
+    tenantId,
+    label: `Synthetic Guild Term ${runPrefix}`,
+    startsAt: new Date("2026-01-01T00:00:00.000Z"),
+    endsAt: new Date("2026-12-31T23:59:59.000Z"),
+    status: "active",
+    ...overrides,
+  };
+  const rows = await getDatabase().insert(guildTerms).values(values).returning();
+  const row = rows[0];
+
+  if (!row) {
+    throw new Error("Guild Term insert returned no row.");
+  }
+
+  return row;
+}
+
+async function createRoleGrant(
+  tenantId: string,
+  guildTermId: string,
+  membershipId: string,
+  overrides: Partial<NewRoleGrantRow> = {},
+): Promise<RoleGrantRow> {
+  const values: NewRoleGrantRow = {
+    tenantId,
+    guildTermId,
+    membershipId,
+    role: "publisher",
+    capability: "publication.create",
+    moduleScope: "publication",
+    expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+    ...overrides,
+  };
+  const rows = await getDatabase().insert(roleGrants).values(values).returning();
+  const row = rows[0];
+
+  if (!row) {
+    throw new Error("Role Grant insert returned no row.");
+  }
+
+  return row;
+}
+
 async function createPublication(
   tenantId: string,
   overrides: Partial<NewPublicationRow> = {},
@@ -547,6 +639,15 @@ beforeAll(async () => {
   const publicationRepositoryModule = await import(
     "@/server/repositories/publication-repository"
   );
+  const guildTermRepositoryModule = await import(
+    "@/server/repositories/guild-term-repository"
+  );
+  const roleGrantRepositoryModule = await import(
+    "@/server/repositories/role-grant-repository"
+  );
+  const capabilityAuthorizerModule = await import(
+    "@/server/authorization/postgres-capability-authorizer"
+  );
   const contextModule = await import(
     "@/application/context/resolve-request-context"
   );
@@ -567,6 +668,19 @@ beforeAll(async () => {
   );
   membershipRepository =
     new membershipRepositoryModule.DrizzleMembershipRepository(databaseHandle);
+  guildTermRepository = new guildTermRepositoryModule.DrizzleGuildTermRepository(
+    databaseHandle,
+  );
+  roleGrantRepository = new roleGrantRepositoryModule.DrizzleRoleGrantRepository(
+    databaseHandle,
+  );
+  capabilityAuthorizer = new capabilityAuthorizerModule.PostgresCapabilityAuthorizer({
+    tenants: tenantRepository,
+    memberships: membershipRepository,
+    guildTerms: getGuildTermRepository(),
+    roleGrants: getRoleGrantRepository(),
+    clock: { now: () => CAPABILITY_NOW },
+  });
   publicationRepository =
     new publicationRepositoryModule.DrizzlePublicationRepository(databaseHandle);
   contextService = new contextModule.RequestContextService({
@@ -625,6 +739,12 @@ afterAll(async () => {
   try {
     if (syntheticTenantIds.size > 0) {
       await databaseHandle
+        .delete(roleGrants)
+        .where(inArray(roleGrants.tenantId, [...syntheticTenantIds]));
+      await databaseHandle
+        .delete(guildTerms)
+        .where(inArray(guildTerms.tenantId, [...syntheticTenantIds]));
+      await databaseHandle
         .delete(publications)
         .where(inArray(publications.tenantId, [...syntheticTenantIds]));
     }
@@ -651,12 +771,14 @@ describe("real Supabase PostgreSQL foundation", () => {
       select table_name
       from information_schema.tables
       where table_schema = 'public'
-        and table_name in ('tenants', 'memberships', 'publications')
+        and table_name in ('tenants', 'memberships', 'publications', 'guild_terms', 'role_grants')
       order by table_name
     `);
     expect(tableResult.rows.map((row) => String(row.table_name))).toEqual([
+      "guild_terms",
       "memberships",
       "publications",
+      "role_grants",
       "tenants",
     ]);
 
@@ -676,7 +798,11 @@ describe("real Supabase PostgreSQL foundation", () => {
           'publication_lifecycle',
           'publication_visibility',
           'publication_priority',
-          'publication_audience_mode'
+          'publication_audience_mode',
+          'guild_term_status',
+          'role_grant_role',
+          'role_grant_capability',
+          'role_grant_module_scope'
         )
       order by t.typname, e.enumsortorder
     `);
@@ -707,6 +833,12 @@ describe("real Supabase PostgreSQL foundation", () => {
     expect(enums.get("publication_audience_mode")).toEqual([
       ...PUBLICATION_AUDIENCE_MODES,
     ]);
+    expect(enums.get("guild_term_status")).toEqual([...GUILD_TERM_STATUSES]);
+    expect(enums.get("role_grant_role")).toEqual([...ROLE_GRANT_ROLES]);
+    expect(enums.get("role_grant_capability")).toEqual([...CAPABILITY_VALUES]);
+    expect(enums.get("role_grant_module_scope")).toEqual([
+      ...CAPABILITY_MODULE_SCOPES,
+    ]);
 
     const indexResult = await getDatabase().execute(sql`
       select indexname
@@ -714,7 +846,11 @@ describe("real Supabase PostgreSQL foundation", () => {
       where schemaname = 'public'
         and indexname in (
           'tenants_slug_unique',
+          'memberships_tenant_id_id_unique',
           'memberships_tenant_identity_unique',
+          'guild_terms_one_active_per_tenant',
+          'guild_terms_tenant_status',
+          'role_grants_tenant_membership_capability',
           'publications_tenant_id_id',
           'publications_tenant_collection_order',
           'publications_tenant_lifecycle'
@@ -722,10 +858,14 @@ describe("real Supabase PostgreSQL foundation", () => {
       order by indexname
     `);
     expect(indexResult.rows.map((row) => String(row.indexname))).toEqual([
+      "guild_terms_one_active_per_tenant",
+      "guild_terms_tenant_status",
+      "memberships_tenant_id_id_unique",
       "memberships_tenant_identity_unique",
       "publications_tenant_collection_order",
       "publications_tenant_id_id",
       "publications_tenant_lifecycle",
+      "role_grants_tenant_membership_capability",
       "tenants_slug_unique",
     ]);
 
@@ -737,7 +877,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(9);
+    ).toBe(10);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -848,7 +988,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     const tenantA = await createTenant({ slug: nextSlug("create-context-a") });
     const tenantB = await createTenant({ slug: nextSlug("create-context-b") });
     const identitySubjectId = nextIdentity("create-context");
-    await createMembership(tenantA.id, {
+    const membershipA = await createMembership(tenantA.id, {
       identitySubjectId,
       assuranceLevel: "L2",
       lifecycle: "verified",
@@ -858,6 +998,8 @@ describe("real Supabase PostgreSQL foundation", () => {
       assuranceLevel: "L2",
       lifecycle: "verified",
     });
+    const termA = await createGuildTerm(tenantA.id);
+    await createRoleGrant(tenantA.id, termA.id, membershipA.id);
 
     const contextResolution = await getContextService().resolveRequestContext(
       { identitySubjectId },
@@ -872,9 +1014,7 @@ describe("real Supabase PostgreSQL foundation", () => {
     );
     const service = new CreatePublicationService({
       publications: getPublicationRepository(),
-      capabilityAuthorizer: {
-        authorize: async () => ({ allowed: true }),
-      },
+      capabilityAuthorizer: getCapabilityAuthorizer(),
     });
     const publicationInput: CreatePublicationInput = {
       type: "notice",
@@ -947,6 +1087,154 @@ describe("real Supabase PostgreSQL foundation", () => {
           title: `Foreign FK create ${runPrefix}`,
         }),
       "23503",
+    );
+  });
+
+  it("authorizes only current Membership-backed grants within each Tenant", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("capability-a") });
+    const tenantB = await createTenant({ slug: nextSlug("capability-b") });
+    const identitySubjectId = nextIdentity("capability-same-identity");
+    const membershipA = await createMembership(tenantA.id, {
+      identitySubjectId,
+      lifecycle: "verified",
+    });
+    const membershipB = await createMembership(tenantB.id, {
+      identitySubjectId,
+      lifecycle: "verified",
+    });
+    const termA = await createGuildTerm(tenantA.id);
+    const termB = await createGuildTerm(tenantB.id);
+    const grantA = await createRoleGrant(tenantA.id, termA.id, membershipA.id);
+    await createRoleGrant(tenantB.id, termB.id, membershipB.id);
+
+    const authorizationRequest = (
+      tenant: TenantRow,
+      membership: MembershipRow,
+    ) => ({
+      actor: {
+        identitySubjectId: membership.identitySubjectId,
+        tenantId: tenant.id,
+        membershipId: membership.id,
+      },
+      context: {
+        tenantStatus: tenant.status,
+        membershipStatus: membership.lifecycle,
+        assuranceLevel: membership.assuranceLevel,
+      },
+      capability: "publication.create" as const,
+      scope: {
+        tenantId: tenant.id,
+        module: "publication" as const,
+        resource: "publication",
+      },
+    });
+
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantA, membershipA),
+      ),
+    ).resolves.toEqual({ allowed: true });
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantB, membershipB),
+      ),
+    ).resolves.toEqual({ allowed: true });
+
+    await getDatabase()
+      .update(roleGrants)
+      .set({ revokedAt: CAPABILITY_NOW })
+      .where(eq(roleGrants.id, grantA.id));
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantA, membershipA),
+      ),
+    ).resolves.toEqual({ allowed: false });
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantB, membershipB),
+      ),
+    ).resolves.toEqual({ allowed: true });
+
+    await getDatabase()
+      .update(guildTerms)
+      .set({ status: "closed" })
+      .where(eq(guildTerms.id, termB.id));
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantB, membershipB),
+      ),
+    ).resolves.toEqual({ allowed: false });
+
+    const tenantExpired = await createTenant({ slug: nextSlug("capability-expired") });
+    const membershipExpired = await createMembership(tenantExpired.id, {
+      identitySubjectId: nextIdentity("capability-expired"),
+    });
+    const termExpired = await createGuildTerm(tenantExpired.id);
+    await createRoleGrant(tenantExpired.id, termExpired.id, membershipExpired.id, {
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      expiresAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantExpired, membershipExpired),
+      ),
+    ).resolves.toEqual({ allowed: false });
+
+    const tenantBeyondTerm = await createTenant({ slug: nextSlug("capability-term-bound") });
+    const membershipBeyondTerm = await createMembership(tenantBeyondTerm.id, {
+      identitySubjectId: nextIdentity("capability-term-bound"),
+    });
+    const termBeyondTerm = await createGuildTerm(tenantBeyondTerm.id);
+    await createRoleGrant(
+      tenantBeyondTerm.id,
+      termBeyondTerm.id,
+      membershipBeyondTerm.id,
+      {
+        expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+      },
+    );
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantBeyondTerm, membershipBeyondTerm),
+      ),
+    ).resolves.toEqual({ allowed: false });
+
+    await getDatabase()
+      .update(memberships)
+      .set({ lifecycle: "stale" })
+      .where(eq(memberships.id, membershipB.id));
+    await expect(
+      getCapabilityAuthorizer().authorize(
+        authorizationRequest(tenantB, { ...membershipB, lifecycle: "stale" }),
+      ),
+    ).resolves.toEqual({ allowed: false });
+  });
+
+  it("rejects cross-Tenant Role Grants and duplicate active Terms", async () => {
+    const tenantA = await createTenant({ slug: nextSlug("capability-fk-a") });
+    const tenantB = await createTenant({ slug: nextSlug("capability-fk-b") });
+    const membershipA = await createMembership(tenantA.id);
+    const termA = await createGuildTerm(tenantA.id);
+
+    await expectPostgresCode(
+      () =>
+        getDatabase()
+          .insert(roleGrants)
+          .values({
+            tenantId: tenantB.id,
+            guildTermId: termA.id,
+            membershipId: membershipA.id,
+            role: "publisher",
+            capability: "publication.create",
+            moduleScope: "publication",
+            expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+          }),
+      "23503",
+    );
+
+    await expectPostgresCode(
+      () => createGuildTerm(tenantA.id),
+      "23505",
     );
   });
 

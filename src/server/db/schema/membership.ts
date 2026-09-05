@@ -7,6 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -103,6 +104,7 @@ export const memberships = pgTable(
       .defaultNow(),
   },
   (table) => [
+    unique("memberships_tenant_id_id_unique").on(table.tenantId, table.id),
     uniqueIndex("memberships_tenant_identity_unique").on(
       table.tenantId,
       table.identitySubjectId,

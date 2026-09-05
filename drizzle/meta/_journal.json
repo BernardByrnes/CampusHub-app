@@ -64,6 +64,13 @@
       "when": 1788470129969,
       "tag": "0008_loving_dagger",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788593790779,
+      "tag": "0009_swift_salo",
+      "breakpoints": true
     }
   ]
 }

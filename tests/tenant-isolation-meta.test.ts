@@ -38,6 +38,8 @@ function implementationPathForDatabaseObject(
     tenant_academic_year_config: "src/server/db/schema/organization.ts",
     tenants: "src/server/db/schema/tenant.ts",
     memberships: "src/server/db/schema/membership.ts",
+    guild_terms: "src/server/db/schema/governance.ts",
+    role_grants: "src/server/db/schema/governance.ts",
     publications: "src/server/db/schema/publication.ts",
     publication_audience_criteria: "src/server/db/schema/publication.ts",
   };

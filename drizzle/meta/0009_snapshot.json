@@ -1,0 +1,2176 @@
+{
+  "id": "3fea7c27-25c0-4a4b-89b3-8d0e307905e3",
+  "prevId": "d82afa91-86cd-483b-8cbd-f67a6a156c2f",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.memberships": {
+      "name": "memberships",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_subject_id": {
+          "name": "identity_subject_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assurance_level": {
+          "name": "assurance_level",
+          "type": "membership_assurance_level",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'L0'"
+        },
+        "lifecycle": {
+          "name": "lifecycle",
+          "type": "membership_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unverified'"
+        },
+        "campus_id": {
+          "name": "campus_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "campus_provenance": {
+          "name": "campus_provenance",
+          "type": "profile_field_provenance",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "academic_division_id": {
+          "name": "academic_division_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "academic_division_provenance": {
+          "name": "academic_division_provenance",
+          "type": "profile_field_provenance",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'optional'"
+        },
+        "programme_id": {
+          "name": "programme_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "programme_provenance": {
+          "name": "programme_provenance",
+          "type": "profile_field_provenance",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'optional'"
+        },
+        "academic_year": {
+          "name": "academic_year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "academic_year_provenance": {
+          "name": "academic_year_provenance",
+          "type": "profile_field_provenance",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'optional'"
+        },
+        "residence_state": {
+          "name": "residence_state",
+          "type": "membership_residence_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "residence_id": {
+          "name": "residence_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "residence_provenance": {
+          "name": "residence_provenance",
+          "type": "profile_field_provenance",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'optional'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "memberships_tenant_identity_unique": {
+          "name": "memberships_tenant_identity_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "identity_subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "memberships_tenant_id_tenants_id_fk": {
+          "name": "memberships_tenant_id_tenants_id_fk",
+          "tableFrom": "memberships",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "memberships_campus_same_tenant_fk": {
+          "name": "memberships_campus_same_tenant_fk",
+          "tableFrom": "memberships",
+          "tableTo": "campuses",
+          "columnsFrom": [
+            "tenant_id",
+            "campus_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "memberships_academic_division_same_tenant_fk": {
+          "name": "memberships_academic_division_same_tenant_fk",
+          "tableFrom": "memberships",
+          "tableTo": "academic_divisions",
+          "columnsFrom": [
+            "tenant_id",
+            "academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "memberships_programme_division_same_tenant_fk": {
+          "name": "memberships_programme_division_same_tenant_fk",
+          "tableFrom": "memberships",
+          "tableTo": "programmes",
+          "columnsFrom": [
+            "tenant_id",
+            "programme_id",
+            "academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id",
+            "academic_division_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "memberships_residence_same_tenant_fk": {
+          "name": "memberships_residence_same_tenant_fk",
+          "tableFrom": "memberships",
+          "tableTo": "residences",
+          "columnsFrom": [
+            "tenant_id",
+            "residence_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "memberships_tenant_id_id_unique": {
+          "name": "memberships_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "memberships_campus_provenance_shape": {
+          "name": "memberships_campus_provenance_shape",
+          "value": "(\"memberships\".\"campus_id\" IS NULL AND \"memberships\".\"campus_provenance\" IS NULL) OR (\"memberships\".\"campus_id\" IS NOT NULL AND \"memberships\".\"campus_provenance\" IS NOT NULL AND \"memberships\".\"campus_provenance\" IN ('institution_verified', 'roster_derived', 'self_declared'))"
+        },
+        "memberships_academic_division_provenance_shape": {
+          "name": "memberships_academic_division_provenance_shape",
+          "value": "(\"memberships\".\"academic_division_id\" IS NULL AND \"memberships\".\"academic_division_provenance\" = 'optional') OR (\"memberships\".\"academic_division_id\" IS NOT NULL AND \"memberships\".\"academic_division_provenance\" <> 'optional')"
+        },
+        "memberships_programme_provenance_shape": {
+          "name": "memberships_programme_provenance_shape",
+          "value": "(\"memberships\".\"programme_id\" IS NULL AND \"memberships\".\"programme_provenance\" = 'optional') OR (\"memberships\".\"programme_id\" IS NOT NULL AND \"memberships\".\"programme_provenance\" <> 'optional')"
+        },
+        "memberships_academic_year_provenance_shape": {
+          "name": "memberships_academic_year_provenance_shape",
+          "value": "(\"memberships\".\"academic_year\" IS NULL AND \"memberships\".\"academic_year_provenance\" = 'optional') OR (\"memberships\".\"academic_year\" IS NOT NULL AND \"memberships\".\"academic_year_provenance\" <> 'optional')"
+        },
+        "memberships_academic_year_positive": {
+          "name": "memberships_academic_year_positive",
+          "value": "\"memberships\".\"academic_year\" IS NULL OR \"memberships\".\"academic_year\" >= 1"
+        },
+        "memberships_programme_requires_division": {
+          "name": "memberships_programme_requires_division",
+          "value": "\"memberships\".\"programme_id\" IS NULL OR \"memberships\".\"academic_division_id\" IS NOT NULL"
+        },
+        "memberships_residence_shape": {
+          "name": "memberships_residence_shape",
+          "value": "(\"memberships\".\"residence_state\" = 'unknown' AND \"memberships\".\"residence_id\" IS NULL AND \"memberships\".\"residence_provenance\" = 'optional') OR (\"memberships\".\"residence_state\" = 'non_resident' AND \"memberships\".\"residence_id\" IS NULL AND \"memberships\".\"residence_provenance\" <> 'optional') OR (\"memberships\".\"residence_state\" = 'resident' AND \"memberships\".\"residence_id\" IS NOT NULL AND \"memberships\".\"residence_provenance\" <> 'optional')"
+        },
+        "memberships_identity_subject_nonempty": {
+          "name": "memberships_identity_subject_nonempty",
+          "value": "char_length(btrim(\"memberships\".\"identity_subject_id\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.guild_terms": {
+      "name": "guild_terms",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "starts_at": {
+          "name": "starts_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "guild_term_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'upcoming'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "guild_terms_one_active_per_tenant": {
+          "name": "guild_terms_one_active_per_tenant",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"guild_terms\".\"status\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "guild_terms_tenant_status": {
+          "name": "guild_terms_tenant_status",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "guild_terms_tenant_id_tenants_id_fk": {
+          "name": "guild_terms_tenant_id_tenants_id_fk",
+          "tableFrom": "guild_terms",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "guild_terms_tenant_id_id_unique": {
+          "name": "guild_terms_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "guild_terms_label_nonempty": {
+          "name": "guild_terms_label_nonempty",
+          "value": "char_length(btrim(\"guild_terms\".\"label\")) > 0"
+        },
+        "guild_terms_range_valid": {
+          "name": "guild_terms_range_valid",
+          "value": "\"guild_terms\".\"starts_at\" < \"guild_terms\".\"ends_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.role_grants": {
+      "name": "role_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_term_id": {
+          "name": "guild_term_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "membership_id": {
+          "name": "membership_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "role_grant_role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capability": {
+          "name": "capability",
+          "type": "role_grant_capability",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "module_scope": {
+          "name": "module_scope",
+          "type": "role_grant_module_scope",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "role_grants_tenant_membership_capability": {
+          "name": "role_grants_tenant_membership_capability",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "membership_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "capability",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "module_scope",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "role_grants_tenant_id_tenants_id_fk": {
+          "name": "role_grants_tenant_id_tenants_id_fk",
+          "tableFrom": "role_grants",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "role_grants_guild_term_same_tenant_fk": {
+          "name": "role_grants_guild_term_same_tenant_fk",
+          "tableFrom": "role_grants",
+          "tableTo": "guild_terms",
+          "columnsFrom": [
+            "tenant_id",
+            "guild_term_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "role_grants_membership_same_tenant_fk": {
+          "name": "role_grants_membership_same_tenant_fk",
+          "tableFrom": "role_grants",
+          "tableTo": "memberships",
+          "columnsFrom": [
+            "tenant_id",
+            "membership_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "role_grants_tenant_id_id_unique": {
+          "name": "role_grants_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "role_grants_tenant_term_membership_capability_module_unique": {
+          "name": "role_grants_tenant_term_membership_capability_module_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "guild_term_id",
+            "membership_id",
+            "capability",
+            "module_scope"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "role_grants_expiry_after_creation": {
+          "name": "role_grants_expiry_after_creation",
+          "value": "\"role_grants\".\"expires_at\" > \"role_grants\".\"created_at\""
+        },
+        "role_grants_revocation_after_creation": {
+          "name": "role_grants_revocation_after_creation",
+          "value": "\"role_grants\".\"revoked_at\" IS NULL OR \"role_grants\".\"revoked_at\" >= \"role_grants\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.academic_divisions": {
+      "name": "academic_divisions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_academic_division_id": {
+          "name": "parent_academic_division_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "level": {
+          "name": "level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "status": {
+          "name": "status",
+          "type": "academic_division_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "merged_into_academic_division_id": {
+          "name": "merged_into_academic_division_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "merged_effective_at": {
+          "name": "merged_effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "academic_divisions_tenant_parent": {
+          "name": "academic_divisions_tenant_parent",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "parent_academic_division_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "academic_divisions_tenant_status": {
+          "name": "academic_divisions_tenant_status",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "academic_divisions_tenant_id_tenants_id_fk": {
+          "name": "academic_divisions_tenant_id_tenants_id_fk",
+          "tableFrom": "academic_divisions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "academic_divisions_parent_same_tenant_fk": {
+          "name": "academic_divisions_parent_same_tenant_fk",
+          "tableFrom": "academic_divisions",
+          "tableTo": "academic_divisions",
+          "columnsFrom": [
+            "tenant_id",
+            "parent_academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "academic_divisions_merge_same_tenant_fk": {
+          "name": "academic_divisions_merge_same_tenant_fk",
+          "tableFrom": "academic_divisions",
+          "tableTo": "academic_divisions",
+          "columnsFrom": [
+            "tenant_id",
+            "merged_into_academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "academic_divisions_tenant_id_id_unique": {
+          "name": "academic_divisions_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "academic_divisions_label_nonempty": {
+          "name": "academic_divisions_label_nonempty",
+          "value": "char_length(btrim(\"academic_divisions\".\"label\")) > 0"
+        },
+        "academic_divisions_level_valid": {
+          "name": "academic_divisions_level_valid",
+          "value": "\"academic_divisions\".\"level\" IN (1, 2)"
+        },
+        "academic_divisions_level_parent_shape": {
+          "name": "academic_divisions_level_parent_shape",
+          "value": "(\"academic_divisions\".\"level\" = 1 AND \"academic_divisions\".\"parent_academic_division_id\" IS NULL) OR (\"academic_divisions\".\"level\" = 2 AND \"academic_divisions\".\"parent_academic_division_id\" IS NOT NULL)"
+        },
+        "academic_divisions_parent_not_self": {
+          "name": "academic_divisions_parent_not_self",
+          "value": "\"academic_divisions\".\"parent_academic_division_id\" IS NULL OR \"academic_divisions\".\"parent_academic_division_id\" <> \"academic_divisions\".\"id\""
+        },
+        "academic_divisions_merge_not_self": {
+          "name": "academic_divisions_merge_not_self",
+          "value": "\"academic_divisions\".\"merged_into_academic_division_id\" IS NULL OR \"academic_divisions\".\"merged_into_academic_division_id\" <> \"academic_divisions\".\"id\""
+        },
+        "academic_divisions_merge_metadata_shape": {
+          "name": "academic_divisions_merge_metadata_shape",
+          "value": "(\"academic_divisions\".\"status\" = 'merged' AND \"academic_divisions\".\"merged_into_academic_division_id\" IS NOT NULL AND \"academic_divisions\".\"merged_effective_at\" IS NOT NULL) OR (\"academic_divisions\".\"status\" <> 'merged' AND \"academic_divisions\".\"merged_into_academic_division_id\" IS NULL AND \"academic_divisions\".\"merged_effective_at\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.campuses": {
+      "name": "campuses",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "campus_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "campuses_tenant_status": {
+          "name": "campuses_tenant_status",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "campuses_tenant_id_tenants_id_fk": {
+          "name": "campuses_tenant_id_tenants_id_fk",
+          "tableFrom": "campuses",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "campuses_tenant_id_id_unique": {
+          "name": "campuses_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "campuses_label_nonempty": {
+          "name": "campuses_label_nonempty",
+          "value": "char_length(btrim(\"campuses\".\"label\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.programmes": {
+      "name": "programmes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "academic_division_id": {
+          "name": "academic_division_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "programme_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "merged_into_programme_id": {
+          "name": "merged_into_programme_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "merged_effective_at": {
+          "name": "merged_effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "programmes_tenant_division": {
+          "name": "programmes_tenant_division",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "academic_division_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "programmes_tenant_status": {
+          "name": "programmes_tenant_status",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "programmes_tenant_id_tenants_id_fk": {
+          "name": "programmes_tenant_id_tenants_id_fk",
+          "tableFrom": "programmes",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "programmes_division_same_tenant_fk": {
+          "name": "programmes_division_same_tenant_fk",
+          "tableFrom": "programmes",
+          "tableTo": "academic_divisions",
+          "columnsFrom": [
+            "tenant_id",
+            "academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "programmes_merge_same_tenant_fk": {
+          "name": "programmes_merge_same_tenant_fk",
+          "tableFrom": "programmes",
+          "tableTo": "programmes",
+          "columnsFrom": [
+            "tenant_id",
+            "merged_into_programme_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "programmes_tenant_id_id_unique": {
+          "name": "programmes_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "programmes_tenant_id_id_division_unique": {
+          "name": "programmes_tenant_id_id_division_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id",
+            "academic_division_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "programmes_label_nonempty": {
+          "name": "programmes_label_nonempty",
+          "value": "char_length(btrim(\"programmes\".\"label\")) > 0"
+        },
+        "programmes_merge_not_self": {
+          "name": "programmes_merge_not_self",
+          "value": "\"programmes\".\"merged_into_programme_id\" IS NULL OR \"programmes\".\"merged_into_programme_id\" <> \"programmes\".\"id\""
+        },
+        "programmes_merge_metadata_shape": {
+          "name": "programmes_merge_metadata_shape",
+          "value": "(\"programmes\".\"status\" = 'merged' AND \"programmes\".\"merged_into_programme_id\" IS NOT NULL AND \"programmes\".\"merged_effective_at\" IS NOT NULL) OR (\"programmes\".\"status\" <> 'merged' AND \"programmes\".\"merged_into_programme_id\" IS NULL AND \"programmes\".\"merged_effective_at\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.residences": {
+      "name": "residences",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "residence_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "residences_tenant_status": {
+          "name": "residences_tenant_status",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "residences_tenant_id_tenants_id_fk": {
+          "name": "residences_tenant_id_tenants_id_fk",
+          "tableFrom": "residences",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "residences_tenant_id_id_unique": {
+          "name": "residences_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "residences_label_nonempty": {
+          "name": "residences_label_nonempty",
+          "value": "char_length(btrim(\"residences\".\"label\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.tenant_academic_year_config": {
+      "name": "tenant_academic_year_config",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "minimum_year": {
+          "name": "minimum_year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "maximum_year": {
+          "name": "maximum_year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tenant_academic_year_config_tenant_id_tenants_id_fk": {
+          "name": "tenant_academic_year_config_tenant_id_tenants_id_fk",
+          "tableFrom": "tenant_academic_year_config",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tenant_academic_year_config_minimum_positive": {
+          "name": "tenant_academic_year_config_minimum_positive",
+          "value": "\"tenant_academic_year_config\".\"minimum_year\" >= 1"
+        },
+        "tenant_academic_year_config_range_valid": {
+          "name": "tenant_academic_year_config_range_valid",
+          "value": "\"tenant_academic_year_config\".\"maximum_year\" >= \"tenant_academic_year_config\".\"minimum_year\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.publication_audience_criteria": {
+      "name": "publication_audience_criteria",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "publication_id": {
+          "name": "publication_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dimension": {
+          "name": "dimension",
+          "type": "publication_audience_dimension",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provenance_policy": {
+          "name": "provenance_policy",
+          "type": "publication_audience_provenance_policy",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "campus_id": {
+          "name": "campus_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "academic_division_id": {
+          "name": "academic_division_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "programme_id": {
+          "name": "programme_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "academic_year": {
+          "name": "academic_year",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "residence_target": {
+          "name": "residence_target",
+          "type": "publication_audience_residence_target",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "residence_id": {
+          "name": "residence_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "publication_audience_criteria_campus_unique": {
+          "name": "publication_audience_criteria_campus_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "campus_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'campus'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publication_audience_criteria_division_unique": {
+          "name": "publication_audience_criteria_division_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "academic_division_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'academic_division'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publication_audience_criteria_programme_unique": {
+          "name": "publication_audience_criteria_programme_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "programme_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'programme'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publication_audience_criteria_academic_year_unique": {
+          "name": "publication_audience_criteria_academic_year_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "academic_year",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'academic_year'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publication_audience_criteria_specific_residence_unique": {
+          "name": "publication_audience_criteria_specific_residence_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "residence_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'residence' AND \"publication_audience_criteria\".\"residence_target\" = 'specific_residence'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publication_audience_criteria_residence_target_unique": {
+          "name": "publication_audience_criteria_residence_target_unique",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "residence_target",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"publication_audience_criteria\".\"dimension\" = 'residence' AND \"publication_audience_criteria\".\"residence_target\" IN ('any_resident', 'non_resident')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "publication_audience_criteria_publication_same_tenant_fk": {
+          "name": "publication_audience_criteria_publication_same_tenant_fk",
+          "tableFrom": "publication_audience_criteria",
+          "tableTo": "publications",
+          "columnsFrom": [
+            "tenant_id",
+            "publication_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "publication_audience_criteria_campus_same_tenant_fk": {
+          "name": "publication_audience_criteria_campus_same_tenant_fk",
+          "tableFrom": "publication_audience_criteria",
+          "tableTo": "campuses",
+          "columnsFrom": [
+            "tenant_id",
+            "campus_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "publication_audience_criteria_division_same_tenant_fk": {
+          "name": "publication_audience_criteria_division_same_tenant_fk",
+          "tableFrom": "publication_audience_criteria",
+          "tableTo": "academic_divisions",
+          "columnsFrom": [
+            "tenant_id",
+            "academic_division_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "publication_audience_criteria_programme_same_tenant_fk": {
+          "name": "publication_audience_criteria_programme_same_tenant_fk",
+          "tableFrom": "publication_audience_criteria",
+          "tableTo": "programmes",
+          "columnsFrom": [
+            "tenant_id",
+            "programme_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        },
+        "publication_audience_criteria_residence_same_tenant_fk": {
+          "name": "publication_audience_criteria_residence_same_tenant_fk",
+          "tableFrom": "publication_audience_criteria",
+          "tableTo": "residences",
+          "columnsFrom": [
+            "tenant_id",
+            "residence_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "publication_audience_criteria_payload_shape": {
+          "name": "publication_audience_criteria_payload_shape",
+          "value": "(\n        (\"publication_audience_criteria\".\"dimension\" = 'campus' AND \"publication_audience_criteria\".\"campus_id\" IS NOT NULL AND \"publication_audience_criteria\".\"academic_division_id\" IS NULL AND \"publication_audience_criteria\".\"programme_id\" IS NULL AND \"publication_audience_criteria\".\"academic_year\" IS NULL AND \"publication_audience_criteria\".\"residence_target\" IS NULL AND \"publication_audience_criteria\".\"residence_id\" IS NULL)\n        OR (\"publication_audience_criteria\".\"dimension\" = 'academic_division' AND \"publication_audience_criteria\".\"campus_id\" IS NULL AND \"publication_audience_criteria\".\"academic_division_id\" IS NOT NULL AND \"publication_audience_criteria\".\"programme_id\" IS NULL AND \"publication_audience_criteria\".\"academic_year\" IS NULL AND \"publication_audience_criteria\".\"residence_target\" IS NULL AND \"publication_audience_criteria\".\"residence_id\" IS NULL)\n        OR (\"publication_audience_criteria\".\"dimension\" = 'programme' AND \"publication_audience_criteria\".\"campus_id\" IS NULL AND \"publication_audience_criteria\".\"academic_division_id\" IS NULL AND \"publication_audience_criteria\".\"programme_id\" IS NOT NULL AND \"publication_audience_criteria\".\"academic_year\" IS NULL AND \"publication_audience_criteria\".\"residence_target\" IS NULL AND \"publication_audience_criteria\".\"residence_id\" IS NULL)\n        OR (\"publication_audience_criteria\".\"dimension\" = 'academic_year' AND \"publication_audience_criteria\".\"campus_id\" IS NULL AND \"publication_audience_criteria\".\"academic_division_id\" IS NULL AND \"publication_audience_criteria\".\"programme_id\" IS NULL AND \"publication_audience_criteria\".\"academic_year\" IS NOT NULL AND \"publication_audience_criteria\".\"academic_year\" >= 1 AND \"publication_audience_criteria\".\"residence_target\" IS NULL AND \"publication_audience_criteria\".\"residence_id\" IS NULL)\n        OR (\"publication_audience_criteria\".\"dimension\" = 'residence' AND \"publication_audience_criteria\".\"campus_id\" IS NULL AND \"publication_audience_criteria\".\"academic_division_id\" IS NULL AND \"publication_audience_criteria\".\"programme_id\" IS NULL AND \"publication_audience_criteria\".\"academic_year\" IS NULL AND \"publication_audience_criteria\".\"residence_target\" IS NOT NULL AND ((\"publication_audience_criteria\".\"residence_target\" = 'specific_residence' AND \"publication_audience_criteria\".\"residence_id\" IS NOT NULL) OR (\"publication_audience_criteria\".\"residence_target\" IN ('any_resident', 'non_resident') AND \"publication_audience_criteria\".\"residence_id\" IS NULL)))\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.publications": {
+      "name": "publications",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "type": {
+          "name": "type",
+          "type": "publication_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "priority": {
+          "name": "priority",
+          "type": "publication_priority",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'standard'"
+        },
+        "visibility": {
+          "name": "visibility",
+          "type": "publication_visibility",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'MEMBERS'"
+        },
+        "lifecycle": {
+          "name": "lifecycle",
+          "type": "publication_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'draft'"
+        },
+        "audience_mode": {
+          "name": "audience_mode",
+          "type": "publication_audience_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "author_office_label": {
+          "name": "author_office_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "publish_at": {
+          "name": "publish_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "publications_tenant_id_id": {
+          "name": "publications_tenant_id_id",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publications_tenant_lifecycle": {
+          "name": "publications_tenant_lifecycle",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lifecycle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "publications_tenant_collection_order": {
+          "name": "publications_tenant_collection_order",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "audience_mode",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lifecycle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publish_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "publications_tenant_id_tenants_id_fk": {
+          "name": "publications_tenant_id_tenants_id_fk",
+          "tableFrom": "publications",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "publications_tenant_id_id_unique": {
+          "name": "publications_tenant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "publications_title_nonempty": {
+          "name": "publications_title_nonempty",
+          "value": "char_length(btrim(\"publications\".\"title\")) > 0"
+        },
+        "publications_version_positive": {
+          "name": "publications_version_positive",
+          "value": "\"publications\".\"version\" >= 1"
+        },
+        "publications_body_nonempty": {
+          "name": "publications_body_nonempty",
+          "value": "char_length(btrim(\"publications\".\"body\")) > 0"
+        },
+        "publications_author_office_label_nonempty": {
+          "name": "publications_author_office_label_nonempty",
+          "value": "char_length(btrim(\"publications\".\"author_office_label\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.tenants": {
+      "name": "tenants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "tenant_lifecycle",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pilot'"
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "tenants_slug_unique": {
+          "name": "tenants_slug_unique",
+          "columns": [
+            {
+              "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tenants_slug_format": {
+          "name": "tenants_slug_format",
+          "value": "\"tenants\".\"slug\" ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND char_length(\"tenants\".\"slug\") <= 80"
+        },
+        "tenants_display_name_nonempty": {
+          "name": "tenants_display_name_nonempty",
+          "value": "char_length(btrim(\"tenants\".\"display_name\")) > 0"
+        },
+        "tenants_timezone_nonempty": {
+          "name": "tenants_timezone_nonempty",
+          "value": "char_length(btrim(\"tenants\".\"timezone\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.membership_assurance_level": {
+      "name": "membership_assurance_level",
+      "schema": "public",
+      "values": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    "public.membership_lifecycle": {
+      "name": "membership_lifecycle",
+      "schema": "public",
+      "values": [
+        "unverified",
+        "pending_review",
+        "verified",
+        "stale",
+        "on_leave",
+        "alumni",
+        "transferred_out",
+        "participation_suspended",
+        "suspended",
+        "closed"
+      ]
+    },
+    "public.membership_residence_state": {
+      "name": "membership_residence_state",
+      "schema": "public",
+      "values": [
+        "unknown",
+        "non_resident",
+        "resident"
+      ]
+    },
+    "public.profile_field_provenance": {
+      "name": "profile_field_provenance",
+      "schema": "public",
+      "values": [
+        "institution_verified",
+        "roster_derived",
+        "self_declared",
+        "optional"
+      ]
+    },
+    "public.guild_term_status": {
+      "name": "guild_term_status",
+      "schema": "public",
+      "values": [
+        "upcoming",
+        "active",
+        "closed"
+      ]
+    },
+    "public.role_grant_capability": {
+      "name": "role_grant_capability",
+      "schema": "public",
+      "values": [
+        "publication.create",
+        "publication.edit",
+        "publication.publish",
+        "publication.priority_publish",
+        "publication.retract"
+      ]
+    },
+    "public.role_grant_module_scope": {
+      "name": "role_grant_module_scope",
+      "schema": "public",
+      "values": [
+        "publication",
+        "event",
+        "opportunity",
+        "sports",
+        "poll",
+        "voice",
+        "quiz",
+        "sponsorship",
+        "tenant",
+        "verification",
+        "analytics",
+        "notification",
+        "export",
+        "search"
+      ]
+    },
+    "public.role_grant_role": {
+      "name": "role_grant_role",
+      "schema": "public",
+      "values": [
+        "publisher",
+        "guild_administrator"
+      ]
+    },
+    "public.academic_division_lifecycle": {
+      "name": "academic_division_lifecycle",
+      "schema": "public",
+      "values": [
+        "active",
+        "inactive",
+        "merged"
+      ]
+    },
+    "public.campus_lifecycle": {
+      "name": "campus_lifecycle",
+      "schema": "public",
+      "values": [
+        "active",
+        "inactive"
+      ]
+    },
+    "public.programme_lifecycle": {
+      "name": "programme_lifecycle",
+      "schema": "public",
+      "values": [
+        "active",
+        "inactive",
+        "merged"
+      ]
+    },
+    "public.residence_lifecycle": {
+      "name": "residence_lifecycle",
+      "schema": "public",
+      "values": [
+        "active",
+        "inactive"
+      ]
+    },
+    "public.publication_audience_dimension": {
+      "name": "publication_audience_dimension",
+      "schema": "public",
+      "values": [
+        "campus",
+        "academic_division",
+        "programme",
+        "academic_year",
+        "residence"
+      ]
+    },
+    "public.publication_audience_mode": {
+      "name": "publication_audience_mode",
+      "schema": "public",
+      "values": [
+        "entire_tenant",
+        "targeted"
+      ]
+    },
+    "public.publication_audience_provenance_policy": {
+      "name": "publication_audience_provenance_policy",
+      "schema": "public",
+      "values": [
+        "authoritative_only",
+        "allow_self_declared"
+      ]
+    },
+    "public.publication_audience_residence_target": {
+      "name": "publication_audience_residence_target",
+      "schema": "public",
+      "values": [
+        "specific_residence",
+        "any_resident",
+        "non_resident"
+      ]
+    },
+    "public.publication_lifecycle": {
+      "name": "publication_lifecycle",
+      "schema": "public",
+      "values": [
+        "draft",
+        "scheduled",
+        "published",
+        "expired",
+        "archived"
+      ]
+    },
+    "public.publication_priority": {
+      "name": "publication_priority",
+      "schema": "public",
+      "values": [
+        "standard",
+        "priority"
+      ]
+    },
+    "public.publication_type": {
+      "name": "publication_type",
+      "schema": "public",
+      "values": [
+        "notice",
+        "news"
+      ]
+    },
+    "public.publication_visibility": {
+      "name": "publication_visibility",
+      "schema": "public",
+      "values": [
+        "PUBLIC",
+        "MEMBERS",
+        "VERIFIED_MEMBERS"
+      ]
+    },
+    "public.tenant_lifecycle": {
+      "name": "tenant_lifecycle",
+      "schema": "public",
+      "values": [
+        "pilot",
+        "active",
+        "grace",
+        "suspended",
+        "archived"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
