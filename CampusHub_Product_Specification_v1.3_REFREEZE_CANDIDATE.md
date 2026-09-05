@@ -6,7 +6,7 @@ Predecessor: CampusHub Product Specification v1.2 — FROZEN
 | Field | Value |
 |-------|-------|
 | **Status** | **REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW** |
-| **Supersedes** | CampusHub Product Specification v1.2 — FROZEN |
+| **Supersedes** | Will supersede CampusHub Product Specification v1.2 — FROZEN upon explicit approval/freeze |
 | **Audience** | UX/UI design, technical architecture, engineering, QA, commercial, legal review |
 | **Product Scope Changes** | **NONE** |
 
@@ -471,7 +471,7 @@ This is the canonical Pilot capability matrix. `✓` means the capability may be
 - Sponsor Placement creation and approval are separate capabilities and cannot be exercised on the same Placement by the same person.
 - A Sponsorship module cannot be enabled unless two distinct currently authorised human actors can safely perform creation and approval; the two actors need not both be Guild Administrators.
 - A requester can never approve their own member-identifying export. If the requester is the only available Tenant Custodian, the request requires a second authorised approver or an expressly exceptional Platform approval; self-approval is not a fallback.
-- Assurance level is an input to participation gates, never to content-read gates for public tenant information, and never to sponsor targeting.
+- Assurance level is an input to participation gates, never to content-read gates for public tenant information, and never to general or arbitrary sponsor targeting. The separately supplied all-product-defined-verified-students branch remains preserved but blocked under OD-13.
 - Privileged capability changes take effect immediately server-side (§CH-GOV-004).
 
 ---
@@ -2788,7 +2788,7 @@ Before each Tenant activates Voice, Platform and the Tenant configure, within pl
 
 ### 18.17 CH-SPN — Sponsorship
 
-> Pilot sponsorship demonstrates capability. It is not a miniature advertising platform. No ad auction, delivery pacing, conflict engine, sponsor portal, payment gates, behavioural targeting, assurance-level targeting, rewards or prizes.
+> Pilot sponsorship demonstrates capability. It is not a miniature advertising platform. No ad auction, delivery pacing, conflict engine, sponsor portal, payment gates, general behavioural targeting, general assurance-level targeting, rewards or prizes. The separately supplied all-product-defined-verified-students branch remains preserved but unavailable while OD-13 is open.
 
 ---
 
@@ -2844,7 +2844,7 @@ Before each Tenant activates Voice, Platform and the Tenant configure, within pl
 
 **Acceptance criteria:**
 
-- Given placement audience, then v1.2 supplies three branches: entire university, a specific campus, or all product-defined verified students. The third branch is partially blocked by OD-13 and must not be implemented or served until the required product/security/privacy decision is recorded.
+- Given placement audience, then v1.2 supplies three branches: entire university, a specific campus, or all product-defined verified students. The third branch is **PARTIALLY BLOCKED / PRODUCT DECISION REQUIRED** under OD-13 and must not be implemented or served until the required product/security/privacy decision is recorded.
 - Given targeting, then the entire-university and specific-campus branches may not target or exclude by verification assurance level (TI-4), poll participation, Student Voice activity, quiz answers, browsing behaviour, saved items, interests, faculty, programme, year, residence, or any other behavioural or demographic signal. The supplied all-verified-students branch remains the unresolved contradiction recorded in §40.3; no assurance-derived targeting is implemented while it is open.
 - Given a sponsor, then they are never told and never able to infer how CampusHub internally rates the strength of any student's verification.
 - Given any audience, then it must exceed a minimum size floor before a placement may go live.
@@ -2866,7 +2866,7 @@ Before each Tenant activates Voice, Platform and the Tenant configure, within pl
 
 - Given any sponsored placement, then it carries a persistent, clearly legible "Sponsored" label plus the sponsor name; it is visually distinct from editorial content; it meets contrast requirements; it is announced to assistive technology; and it does not rely on colour alone.
 - Given sponsored content, then it can never be styled to resemble a Guild announcement, an official notice, or Student Voice content.
-- Given a student, then a plain "Why am I seeing this?" explanation is available and states the broad audience basis (e.g., "Shown to all verified students at this campus").
+- Given a student, then a plain "Why am I seeing this?" explanation is available and states the broad audience basis (e.g., "Shown to students at this campus").
 - Given frequency, then a simple per-student daily impression cap applies, and sponsored content never appears in the Priority Notice position or above campus information on Home.
 - Given multiple eligible Sponsor Placements, then rotation is simple and deterministic — no pacing algorithm, no even-share delivery engine, no auction.
 - Given a scheduled activation and a suspension race, then suspension wins once committed; serving re-checks the authoritative Sponsor Placement state before every activation and does not serve a suspended Placement.
@@ -3913,7 +3913,7 @@ Commercial V1 turns the validated Pilot into a repeatable paid annual SaaS produ
 | CV-SPN-003 | Sponsor-facing report as a polished artefact with methodology statement and suppression applied | Should | First sponsor renewal cycle |
 | CV-SPN-004 | Placement inventory management and simple scheduling conflicts (calendar view, not an engine) | Could | Multiple concurrent placements |
 
-**Still excluded at Commercial V1:** Sponsor logins, delivery pacing algorithms, even-share engines, contractual exclusivity enforcement, behavioural targeting, assurance-level targeting, automated billing.
+**Still excluded at Commercial V1:** Sponsor logins, delivery pacing algorithms, even-share engines, contractual exclusivity enforcement, general behavioural targeting, general assurance-level targeting, automated billing. The separately supplied all-product-defined-verified-students branch remains preserved but unavailable under OD-13.
 
 ### 24.6 Content and Campus Maturity
 
@@ -4387,7 +4387,7 @@ Requirements this document has introduced that had no equivalent in Draft 0.1, a
 - The separation of audit immutability from public content availability, with redaction, restriction and removal outcomes
 - The attribution freeze rule for hierarchy change
 - Priority Notice abuse controls including a separate capability, hard rate limit and retraction
-- Removal of assurance-level and all behavioural sponsor targeting
+- Removal/prohibition of general assurance-level and all behavioural sponsor targeting; the separately supplied all-product-defined-verified-students branch remains preserved but blocked under OD-13
 - Reframing of aggregation thresholds as policy defaults rather than guarantees
 - The subscription state behaviour matrix protecting students during a commercial dispute
 - Platform support tiering with an explicit prohibition on impersonation
@@ -4467,7 +4467,7 @@ Slice 0 is an architecture-validation exercise, not a student release, a Pilot s
 | Four-level verification with L4 as "highest student tier" | Rebuilt as evidence-based L0–L3 with privileged identity as a separate track; OTP principle added (§11.4) |
 | "Revocation takes effect within 15 minutes" | Corrected to immediate (CH-GOV-004); 15 minutes may apply only to cosmetic cache propagation |
 | CH-HND-006 closed-term content immutable | Replaced by CH-CNT-001 — audit is immutable, public availability is not |
-| CH-SPN-006 targeting including assurance level | Assurance-level and all behavioural targeting removed (CH-SPN-003, TI-4) |
+| CH-SPN-006 targeting including assurance level | General assurance-level and all behavioural targeting removed/prohibited (CH-SPN-003, TI-4); the separately supplied all-product-defined-verified-students branch remains preserved but blocked under OD-13 |
 | CH-ANL-006 k=10/20/200 as guarantees | Reframed as policy defaults subject to review (§27.4) |
 | CH-POLL-005 asserting unlinkability as an acceptance criterion | Reframed as a trust invariant plus a mandatory architecture review (CH-POL-001, §29-A1) |
 | Global User + Membership boundary | Hardened into a hard invariant with explicit prohibitions (§10, TI-12) |
@@ -4497,7 +4497,7 @@ Slice 0 is an architecture-validation exercise, not a student release, a Pilot s
 
 | Draft 0.1 | Reason |
 |------------|--------|
-| Sponsor targeting by assurance level | Creates a quality score on students with no advertising purpose (TI-4) |
+| General sponsor targeting by assurance level | Creates a quality score on students with no advertising purpose (TI-4); the separately supplied all-product-defined-verified-students branch remains held under OD-13 |
 | Delivery pacing / even-share rotation (CH-SPN-006) | Ad-tech complexity before demand exists |
 | Payment-before-serving gate | Implies financial intermediation; contract handles it |
 | DOB collection for minor protection | Data expansion with no protective benefit under a universal-restriction posture |
@@ -4582,7 +4582,7 @@ v1.2 supersedes v1.1 as the frozen product-scope document. It applies bounded co
 1. Secret-ballot election, binding vote or answer-change behaviour — polls remain non-binding sentiment polls.
 2. Any result release below either poll privacy floor, arbitrary poll cross-tabs or a privacy exception for admin/support/export/API — not adopted.
 3. Voice XP, Voice gamification milestones or Voice-specific streak reminders — not adopted.
-4. Sponsor-facing identifiers, behavioural/assurance targeting, sponsor logins, auction/pacing or ad-tech expansion — not adopted.
+4. Sponsor-facing identifiers, general behavioural/assurance targeting, sponsor logins, auction/pacing or ad-tech expansion — not adopted; the separately supplied all-product-defined-verified-students branch remains preserved but blocked under OD-13.
 5. People/member search, global/cross-university search, personal-data indexing, behavioural ranking or AI semantic search — not adopted.
 6. Guild-Administrator unilateral participation suspension, Voice-Moderator disagreement as suspension authority, or export self-approval — not adopted.
 7. A promise to remotely erase bytes already downloaded to unmanaged devices — not adopted.
@@ -4664,6 +4664,9 @@ DECISION REQUIRED. No product decision is made here. The unresolved authority
 must choose whether to remove that branch, approve a narrowly justified
 exception to TI-4, or adopt another interpretation; this candidate chooses
 none of those options.
+
+OD-13 remains OPEN; this candidate does not authorize the disputed branch or
+choose its eventual product treatment.
 
 Until OD-13 is closed, sponsorship implementation may not use the disputed
 branch. The general prohibition on behavioural, demographic, assurance,

@@ -246,6 +246,60 @@ approval, or frozen-document declaration.
   this remediation; any future implementation still requires the applicable
   story, evaluator evidence, and ordinary feature gates.
 
+## 7B. Independent-review remediation R2
+
+This section records the final consistency cleanup requested after the R1
+independent re-review. It does not resolve OD-13, freeze v1.3, or change
+runtime behavior.
+
+### V13-R2-01 — Misleading CH-SPN-004 audience explanation
+
+- **Classification:** DOCUMENT CONSISTENCY — NO PRODUCT DECISION.
+- **Source:** Frozen v1.2 CH-SPN-003/CH-SPN-004 audience authority and the v1.3
+  OD-13 correction.
+- **Affected section:** Product Specification CH-SPN-004.
+- **Exact remediation:** Replaced `Shown to all verified students at this
+  campus` with `Shown to students at this campus`, which uses only the supplied
+  specific-campus branch and does not invent a verified-plus-campus
+  intersection.
+- **Product behavior changed?:** NO.
+- **Runtime impact:** NONE.
+- **Blocker status:** OD-13 remains partially blocked; no disputed branch is
+  served or explained as an approved audience.
+
+### V13-R2-02 — Carried-forward sponsorship wording clarified
+
+- **Classification:** DOCUMENT CONSISTENCY — OD-13 REMAINS OPEN.
+- **Source:** Frozen v1.2 sponsorship intent/change-log language, TI-4,
+  CH-SPN-003/CH-SPN-004, and the v1.3 OD-13 record.
+- **Affected sections:** Product Specification §9.4, CH-SPN-003, CH-SPN-004,
+  §§18.17, 24.5, 34.1, 34.3, 35.3, 35.5, 36, 40.3, 41 OD-13, FG-14, and
+  PR-16.
+- **Exact remediation:** Annotated active and historical wording so that
+  general/arbitrary assurance-level and behavioural targeting remains
+  prohibited under TI-4, while the separately supplied all-product-defined-
+  verified-students branch is preserved but blocked under OD-13. No historical
+  branch was deleted and no exception was selected.
+- **Product behavior changed?:** NO.
+- **Runtime impact:** NONE.
+- **Blocker status:** OD-13 remains open and blocks the disputed branch before
+  sponsorship implementation or Pilot activation.
+
+### V13-R2-03 — Candidate supersession status clarified
+
+- **Classification:** GOVERNANCE STATUS CLARIFICATION.
+- **Source:** v1.3 candidate status and the controlled refreeze authority
+  boundary.
+- **Affected section:** Product Specification candidate metadata.
+- **Exact remediation:** Changed `Supersedes: CampusHub Product Specification
+  v1.2 — FROZEN` to `Will supersede CampusHub Product Specification v1.2 —
+  FROZEN upon explicit approval/freeze`. The predecessor relationship remains
+  recorded, but v1.2 remains current frozen authority until approval.
+- **Product behavior changed?:** NO.
+- **Runtime impact:** NONE.
+- **Blocker status:** v1.3 remains a pending refreeze candidate and is not
+  frozen or current authority.
+
 ## 8. Preservation and validation record
 
 The original frozen files are outside the production app repository in the
