@@ -39,6 +39,7 @@ import {
   parseCreatePublicationDraftInput,
   type CreatePublicationDraftInput,
 } from "@/domain/content/publication-draft";
+import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
 import {
   parseResourceVisibility,
 } from "@/domain/authorization/resource-visibility";
@@ -80,6 +81,16 @@ export type PublicationAudienceMutationResult =
         | "VERSION_CONFLICT"
         | "INVALID_STATE"
         | "INVALID_AUDIENCE";
+    }>;
+
+export type PublicationDraftEditMutationResult =
+  | Readonly<{
+      ok: true;
+      publication: Publication;
+    }>
+  | Readonly<{
+      ok: false;
+      error: "NOT_FOUND" | "VERSION_CONFLICT" | "INVALID_STATE" | "PERSISTENCE_FAILED";
     }>;
 
 function toPublication(row: PublicationRow): Publication | null {
@@ -866,6 +877,7 @@ async function readPublicationAudienceReadinessSnapshot(
 }
 
 type PublicationInsertDatabase = Pick<CampusHubDatabase, "insert">;
+type PublicationUpdateDatabase = Pick<CampusHubDatabase, "update">;
 
 async function createPublicationUsingDatabase(
   database: PublicationInsertDatabase,
@@ -911,6 +923,57 @@ export class DrizzlePublicationRepository {
     input: CreatePublicationDraftInput,
   ): Promise<Publication | null> {
     return createPublicationUsingDatabase(transaction, tenantId, input);
+  }
+
+  public async updatePublicationDraftInTransaction(
+    transaction: PublicationUpdateDatabase,
+    tenantId: string,
+    publicationId: string,
+    input: UpdatePublicationDraftInput,
+  ): Promise<PublicationDraftEditMutationResult> {
+    if (
+      !isUuid(tenantId) ||
+      !isUuid(publicationId) ||
+      !isPositivePublicationVersion(input.expectedVersion)
+    ) {
+      return { ok: false, error: "NOT_FOUND" };
+    }
+
+    try {
+      const rows = await transaction
+        .update(publications)
+        .set({
+          type: input.type,
+          title: input.title,
+          body: input.body,
+          priority: input.priority,
+          visibility: input.visibility,
+          authorOfficeLabel: input.authorOfficeLabel,
+          expiresAt: input.expiresAt,
+          version: sql`${publications.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(publications.tenantId, tenantId),
+            eq(publications.id, publicationId),
+            eq(publications.version, input.expectedVersion),
+            eq(publications.lifecycle, "draft"),
+          ),
+        )
+        .returning();
+
+      if (rows.length !== 1) {
+        return { ok: false, error: "PERSISTENCE_FAILED" };
+      }
+
+      const publication = toPublication(rows[0]);
+      return publication === null
+        ? { ok: false, error: "PERSISTENCE_FAILED" }
+        : { ok: true, publication };
+    } catch {
+      return { ok: false, error: "PERSISTENCE_FAILED" };
+    }
   }
 
   public async findPublicationByIdForTenant(

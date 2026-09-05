@@ -124,6 +124,29 @@ describe("PostgresCapabilityAuthorizer", () => {
     ).resolves.toEqual({ allowed: true });
   });
 
+  it("allows publication.edit only when the current grant contains publication.edit", async () => {
+    await expect(
+      createAuthorizer({
+        currentGrant: {
+          ...grant,
+          capability: CAPABILITIES.PUBLICATION_EDIT,
+        },
+      }).authorize(
+        request({ capability: CAPABILITIES.PUBLICATION_EDIT }),
+      ),
+    ).resolves.toEqual({ allowed: true });
+    await expect(
+      createAuthorizer({
+        currentGrant: {
+          ...grant,
+          capability: CAPABILITIES.PUBLICATION_PUBLISH,
+        },
+      }).authorize(
+        request({ capability: CAPABILITIES.PUBLICATION_PUBLISH }),
+      ),
+    ).resolves.toEqual({ allowed: false });
+  });
+
   it("denies wrong Tenant, identity, capability, and module scope", async () => {
     await expect(
       createAuthorizer({}).authorize(

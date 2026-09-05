@@ -25,6 +25,7 @@ import { tenantHasFullFunctionality } from "@/domain/tenancy/tenant";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { memberships } from "@/server/db/schema/membership";
 import { guildTerms, roleGrants } from "@/server/db/schema/governance";
+import { publications } from "@/server/db/schema/publication";
 import { tenants } from "@/server/db/schema/tenant";
 import type { GuildTermAuthorizationReader } from "@/server/repositories/guild-term-repository";
 import type { RoleGrantAuthorizationReader } from "@/server/repositories/role-grant-repository";
@@ -43,6 +44,27 @@ export type PostgresCapabilityAuthorizerDependencies = Readonly<{
 
 type CapabilityTransactionDatabase = Pick<CampusHubDatabase, "select">;
 
+type SupportedPublicationCapability =
+  | typeof CAPABILITIES.PUBLICATION_CREATE
+  | typeof CAPABILITIES.PUBLICATION_EDIT;
+
+export type PublicationEditTransactionDecision =
+  | Readonly<{ allowed: true }>
+  | Readonly<{
+      allowed: false;
+      code:
+        | "PERMISSION_DENIED"
+        | "NOT_FOUND"
+        | "VERSION_CONFLICT"
+        | "INVALID_STATE";
+    }>;
+
+type PublicationMutationTransactionOptions = Readonly<{
+  publicationId?: string;
+  expectedVersion?: number;
+  beforeFinalCheck?: () => Promise<void>;
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -53,6 +75,19 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isValidDate(value: unknown): value is Date {
   return value instanceof Date && !Number.isNaN(value.getTime());
+}
+
+function isPositiveVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+function isSupportedPublicationCapability(
+  value: unknown,
+): value is SupportedPublicationCapability {
+  return (
+    value === CAPABILITIES.PUBLICATION_CREATE ||
+    value === CAPABILITIES.PUBLICATION_EDIT
+  );
 }
 
 function isAuthorizationRequest(
@@ -99,8 +134,9 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         return { allowed: false };
       }
 
+      const capability = request.capability;
       if (
-        request.capability !== CAPABILITIES.PUBLICATION_CREATE ||
+        !isSupportedPublicationCapability(capability) ||
         request.scope.module !== "publication" ||
         (request.scope.resource !== undefined &&
           request.scope.resource !== "publication") ||
@@ -168,7 +204,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           tenantId: tenant.id,
           guildTermId: term.id,
           membershipId: membership.id,
-          capability: CAPABILITIES.PUBLICATION_CREATE,
+          capability,
           moduleScope: "publication",
           now,
           termEndsAt: term.endsAt,
@@ -178,7 +214,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         grant.tenantId !== tenant.id ||
         grant.guildTermId !== term.id ||
         grant.membershipId !== membership.id ||
-        grant.capability !== CAPABILITIES.PUBLICATION_CREATE ||
+        grant.capability !== capability ||
         grant.moduleScope !== "publication" ||
         grant.revokedAt !== null ||
         grant.expiresAt <= now ||
@@ -197,32 +233,36 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
   }
 
   /**
-   * Authoritative commit-time check for Publication creation. The caller must
-   * invoke this with the transaction that will perform the Publication INSERT.
-   * Locks are acquired in Tenant, Membership, GuildTerm, RoleGrant order so
-   * authority-invalidating updates serialize with the mutation.
+   * Shared commit-time authority evaluator for the two currently supported
+   * Publication mutations. When an edit target is supplied, the Publication
+   * lock is acquired after the authority locks and before the fresh check.
    */
-  public async authorizePublicationCreateInTransaction(
+  private async authorizePublicationMutationInTransaction(
     database: CapabilityTransactionDatabase,
     request: CapabilityAuthorizationRequest,
-    beforeFinalCheck?: () => Promise<void>,
-  ): Promise<Readonly<{ allowed: true }> | Readonly<{ allowed: false }>> {
+    expectedCapability: SupportedPublicationCapability,
+    options: PublicationMutationTransactionOptions = {},
+  ): Promise<PublicationEditTransactionDecision> {
     try {
+      const isEdit = expectedCapability === CAPABILITIES.PUBLICATION_EDIT;
       if (
         !isAuthorizationRequest(request) ||
-        request.capability !== CAPABILITIES.PUBLICATION_CREATE ||
+        request.capability !== expectedCapability ||
         request.scope.module !== "publication" ||
         (request.scope.resource !== undefined &&
           request.scope.resource !== "publication") ||
         request.actor.tenantId !== request.scope.tenantId ||
-        request.actor.membershipId === undefined
+        request.actor.membershipId === undefined ||
+        (isEdit &&
+          (!isUuid(options.publicationId) ||
+            !isPositiveVersion(options.expectedVersion)))
       ) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
       const initialNow = this.dependencies.clock?.now() ?? new Date();
       if (!isValidDate(initialNow)) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
       const tenantRows = await database
@@ -237,7 +277,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         tenant.id !== request.scope.tenantId ||
         !tenantHasFullFunctionality(tenant.status)
       ) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
       const membershipRows = await database
@@ -262,7 +302,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         // gated by OD-02/OD-03 and Product §11.3.
         membership.lifecycle !== "verified"
       ) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
       const termRows = await database
@@ -287,7 +327,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         initialNow < term.startsAt ||
         initialNow >= term.endsAt
       ) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
       const grantRows = await database
@@ -298,7 +338,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
             eq(roleGrants.tenantId, tenant.id),
             eq(roleGrants.guildTermId, term.id),
             eq(roleGrants.membershipId, membership.id),
-            eq(roleGrants.capability, CAPABILITIES.PUBLICATION_CREATE),
+            eq(roleGrants.capability, expectedCapability),
             eq(roleGrants.moduleScope, "publication"),
             isNull(roleGrants.revokedAt),
             gt(roleGrants.expiresAt, initialNow),
@@ -313,7 +353,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           grant.tenantId === tenant.id &&
           grant.guildTermId === term.id &&
           grant.membershipId === membership.id &&
-          grant.capability === CAPABILITIES.PUBLICATION_CREATE &&
+          grant.capability === expectedCapability &&
           grant.moduleScope === "publication" &&
           grant.revokedAt === null &&
           grant.expiresAt > initialNow &&
@@ -321,30 +361,97 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
       );
 
       if (currentGrant === undefined) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
-      // This hook is test-only and runs after every authority row is locked,
-      // but before the fresh time check immediately preceding the INSERT.
-      await beforeFinalCheck?.();
+      if (isEdit) {
+        const publicationRows = await database
+          .select()
+          .from(publications)
+          .where(
+            and(
+              eq(publications.tenantId, request.scope.tenantId),
+              eq(publications.id, options.publicationId!),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        const publication = publicationRows[0];
+
+        if (publication === undefined) {
+          return { allowed: false, code: "NOT_FOUND" };
+        }
+        if (publication.version !== options.expectedVersion) {
+          return { allowed: false, code: "VERSION_CONFLICT" };
+        }
+        if (publication.lifecycle !== "draft") {
+          return { allowed: false, code: "INVALID_STATE" };
+        }
+      }
+
+      // The edit hook runs after the Publication lock; the fresh authority
+      // check is therefore immediately before the guarded UPDATE.
+      await options.beforeFinalCheck?.();
 
       const finalNow = this.dependencies.clock?.now() ?? new Date();
       if (!isValidDate(finalNow)) {
-        return { allowed: false };
+        return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
-      return (
-        term.status === "active" &&
+      return term.status === "active" &&
         finalNow >= term.startsAt &&
         finalNow < term.endsAt &&
         currentGrant.revokedAt === null &&
         currentGrant.expiresAt > finalNow &&
         currentGrant.expiresAt <= term.endsAt
-      )
         ? { allowed: true }
-        : { allowed: false };
+        : { allowed: false, code: "PERMISSION_DENIED" };
     } catch {
-      return { allowed: false };
+      return { allowed: false, code: "PERMISSION_DENIED" };
     }
+  }
+
+  /**
+   * Authoritative commit-time check for Publication creation. The caller must
+   * invoke this with the transaction that will perform the Publication INSERT.
+   * Locks are acquired in Tenant, Membership, GuildTerm, RoleGrant order so
+   * authority-invalidating updates serialize with the mutation.
+   */
+  public async authorizePublicationCreateInTransaction(
+    database: CapabilityTransactionDatabase,
+    request: CapabilityAuthorizationRequest,
+    beforeFinalCheck?: () => Promise<void>,
+  ): Promise<Readonly<{ allowed: true }> | Readonly<{ allowed: false }>> {
+    const decision = await this.authorizePublicationMutationInTransaction(
+      database,
+      request,
+      CAPABILITIES.PUBLICATION_CREATE,
+      { beforeFinalCheck },
+    );
+    return decision.allowed ? decision : { allowed: false };
+  }
+
+  /**
+   * Authoritative commit-time check for a draft Publication edit. The exact
+   * Tenant-bound Publication is locked after the authority rows and before
+   * the final fresh time check.
+   */
+  public async authorizePublicationEditInTransaction(
+    database: CapabilityTransactionDatabase,
+    request: CapabilityAuthorizationRequest,
+    publicationId: string,
+    expectedVersion: number,
+    beforeFinalCheck?: () => Promise<void>,
+  ): Promise<PublicationEditTransactionDecision> {
+    return this.authorizePublicationMutationInTransaction(
+      database,
+      request,
+      CAPABILITIES.PUBLICATION_EDIT,
+      {
+        publicationId,
+        expectedVersion,
+        beforeFinalCheck,
+      },
+    );
   }
 }

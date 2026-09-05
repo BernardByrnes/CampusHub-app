@@ -412,6 +412,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     defaultInitializerIdentifiers: [null],
   },
   {
+    implementationPath: "src/application/content/edit-publication-draft.ts",
+    classIdentity: "EditPublicationDraftService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["EditPublicationDraftServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
     implementationPath: "src/application/content/list-publications.ts",
     classIdentity: "ListPublicationsService",
     constructorModifiers: ["public"],
@@ -521,6 +531,19 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterNames: ["dependencies"],
     parameterTypeTexts: [
       "PostgresAuthorizedPublicationCreateDependencies",
+    ],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-draft-edit.ts",
+    classIdentity: "PostgresAuthorizedPublicationDraftEditExecutor",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: [
+      "PostgresAuthorizedPublicationDraftEditDependencies",
     ],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
@@ -849,6 +872,20 @@ export const tenantSurfaceRegistry = [
       "PostgresCapabilityAuthorizer.authorizePublicationCreateInTransaction",
   },
   {
+    id: "capability.authorization.atomic-publication-edit",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    surface:
+      "PostgresCapabilityAuthorizer.authorizePublicationEditInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Commit-time draft-edit authority locks Tenant, Membership, active Guild Term, RoleGrant(publication.edit), and the exact Publication before a fresh authority check and version-guarded update.",
+    requiredNegativeTestIds: ["publication.edit"],
+    operation:
+      "PostgresCapabilityAuthorizer.authorizePublicationEditInTransaction",
+  },
+  {
     id: "publication.atomic-authorized-create",
     category: "application_service",
     implementationPath:
@@ -861,6 +898,20 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.create"],
     operation:
       "PostgresAuthorizedPublicationCreateExecutor.createAuthorizedPublication",
+  },
+  {
+    id: "publication.atomic-authorized-edit",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-draft-edit.ts",
+    surface:
+      "PostgresAuthorizedPublicationDraftEditExecutor.editAuthorizedPublication",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Preflight is advisory; the authorization decision, exact Publication lock, and version-guarded draft UPDATE share one PostgreSQL transaction.",
+    requiredNegativeTestIds: ["publication.edit"],
+    operation:
+      "PostgresAuthorizedPublicationDraftEditExecutor.editAuthorizedPublication",
   },
   {
     id: "publication.persistence",
@@ -928,6 +979,19 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.create"],
     operation:
       "DrizzlePublicationRepository.createPublicationDraftInTransaction",
+  },
+  {
+    id: "publication.repository.atomic-edit",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.updatePublicationDraftInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The exact Tenant and Publication, expected version, and draft lifecycle are bound in the single version-guarded UPDATE; audience criteria remain outside the edit mutation.",
+    requiredNegativeTestIds: ["publication.edit"],
+    operation:
+      "DrizzlePublicationRepository.updatePublicationDraftInTransaction",
   },
   {
     id: "publication.repository.direct",
@@ -1091,6 +1155,17 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Trusted context and requested Tenant must match before preflight authorization; the authoritative capability check and Tenant-scoped Publication INSERT then share the atomic PostgreSQL gateway transaction.",
     requiredNegativeTestIds: ["publication.create"],
     operation: "CreatePublicationService.createPublication",
+  },
+  {
+    id: "publication.edit",
+    category: "application_service",
+    implementationPath: "src/application/content/edit-publication-draft.ts",
+    surface: "EditPublicationDraftService.editPublicationDraft",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Trusted context and requested Tenant bind before publication.edit preflight; the atomic gateway rechecks current authority and the exact draft Publication before mutation.",
+    requiredNegativeTestIds: ["publication.edit"],
+    operation: "EditPublicationDraftService.editPublicationDraft",
   },
   {
     id: "global.health.route",

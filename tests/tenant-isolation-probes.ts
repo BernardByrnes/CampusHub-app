@@ -12,7 +12,9 @@ import type { ResourceReadViewer } from "@/domain/authorization/resource-read-po
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
 import type { CreatePublicationDraftInput } from "@/domain/content/publication-draft";
+import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
 import { CreatePublicationService } from "@/application/content/create-publication";
+import { EditPublicationDraftService } from "@/application/content/edit-publication-draft";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
 import {
@@ -1114,6 +1116,71 @@ async function publicationCreateProbe(): Promise<void> {
   ]);
 }
 
+async function publicationEditProbe(): Promise<void> {
+  const calls: Array<{ tenantId: string; publicationId: string }> = [];
+  const tenantBMutations: string[] = [];
+  const service = new EditPublicationDraftService({
+    authorizedPublicationDraftEdit: {
+      editAuthorizedPublication: async (
+        _request,
+        tenantId,
+        publicationId,
+      ) => {
+        calls.push({ tenantId, publicationId });
+        if (tenantId === tenantBId) {
+          tenantBMutations.push(publicationId);
+        }
+        return { outcome: "DENIED", code: "NOT_FOUND" };
+      },
+    },
+    capabilityAuthorizer: {
+      authorize: async () => ({ allowed: true }),
+    },
+  });
+  const trustedContext: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+  const editInput: UpdatePublicationDraftInput = {
+    expectedVersion: 1,
+    type: "notice",
+    title: "Tenant A edit probe",
+    body: "Tenant A edit probe body",
+    priority: "standard",
+    visibility: "MEMBERS",
+    authorOfficeLabel: "Communications",
+    expiresAt: null,
+  };
+
+  await expect(
+    service.editPublicationDraft({
+      trustedContext,
+      requestedTenantId: tenantAId,
+      publicationId: foreignPublicationId,
+      edit: editInput,
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "NOT_FOUND" });
+  expect(calls).toEqual([
+    { tenantId: tenantAId, publicationId: foreignPublicationId },
+  ]);
+  expect(tenantBMutations).toHaveLength(0);
+
+  await expect(
+    service.editPublicationDraft({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      publicationId: foreignPublicationId,
+      edit: editInput,
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "TENANT_SCOPE_NOT_FOUND" });
+  expect(calls).toHaveLength(1);
+  expect(tenantBMutations).toHaveLength(0);
+}
+
 async function guildTermActiveProbe(): Promise<void> {
   const database = {
     select: () => {
@@ -1318,6 +1385,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,
+  "publication.edit": publicationEditProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":
     publicationAudienceDefinitionBatchProbe,
