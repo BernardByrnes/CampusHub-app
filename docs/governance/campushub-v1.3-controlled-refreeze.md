@@ -1,44 +1,60 @@
 # CampusHub v1.3 Controlled Refreeze Record
 
-Status: **REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**
+Status: **FROZEN — APPROVED GOVERNING DOCUMENTS**
 
 Repository: BernardByrnes/CampusHub-app
 Branch at preparation: codex/8v-b-next-foundation
 Purpose: traceable reconciliation of the v1.2 frozen governing documents with
 later approved architecture and checkpoint contracts
 
-This record is governance evidence, not an approval. It does not freeze the
-v1.3 candidates, approve A2, approve A4, approve B.2.4, resolve an open
-decision, or authorize a product feature. The v1.2 frozen Product
-Specification and Canonical Prototype Blueprint remain preserved historical
-records.
+Freeze decision: **APPROVED**
+Independent reviewed source SHA: `c036cd8b60e688e6c960f9bd9a4896aae3c789a6`
+Final review result: **0 BLOCKING FINDINGS**
+
+This is the completed controlled-refreeze record for the approved v1.3
+governing documents. It does not approve A2, approve A4, approve B.2.4,
+resolve an open decision, or authorize a product feature. The v1.2 frozen
+Product Specification and Canonical Prototype Blueprint remain preserved
+historical records.
 
 ## 1. Governing-document boundary
 
-The candidate documents are:
+The frozen governing documents are:
 
-- CampusHub_Product_Specification_v1.3_REFREEZE_CANDIDATE.md;
-- CampusHub_Implementation_Blueprint_v1.3_REFREEZE_CANDIDATE.md; and
+- CampusHub_Product_Specification_v1.3_FROZEN.md;
+- CampusHub_Implementation_Blueprint_v1.3_FROZEN.md; and
 - this controlled refreeze record.
 
-The Product Specification candidate defines product WHAT/WHY. The
-Implementation Blueprint candidate defines production HOW. Neither candidate
-silently overrides the frozen v1.2 Product Specification before explicit
-review and approval. The historical static prototype remains useful for visual
-and interaction reference only where it does not conflict with product
-authority.
+The Product Specification defines product WHAT/WHY. The Implementation
+Blueprint defines production HOW subordinate to the Product Specification.
+Code cannot silently override governing authority, and later controlled
+supersessions remain explicit. The historical static prototype remains useful
+for visual and interaction reference only where it does not conflict with
+current product authority; it is not elevated by this freeze.
+
+The post-freeze internal authority order is:
+
+1. applicable external binding authority;
+2. `CampusHub_Product_Specification_v1.3_FROZEN.md`;
+3. approved Product Owner decisions and controlled supersessions;
+4. approved architecture/security ADRs;
+5. independently approved checkpoint contracts;
+6. `CampusHub_Implementation_Blueprint_v1.3_FROZEN.md` for subordinate
+   production HOW; and
+7. implementation.
 
 The refreeze vocabulary in this record is deliberate:
 
 - **DOCUMENTATION SYNC — NO NEW PRODUCT DECISION** means an approved authority
-  or implementation contract is being represented accurately in the candidate;
+  or implementation contract is being represented accurately in the governing
+  documents;
   and
 - **NEW/OPEN PRODUCT DECISION REQUIRED** means the existing authority is
   insufficient and the matter remains in the open register.
 
 ## 2. Approval preservation
 
-The v1.3 candidate does not rebind any earlier approval:
+The v1.3 freeze does not rebind any earlier approval:
 
 | Checkpoint | Historical reviewed implementation SHA | Historical decision | v1.3 treatment |
 | --- | --- | --- | --- |
@@ -47,9 +63,8 @@ The v1.3 candidate does not rebind any earlier approval:
 | B.2.4 | 84c58cc2b525e1061fb4652906968c54ac3a00b3 | B2_4_APPROVED_WITH_NONBLOCKING_OBLIGATIONS | Preserved at the independently reviewed implementation SHA. |
 | B.2.4 closure record | 7016c345d3c0d0b1052bb80821de73e3e29c5e25 | Documentation closure record | Recorded as post-review documentation; it does not rebind the implementation approval. |
 
-The v1.3 refreeze documentation commit, when made, will occur after these
-reviewed SHAs. It is not itself independently reviewed merely because it
-records them.
+The v1.3 freeze packaging commit occurs after these reviewed SHAs and does not
+change their approval subjects or reviewed implementation identities.
 
 ## 3. CR-01 through CR-17 traceability
 
@@ -75,7 +90,7 @@ records them.
 
 ## 4. Supersession and prototype tombstones
 
-No historical text is deleted. The v1.3 candidates mark these old directions as
+No historical text is deleted. The v1.3 frozen documents mark these old directions as
 superseded, prototype-only, or not a production contract:
 
 | Historical direction | v1.3 treatment | Supporting trace |
@@ -224,8 +239,9 @@ approval, or frozen-document declaration.
 - **Product behavior changed?:** NO new product behavior. Canonical active v1.2
   authority was restored in one understandable candidate document.
 - **Runtime impact:** NONE.
-- **Blocker disposition:** Candidate remains pending independent product and
-  architecture review; the historical v1.2 file remains unchanged.
+- **Blocker disposition at R1:** The candidate remained pending independent
+  product and architecture review until the approved freeze recorded in §7C;
+  the historical v1.2 file remains unchanged.
 
 ### V13-REV-04 — Participation / GSC-14 scope inconsistency
 
@@ -297,8 +313,35 @@ runtime behavior.
   recorded, but v1.2 remains current frozen authority until approval.
 - **Product behavior changed?:** NO.
 - **Runtime impact:** NONE.
-- **Blocker status:** v1.3 remains a pending refreeze candidate and is not
-  frozen or current authority.
+- **Blocker status at R2:** v1.3 remained a pending refreeze candidate until
+  the approved freeze recorded in §7C; OD-13 itself remains open and no
+  product branch was resolved.
+
+## 7C. Final v1.3 freeze decision
+
+The independent review approved the v1.3 governing-document refreeze:
+
+| Field | Final record |
+| --- | --- |
+| Freeze decision | **APPROVED** |
+| Independent reviewed source SHA | `c036cd8b60e688e6c960f9bd9a4896aae3c789a6` |
+| Final review result | **0 BLOCKING FINDINGS** |
+| Runtime impact | **NONE** |
+| Product scope change | **NONE** |
+| Frozen Product artifact | `CampusHub_Product_Specification_v1.3_FROZEN.md` |
+| Frozen production HOW artifact | `CampusHub_Implementation_Blueprint_v1.3_FROZEN.md` |
+
+The packaging preserves the complete R0/R1/R2 review history in Git:
+
+| Review state | SHA | Record |
+| --- | --- | --- |
+| Initial v1.3 candidate | `85beeaeb20fa9816f8495d3ec755968bfb8ccf2f` | Initial refreeze candidate |
+| R1 | `d515468f3ae125931b3bcacfe594eb10df878de6` | Independent-review remediation R1 |
+| R2 independently approved source | `c036cd8b60e688e6c960f9bd9a4896aae3c789a6` | Final consistency cleanup source |
+
+R0, R1, and R2 remain visible through Git history. The freeze approves the
+governing contract; it does not make every feature implementation-ready and it
+does not close OD-01 through OD-13.
 
 ## 8. Preservation and validation record
 
@@ -310,23 +353,33 @@ separate static-prototype repository and were not modified:
 | C:\Users\NANCY\CampusHub\CampusHub_Product_Specification_v1.2_FROZEN.md | 6DADB2508D2DFAB19DACF6E9FA5F4265245BCF1E9228BC9B311747A40435F5E4 |
 | C:\Users\NANCY\CampusHub\CampusHub_Canonical_Prototype_Blueprint_v1.2_FROZEN.md | 94BD8DB07309978848BAF8C53F20E4437F600EA1304DA300359337998D91B0E4 |
 
-The v1.3 work changes documentation/governance candidates only. It does not
-change production runtime code, tests, schema, migration history, RLS posture,
-the static prototype, or any prior reviewed implementation SHA.
+The v1.3 freeze packaging changes governing-document filenames, status, and
+authority metadata only. It does not change production runtime code, tests,
+schema, migration history, RLS posture, the static prototype, or any prior
+reviewed implementation SHA.
 
-The migration head remains drizzle/0008_loving_dagger.sql. The v1.3 candidates
-remain pending review and must not be labelled FROZEN until explicit approval.
+The migration head remains drizzle/0008_loving_dagger.sql. The v1.3 frozen
+documents are current internal authority after the approved freeze; their
+explicit open decisions and feature/Pilot gates remain in force.
 
-## 9. Review decision required
+## 9. Post-freeze governance constraints
 
-Before this candidate can become v1.3-FROZEN, reviewers must verify:
+The freeze does not authorize implementation beyond the applicable governing
+contract and gates. Implementation agents must continue to verify:
 
-- Product Specification behavior remains faithful to frozen product authority;
+- Product Specification behavior remains faithful to the frozen Product
+  Specification;
 - each CR is a traceable synchronization or explicitly marked open decision;
-- the Implementation Blueprint describes the real Next.js production boundary;
+- the frozen Implementation Blueprint describes the real Next.js production
+  boundary;
 - A2, A4, and B.2.4 approvals remain bound to their historical SHAs;
 - all nonblocking obligations remain unresolved where stated;
 - v1.2 frozen files and migrations are unchanged; and
 - no implementation behavior has been silently expanded by this documentation.
 
-**REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**
+Open decisions remain open after freeze, including ordinary capability-grant
+semantics, the sponsorship OD-13 contradiction, numeric policy values, A1,
+background execution, and future privileged/Auth boundaries. A feature-specific
+gate is not a whole-project blocker.
+
+**FROZEN — APPROVED GOVERNING DOCUMENTS**

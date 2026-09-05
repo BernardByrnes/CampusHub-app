@@ -1,11 +1,13 @@
-# CampusHub Implementation Blueprint v1.3 — Refreeze Candidate
+# CampusHub Implementation Blueprint v1.3 — FROZEN
 
-Status: **REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**
+Status: **FROZEN — APPROVED GOVERNING DOCUMENT**
 
-Version: 1.3 candidate
+Version: 1.3
 Role: production HOW contract for the CampusHub application
-Product authority: CampusHub Product Specification v1.2 — FROZEN, pending
-explicit approval of the v1.3 Product Specification candidate
+Product authority: CampusHub Product Specification v1.3 — FROZEN
+
+CampusHub Implementation Blueprint v1.3 — FROZEN is the current internal
+production HOW contract subordinate to the Product Specification.
 
 This document is a production Implementation Blueprint. It is not the
 historical static-prototype Blueprint and it does not preserve prototype
@@ -24,13 +26,15 @@ and screen conveniences are not production authority.
 The implementation authority order is:
 
 1. applicable external binding authority;
-2. approved/frozen Product Specification;
+2. `CampusHub_Product_Specification_v1.3_FROZEN.md`;
 3. approved Product Owner decisions and controlled supersessions;
 4. approved architecture/security ADRs;
-5. independently approved checkpoint contracts; and
-6. implementation.
+5. independently approved checkpoint contracts;
+6. `CampusHub_Implementation_Blueprint_v1.3_FROZEN.md` for production HOW
+   where subordinate authority placement is applicable; and
+7. implementation.
 
-This candidate incorporates the approved production-stack supersession in ADR
+This frozen Blueprint incorporates the approved production-stack supersession in ADR
 0001 and the approved A2, A4, and B.2.4 contracts. It does not re-approve
 those checkpoints, change their reviewed SHAs, or authorize a product feature.
 
@@ -224,8 +228,8 @@ mode has at least one valid group.
 ### 5.5 Migration discipline
 
 The append-only current migration history ends at
-drizzle/0008_loving_dagger.sql. No migration is introduced by this Blueprint
-candidate. Existing migrations are not rewritten. Future mandatory-column
+drizzle/0008_loving_dagger.sql. No migration is introduced by this frozen
+Blueprint. Existing migrations are not rewritten. Future mandatory-column
 changes on populated tables use an expand/backfill/contract-safe process.
 
 The approved A2 contract does not require RLS for the current gate. That
@@ -421,7 +425,7 @@ was queued by a previously authorized actor. Invalid scheduled targeting is
 held/fail-closed rather than broadened.
 
 Outbox/delivery patterns remain a future implementation decision. No new
-background implementation is created by this candidate.
+background implementation is created by this frozen Blueprint.
 
 ## 13. Future Tenant surfaces
 
@@ -470,7 +474,7 @@ No legal conclusion is invented here.
 
 No Auth provider, Global User table, credentials, sessions, JWT implementation,
 OAuth provider, MFA persistence, or account recovery implementation is
-authorized by this candidate. Future Auth must preserve A4: account/security
+authorized by this frozen Blueprint. Future Auth must preserve A4: account/security
 data is separate from Tenant Membership behaviour.
 
 ### 15.2 Polls
@@ -542,7 +546,7 @@ evidence must cover Publication visibility, targeting, persistence, direct
 reads, collections, readiness, count, confirmation, and isolation.
 
 The current migration head remains drizzle/0008_loving_dagger.sql. No RLS
-requirement is added by this candidate. A1/Poll and A10 remain separate gates.
+requirement is added by this frozen Blueprint. A1/Poll and A10 remain separate gates.
 
 ## 17. Current implementation map
 
@@ -569,7 +573,7 @@ The independently reviewed checkpoint bindings remain historical:
   84c58cc2b525e1061fb4652906968c54ac3a00b3, with closure documentation at
   7016c345d3c0d0b1052bb80821de73e3e29c5e25.
 
-This v1.3 documentation candidate is after those reviews and does not rebind
+This v1.3 frozen documentation is packaged after those reviews and does not rebind
 any approval to its own commit.
 
 ## 18. Release and review discipline
@@ -579,14 +583,15 @@ an exact starting SHA, exact changed-file set, relevant tests, migration
 state, and final SHA. Independent review binds to the implementation SHA
 specified by that review, not to a later documentation or packaging commit.
 
-The v1.3 candidates are not frozen. Product-owner, architecture, security,
-legal, and relevant human review must explicitly approve the candidate before
-it can replace v1.2 authority. Open decisions in the controlled refreeze
-register remain blockers at their stated timing.
+The v1.3 governing documents are frozen after independent approval and replace
+v1.2 as current internal authority. Product-owner, architecture, security,
+legal, and relevant human review obligations remain applicable to future
+controlled supersessions, and open decisions in the controlled refreeze
+register remain open at their stated timing.
 
 ## 19. Canonical story and acceptance-criteria traceability
 
-The Product Specification candidate is the canonical product source for WHAT and
+The frozen Product Specification is the canonical product source for WHAT and
 WHY. This Blueprint traces implementation work to stable Product Specification
 identifiers without copying their acceptance criteria into the HOW document.
 Every implementation change must identify the exact story ID and acceptance
@@ -643,7 +648,7 @@ The implementation authorization record for a change must contain:
 6. unit, orchestration, integration, Tenant-negative, and regression tests; and
 7. the release/checkpoint evidence and independent reviewer required.
 
-The v1.3 candidate itself is not an implementation authorization. In particular,
+The frozen v1.3 documents are not an implementation authorization. In particular,
 it does not authorize Auth, ordinary capability grants, sponsorship, Polls,
 Events, Opportunities, XP, Voice, Notifications, moderation, UI, background
 jobs, or a new migration. The Initial Provisioning Grant is a Product authority
@@ -661,7 +666,7 @@ documentation work:
 | Scope | Product Specification carry-forward, Blueprint conformance, and governance remediation only. |
 | Runtime/schema state | No runtime, test, schema, migration, or historical-ADR change authorized. |
 | Migration head | drizzle/0008_loving_dagger.sql; no migration created by R1. |
-| Product state | Candidate remains pending independent re-review; v1.3 is not frozen. |
+| Product state | v1.3 governing documents are frozen after independent approval; explicit open decisions remain open. |
 | Approval bindings | A2, A4, and B.2.4 remain bound to their historical reviewed SHAs. |
 | Open gates | OD-01 ordinary grants, OD-02, OD-03, OD-04, OD-05, OD-06, OD-07, OD-08, OD-09, OD-10, OD-11, OD-12, and OD-13 at their stated boundaries. |
 | Exit evidence | Exact changed-file set, canonical ID counts, frozen-file hashes, diff checks, focused governance tests, clean worktree, and independent review. |
@@ -724,20 +729,20 @@ redaction/cache/media/search/export invalidation obligations, no cross-Tenant
 promotion, and the honest limit that unmanaged downloaded bytes cannot be
 remotely deleted.
 
-The following are explicit N/A for this candidate, with rationale:
+The following are explicit N/A for this frozen Blueprint, with rationale:
 
 | Mechanism | Rationale |
 | --- | --- |
 | RLS | Not required for the current A2 contract; application Tenant predicates and negative tests remain mandatory. |
 | Auth provider and Global User persistence | Future and blocked by the A4/OD-03 boundary. |
 | Background runner/outbox implementation | Future and blocked by OD-08. |
-| Hosting/deployment provider selection | Not a Product decision and not selected by this Blueprint candidate. |
+| Hosting/deployment provider selection | Not a Product decision and not selected by this frozen Blueprint. |
 | New migration or recovery execution | No schema/runtime work is authorized by R1. |
 
 ## 24. Checkpoint, regression, and conformance discipline
 
-The candidate retains these historical bindings without rebinding them to the
-R1 commit:
+The frozen Blueprint retains these historical bindings without rebinding them to
+the packaging commit:
 
 - A2: ed3674bc8689aacd1075161215d16cd4994efcac;
 - A4: 279a3b7d2f2e5fbe87e4d74025884ec9bd229060; and
@@ -754,7 +759,7 @@ The documentation/governance regression set must assert that:
 - OD-13 preserves the two supplied broad sponsorship branches and blocks only
   the disputed verified-student branch;
 - GSC-14, CH-HOM-002, and feature gates agree that Save and Follow are in scope;
-- candidate status is pending review and never FROZEN;
+- v1.3 status is FROZEN — APPROVED GOVERNING DOCUMENT and open decisions remain open;
 - no Product Spec statement is used to authorize a runtime feature without its
   required checkpoint and open-decision evidence; and
 - migration head, frozen-file hashes, historical approvals, and changed-file
@@ -763,4 +768,4 @@ The documentation/governance regression set must assert that:
 This is the approved conformance mechanism for R1; it does not add a product
 feature or a new runtime test requirement.
 
-**REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**
+**FROZEN — APPROVED GOVERNING DOCUMENT**

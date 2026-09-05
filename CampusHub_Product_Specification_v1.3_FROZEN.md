@@ -1,19 +1,28 @@
-# CampusHub Product Specification v1.3 — Refreeze Candidate
+# CampusHub Product Specification v1.3 — FROZEN
 
-**Status:** REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW
+**Status:** FROZEN — APPROVED GOVERNING DOCUMENT
 Predecessor: CampusHub Product Specification v1.2 — FROZEN
 
 | Field | Value |
 |-------|-------|
-| **Status** | **REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW** |
-| **Supersedes** | Will supersede CampusHub Product Specification v1.2 — FROZEN upon explicit approval/freeze |
+| **Status** | **FROZEN — APPROVED GOVERNING DOCUMENT** |
+| **Supersedes** | CampusHub Product Specification v1.2 — FROZEN |
 | **Audience** | UX/UI design, technical architecture, engineering, QA, commercial, legal review |
 | **Product Scope Changes** | **NONE** |
 
 > **Scope-freeze note:** Architecture blockers, UX blockers, legal items and explicitly open implementation decisions remain unresolved by design. They are not represented as finished by this product-scope freeze.
 | **Document owner** | Principal Product Manager, CampusHub |
 
-> **Refreeze note:** This is a complete carried-forward candidate. Active v1.2 product authority and stable governed identifiers remain in this document; the controlled v1.3 corrections and review registers appear in §§40–45. The candidate remains pending explicit Product Owner and architecture review.
+CampusHub Product Specification v1.3 — FROZEN supersedes CampusHub Product
+Specification v1.2 — FROZEN as the current internal Product authority. The
+v1.2 file remains preserved as a historical frozen authority record for
+traceability and is not deleted or invalidated.
+
+> **Refreeze note:** This is the complete carried-forward frozen Product
+> authority. Active v1.2 product authority and stable governed identifiers
+> remain in this document; the controlled v1.3 corrections and review registers
+> appear in §§40–45. This document is approved as the governing Product
+> Specification, while its explicit open decisions remain open.
 
 ---
 
@@ -65,7 +74,7 @@ Predecessor: CampusHub Product Specification v1.2 — FROZEN
 42. [v1.3 Feature-Gated Audit Register](#42-v13-feature-gated-audit-register)
 43. [v1.3 Pilot Readiness Register](#43-v13-pilot-readiness-register)
 44. [v1.3 Canonical Completeness and Change Control](#44-v13-canonical-completeness-and-change-control)
-45. [v1.3 Candidate Review Status](#45-v13-candidate-review-status)
+45. [v1.3 Frozen Review Status](#45-v13-frozen-review-status)
 
 ---
 
@@ -4599,13 +4608,13 @@ v1.2 supersedes v1.1 as the frozen product-scope document. It applies bounded co
 *End of CampusHub Product Specification v1.2 — FROZEN.*
 ## 40. v1.3 Controlled Corrections and Canonical Carry-Forward
 
-This section is normative for the v1.3 candidate. Sections 1–39 carry forward the
+This section is normative for the frozen v1.3 specification. Sections 1–39 carry forward the
 complete active v1.2 Product Specification, including its stories, acceptance
 criteria, Trust Invariants, Global Story Contracts, state models, release
 boundaries, product risks, and human-review obligations. The corrections below
 make later approved authority and unresolved contradictions explicit within this
-single candidate; they do not require a reader to merge a separate summary with
-v1.2.
+single frozen specification; they do not require a reader to merge a separate
+summary with v1.2.
 
 ### 40.1 Carry-forward and authority rule
 
@@ -4619,8 +4628,9 @@ historical D/GOV identifiers are also carried forward without silent renumbering
 
 A statement in sections 1–39 that is expressly qualified by a v1.3 correction
 below is read together with that correction. The v1.2 frozen file remains an
-unchanged historical record. The v1.3 candidate is the complete internal
-successor under review, not a summary overlay and not a new product freeze.
+unchanged historical record. This frozen v1.3 specification is the complete
+internal successor, not a summary overlay; its explicit open decisions remain
+open.
 
 ### 40.2 CORRECTION — EXISTING PRODUCT AUTHORITY RESTORED: Initial Provisioning Grant
 
@@ -4657,15 +4667,15 @@ authority prohibits targeting or exclusion by verification assurance level.
 Because the third branch is assurance-derived, these statements are internally
 inconsistent.
 
-This candidate preserves the entire-university and specific-campus branches.
+This specification preserves the entire-university and specific-campus branches.
 It also preserves the all-product-defined-verified-students branch as an
 explicitly disputed supplied branch, but marks it PARTIALLY BLOCKED / PRODUCT
 DECISION REQUIRED. No product decision is made here. The unresolved authority
 must choose whether to remove that branch, approve a narrowly justified
-exception to TI-4, or adopt another interpretation; this candidate chooses
+exception to TI-4, or adopt another interpretation; this specification chooses
 none of those options.
 
-OD-13 remains OPEN; this candidate does not authorize the disputed branch or
+OD-13 remains OPEN; this specification does not authorize the disputed branch or
 choose its eventual product treatment.
 
 Until OD-13 is closed, sponsorship implementation may not use the disputed
@@ -4690,7 +4700,7 @@ must cite this scope when describing actionability. Save and Follow remain
 Tenant-local, idempotent, and zero XP. A client-side toggle is presentation
 only and cannot grant the action.
 
-**Governance assertion V13-GSC14-01:** a candidate is inconsistent and must
+**Governance assertion V13-GSC14-01:** this frozen specification is inconsistent and must
 fail review if GSC-14, CH-HOM-002, or any feature-gate entry names a different
 set of shared-evaluator actions. This is a documentation/governance assertion,
 not a new product gate.
@@ -4704,11 +4714,11 @@ simplified Membership vocabulary, PriorityNotice-as-entity, and hard-coded
 XP/Quiz values. These are historical tombstones or superseded directions;
 they are not new product features and do not delete the original v1.2 record.
 
-### 40.6 Candidate authority and status
+### 40.6 Frozen authority and status
 
-This candidate does not independently approve A2, A4, or B.2.4. Their
+This frozen specification does not independently rebind A2, A4, or B.2.4. Their
 historical review SHAs remain binding in the controlled refreeze record. This
-candidate does not authorize Auth, Poll implementation, sponsorship
+frozen specification does not authorize Auth, Poll implementation, sponsorship
 implementation, Events, Opportunities, XP, Voice, Notifications,
 moderation, UI, or a migration.
 
@@ -4808,15 +4818,16 @@ are not silently erased from history. These documentation corrections do not
 implement a feature, authorize a migration, or change the historical approval
 bindings.
 
-## 45. v1.3 Candidate Review Status
+## 45. v1.3 Frozen Review Status
 
-The candidate status remains:
+The document status is:
 
-**REFREEZE CANDIDATE — PENDING PRODUCT/ARCHITECTURE REVIEW**
+**FROZEN — APPROVED GOVERNING DOCUMENT**
 
-Product Owner, architecture, security/privacy, legal, and any relevant
-independent reviewers must approve the candidate before it can replace the
-v1.2 frozen authority. No A2, A4, or B.2.4 approval is claimed by this
-document.
+The independent review decision is **CAMPUSHUB v1.3 GOVERNING DOCUMENT
+REFREEZE — APPROVED FOR FREEZE** with **0 BLOCKING FINDINGS**. The freeze does
+not close OD-01 through OD-13, authorize an unapproved feature, or rebind any
+A2, A4, or B.2.4 approval. The v1.2 documents remain preserved historical
+records for traceability.
 
-*End of CampusHub Product Specification v1.3 — REFREEZE CANDIDATE.*
+*End of CampusHub Product Specification v1.3 — FROZEN.*
