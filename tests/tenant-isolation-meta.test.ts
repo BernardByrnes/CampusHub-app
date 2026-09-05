@@ -107,12 +107,37 @@ function currentRegistryValidationInput(): RegistryValidationInput {
   };
 }
 
+const currentRegistryBaseline = currentRegistryValidationInput();
+
+function cloneRegistryValidationInput(
+  input: RegistryValidationInput,
+): RegistryValidationInput {
+  return {
+    ...input,
+    registry: [...input.registry],
+    discoveredTenantModels: [...input.discoveredTenantModels],
+    governedImplementationPaths: [...input.governedImplementationPaths],
+    discoveredOperations: [...input.discoveredOperations],
+    discoveredUnsupportedOperationForms: [
+      ...input.discoveredUnsupportedOperationForms,
+    ],
+    productionImportBoundaryViolations: [
+      ...input.productionImportBoundaryViolations,
+    ],
+    discoveredMigrationPaths: [...input.discoveredMigrationPaths],
+    isolationProbeIds: new Set(input.isolationProbeIds),
+  };
+}
+
 function currentRegistryValidationInputWithSourceOverrides(
   sourceOverrides: Readonly<Record<string, string>>,
-  baseInput: RegistryValidationInput = currentRegistryValidationInput(),
+  baseInput?: RegistryValidationInput,
 ): RegistryValidationInput {
+  const base = cloneRegistryValidationInput(
+    baseInput ?? currentRegistryBaseline,
+  );
   const overriddenPaths = new Set(
-    baseInput.governedImplementationPaths.filter(
+    base.governedImplementationPaths.filter(
       (implementationPath) => sourceOverrides[implementationPath] !== undefined,
     ),
   );
@@ -132,15 +157,15 @@ function currentRegistryValidationInputWithSourceOverrides(
   );
 
   return {
-    ...baseInput,
+    ...base,
     discoveredOperations: [
-      ...baseInput.discoveredOperations.filter(
+      ...base.discoveredOperations.filter(
         (operation) => !overriddenPaths.has(operation.implementationPath),
       ),
       ...overriddenOperations,
     ],
     discoveredUnsupportedOperationForms: [
-      ...baseInput.discoveredUnsupportedOperationForms.filter(
+      ...base.discoveredUnsupportedOperationForms.filter(
         (form) => !overriddenPaths.has(form.implementationPath),
       ),
       ...overriddenUnsupported,
@@ -204,7 +229,7 @@ function fixtureInput(
 
 describe("Tenant isolation governance registry", () => {
   it("declares discovered Tenant models, operations, migrations, and every governed path", () => {
-    expect(validateTenantSurfaceRegistry(currentRegistryValidationInput())).toEqual(
+    expect(validateTenantSurfaceRegistry(currentRegistryBaseline)).toEqual(
       [],
     );
   }, 30_000);
@@ -777,7 +802,7 @@ describe("Tenant isolation governance registry", () => {
     ];
     const safeConstructor =
       "public constructor(private readonly database: CampusHubDatabase = db) {}";
-    const baseInput = currentRegistryValidationInput();
+    const baseInput = currentRegistryBaseline;
 
     for (const repository of repositories) {
       const sourceText = readFileSync(
@@ -1301,7 +1326,7 @@ describe("Tenant isolation governance registry", () => {
       path.join(repositoryRoot, implementationPath),
       "utf8",
     );
-    const baseInput = currentRegistryValidationInput();
+    const baseInput = currentRegistryBaseline;
 
     expectFullRegistryValidationFailure(
       { [implementationPath]: `${sourceText}\nperformTenantSensitiveWork();\n` },
@@ -2033,7 +2058,7 @@ describe("Tenant isolation governance registry", () => {
   });
 
   it("fails when the Publication create operation is removed from the registry", () => {
-    const current = currentRegistryValidationInput();
+    const current = currentRegistryBaseline;
     const errors = validateTenantSurfaceRegistry({
       ...current,
       registry: tenantSurfaceRegistry.filter(
