@@ -4,13 +4,14 @@ import { parseAssuranceLevel } from "@/domain/authorization/assurance-level";
 import { CAPABILITIES } from "@/domain/authorization/capability";
 import {
   isCapabilityAuthorizationDecision,
+  type CapabilityAuthorizationRequest,
   type CapabilityAuthorizer,
 } from "@/domain/authorization/capability-authorization";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { parseMembershipLifecycle } from "@/domain/membership/membership";
 import { parseTenantLifecycle } from "@/domain/tenancy/tenant";
-import type { Publication } from "@/domain/content/publication";
+import { isPublication, type Publication } from "@/domain/content/publication";
 import type {
   CreatePublicationInput,
 } from "@/server/repositories/publication-repository";
@@ -35,16 +36,29 @@ export type CreatePublicationResult =
   | Readonly<{ outcome: "CREATED"; publication: Publication }>
   | Readonly<{ outcome: "DENIED"; code: CreatePublicationDenialCode }>;
 
-export type CreatePublicationRepository = Readonly<{
-  createPublication(
+export type AtomicPublicationCreateResult =
+  | Readonly<{ outcome: "CREATED"; publication: Publication }>
+  | Readonly<{
+      outcome: "DENIED";
+      code: "PERMISSION_DENIED" | "PERSISTENCE_FAILED";
+    }>;
+
+/**
+ * The commit-time authority boundary for privileged Publication creation.
+ * A successful preflight decision is never sufficient to call this gateway;
+ * the implementation must re-evaluate authority inside the write transaction.
+ */
+export type AuthorizedPublicationCreateGateway = Readonly<{
+  createAuthorizedPublication(
+    request: CapabilityAuthorizationRequest,
     tenantId: string,
     input: CreatePublicationInput,
-  ): Promise<Publication | null>;
+  ): Promise<AtomicPublicationCreateResult>;
 }>;
 
 export type CreatePublicationServiceDependencies = Readonly<{
-  publications: CreatePublicationRepository;
   capabilityAuthorizer: CapabilityAuthorizer;
+  authorizedPublicationCreate: AuthorizedPublicationCreateGateway;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,10 +88,27 @@ function denied(code: CreatePublicationDenialCode): CreatePublicationResult {
   return { outcome: "DENIED", code };
 }
 
+function isAtomicPublicationCreateResult(
+  value: unknown,
+): value is AtomicPublicationCreateResult {
+  if (!isRecord(value) || (value.outcome !== "CREATED" && value.outcome !== "DENIED")) {
+    return false;
+  }
+
+  if (value.outcome === "CREATED") {
+    return isPublication(value.publication);
+  }
+
+  return (
+    value.code === "PERMISSION_DENIED" || value.code === "PERSISTENCE_FAILED"
+  );
+}
+
 /**
  * Minimal trusted-context seam for a future create route or server action.
  * Matching scope is a necessary boundary check, not permission to create.
- * Capability authorization is a separate server-owned dependency.
+ * The preflight capability check is useful for early rejection, but only the
+ * transaction-bound gateway may commit the privileged mutation.
  */
 export class CreatePublicationService {
   public constructor(
@@ -100,27 +131,31 @@ export class CreatePublicationService {
       return denied("TENANT_SCOPE_NOT_FOUND");
     }
 
+    const authorizationRequest: CapabilityAuthorizationRequest = {
+      actor: {
+        identitySubjectId: input.trustedContext.identitySubjectId,
+        tenantId: input.trustedContext.tenantId,
+        membershipId: input.trustedContext.membershipId,
+      },
+      context: {
+        tenantStatus: input.trustedContext.tenantStatus,
+        membershipStatus: input.trustedContext.membershipStatus,
+        assuranceLevel: input.trustedContext.assuranceLevel,
+      },
+      capability: CAPABILITIES.PUBLICATION_CREATE,
+      scope: {
+        tenantId: input.requestedTenantId,
+        module: "publication",
+        resource: "publication",
+      },
+    };
+
     let authorizationDecision: unknown;
     try {
       authorizationDecision =
-        await this.dependencies.capabilityAuthorizer.authorize({
-          actor: {
-            identitySubjectId: input.trustedContext.identitySubjectId,
-            tenantId: input.trustedContext.tenantId,
-            membershipId: input.trustedContext.membershipId,
-          },
-          context: {
-            tenantStatus: input.trustedContext.tenantStatus,
-            membershipStatus: input.trustedContext.membershipStatus,
-            assuranceLevel: input.trustedContext.assuranceLevel,
-          },
-          capability: CAPABILITIES.PUBLICATION_CREATE,
-          scope: {
-            tenantId: input.requestedTenantId,
-            module: "publication",
-            resource: "publication",
-          },
-        });
+        await this.dependencies.capabilityAuthorizer.authorize(
+          authorizationRequest,
+        );
     } catch {
       return denied("PERMISSION_DENIED");
     }
@@ -132,18 +167,20 @@ export class CreatePublicationService {
       return denied("PERMISSION_DENIED");
     }
 
-    let publication: Publication | null;
     try {
-      publication = await this.dependencies.publications.createPublication(
-        input.requestedTenantId,
-        input.publication,
-      );
+      const result =
+        await this.dependencies.authorizedPublicationCreate.createAuthorizedPublication(
+          authorizationRequest,
+          input.requestedTenantId,
+          input.publication,
+        );
+      if (!isAtomicPublicationCreateResult(result)) {
+        return denied("PERSISTENCE_FAILED");
+      }
+
+      return result;
     } catch {
       return denied("PERSISTENCE_FAILED");
     }
-
-    return publication === null
-      ? denied("PERSISTENCE_FAILED")
-      : { outcome: "CREATED", publication };
   }
 }

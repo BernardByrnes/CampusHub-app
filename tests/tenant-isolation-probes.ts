@@ -1043,10 +1043,10 @@ async function publicationCollectionProbe(): Promise<void> {
 async function publicationCreateProbe(): Promise<void> {
   const calls: Array<{ tenantId: string; input: CreatePublicationInput }> = [];
   const service = new CreatePublicationService({
-    publications: {
-      createPublication: async (tenantId, input) => {
+    authorizedPublicationCreate: {
+      createAuthorizedPublication: async (_request, tenantId, input) => {
         calls.push({ tenantId, input });
-        return publicationA;
+        return { outcome: "CREATED", publication: publicationA };
       },
     },
     capabilityAuthorizer: {
@@ -1130,6 +1130,7 @@ async function roleGrantCapabilityProbe(): Promise<void> {
       capability: "publication.create",
       moduleScope: "publication",
       now,
+      termEndsAt: new Date("2026-12-31T23:59:59.000Z"),
     }),
   ).resolves.toBeNull();
 }

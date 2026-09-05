@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte } from "drizzle-orm";
 
 import {
   parseCapability,
@@ -49,6 +49,7 @@ export type CapabilityGrantLookup = Readonly<{
   capability: Capability;
   moduleScope: CapabilityModuleScope;
   now: Date;
+  termEndsAt: Date;
 }>;
 
 export type RoleGrantAuthorizationReader = Readonly<{
@@ -70,7 +71,9 @@ export class DrizzleRoleGrantRepository
       !isUuid(input.guildTermId) ||
       !isUuid(input.membershipId) ||
       !(input.now instanceof Date) ||
-      Number.isNaN(input.now.getTime())
+      Number.isNaN(input.now.getTime()) ||
+      !(input.termEndsAt instanceof Date) ||
+      Number.isNaN(input.termEndsAt.getTime())
     ) {
       return null;
     }
@@ -87,9 +90,10 @@ export class DrizzleRoleGrantRepository
           eq(roleGrants.moduleScope, input.moduleScope),
           isNull(roleGrants.revokedAt),
           gt(roleGrants.expiresAt, input.now),
+          lte(roleGrants.expiresAt, input.termEndsAt),
         ),
       )
-      .limit(1);
+      .orderBy(asc(roleGrants.createdAt), asc(roleGrants.id));
 
     return rows[0] ? toRoleGrant(rows[0]) : null;
   }

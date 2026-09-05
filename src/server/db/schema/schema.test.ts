@@ -270,8 +270,12 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(grantConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual(
       expect.arrayContaining([
         "role_grants_tenant_id_id_unique",
-        "role_grants_tenant_term_membership_capability_module_unique",
       ]),
+    );
+    expect(
+      grantConfig.uniqueConstraints.map((constraint) => constraint.name),
+    ).not.toContain(
+      "role_grants_tenant_term_membership_capability_module_unique",
     );
     expect(grantConfig.foreignKeys.map((foreignKey) => {
       const reference = foreignKey.reference();

@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0009_swift_salo.sql",
+    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -512,6 +512,19 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
   },
+  {
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-create.ts",
+    classIdentity: "PostgresAuthorizedPublicationCreateExecutor",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: [
+      "PostgresAuthorizedPublicationCreateDependencies",
+    ],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
 ] as const satisfies readonly ReviewedNonOperationalConstructorContract[];
 
 /**
@@ -822,6 +835,34 @@ export const tenantSurfaceRegistry = [
     operation: "PostgresCapabilityAuthorizer.authorize",
   },
   {
+    id: "capability.authorization.atomic-publication-create",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    surface:
+      "PostgresCapabilityAuthorizer.authorizePublicationCreateInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Commit-time Publication authority locks the exact Tenant, Membership, active Guild Term, and current valid RoleGrant in stable order before the same transaction inserts the Publication.",
+    requiredNegativeTestIds: ["publication.create"],
+    operation:
+      "PostgresCapabilityAuthorizer.authorizePublicationCreateInTransaction",
+  },
+  {
+    id: "publication.atomic-authorized-create",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-create.ts",
+    surface:
+      "PostgresAuthorizedPublicationCreateExecutor.createAuthorizedPublication",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The authorization decision and Publication INSERT share one PostgreSQL transaction; a preflight allowed result cannot authorize a later mutation.",
+    requiredNegativeTestIds: ["publication.create"],
+    operation:
+      "PostgresAuthorizedPublicationCreateExecutor.createAuthorizedPublication",
+  },
+  {
     id: "publication.persistence",
     category: "model",
     implementationPath: "src/server/db/schema/publication.ts",
@@ -884,6 +925,17 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Publication writes accept only a canonical Tenant UUID and persist that ownership field.",
     requiredNegativeTestIds: ["publication.create"],
     operation: "DrizzlePublicationRepository.createPublication",
+  },
+  {
+    id: "publication.repository.atomic-create",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface: "DrizzlePublicationRepository.createPublicationInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The insert helper accepts only the caller's existing PostgreSQL transaction handle, preserving the atomic authorization and Publication write boundary.",
+    requiredNegativeTestIds: ["publication.create"],
+    operation: "DrizzlePublicationRepository.createPublicationInTransaction",
   },
   {
     id: "publication.repository.direct",
@@ -1044,7 +1096,7 @@ export const tenantSurfaceRegistry = [
     implementationPath: "src/application/content/create-publication.ts",
     surface: "CreatePublicationService.createPublication",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Trusted context and requested Tenant must match before server-owned capability authorization and the repository write; scope validation is not capability authorization.",
+    isolationStrategy: "Trusted context and requested Tenant must match before preflight authorization; the authoritative capability check and Tenant-scoped Publication INSERT then share the atomic PostgreSQL gateway transaction.",
     requiredNegativeTestIds: ["publication.create"],
     operation: "CreatePublicationService.createPublication",
   },
@@ -1126,8 +1178,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0009_swift_salo.sql",
-    surface: "Reviewed Drizzle migration history through 0009",
+    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
+    surface: "Reviewed Drizzle migration history through 0010",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1143,8 +1195,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0007_optimal_mockingbird.sql",
       "drizzle/0008_loving_dagger.sql",
       "drizzle/0009_swift_salo.sql",
+      "drizzle/0010_yielding_ghost_rider.sql",
     ],
-    migrationHead: "drizzle/0009_swift_salo.sql",
+    migrationHead: "drizzle/0010_yielding_ghost_rider.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

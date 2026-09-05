@@ -877,7 +877,7 @@ describe("real Supabase PostgreSQL foundation", () => {
       Number(
         (journalResult.rows[0] as { migration_count: number }).migration_count,
       ),
-    ).toBe(10);
+    ).toBe(11);
   });
 
   it("generates distinct UUID defaults for Tenant and Membership", async () => {
@@ -1012,9 +1012,18 @@ describe("real Supabase PostgreSQL foundation", () => {
     const { CreatePublicationService } = await import(
       "@/application/content/create-publication"
     );
+    const { PostgresAuthorizedPublicationCreateExecutor } = await import(
+      "@/server/authorization/postgres-authorized-publication-create"
+    );
     const service = new CreatePublicationService({
-      publications: getPublicationRepository(),
       capabilityAuthorizer: getCapabilityAuthorizer(),
+      authorizedPublicationCreate:
+        new PostgresAuthorizedPublicationCreateExecutor(
+          {
+            database: getDatabase(),
+            authorizer: getCapabilityAuthorizer(),
+          },
+        ),
     });
     const publicationInput: CreatePublicationInput = {
       type: "notice",

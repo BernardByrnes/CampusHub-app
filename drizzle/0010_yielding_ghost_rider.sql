@@ -1,0 +1,1 @@
+ALTER TABLE "role_grants" DROP CONSTRAINT "role_grants_tenant_term_membership_capability_module_unique";

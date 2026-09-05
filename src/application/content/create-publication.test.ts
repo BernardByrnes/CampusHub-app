@@ -8,7 +8,7 @@ import type { CreatePublicationInput } from "@/server/repositories/publication-r
 import {
   CreatePublicationService,
   type CreatePublicationCommand,
-  type CreatePublicationRepository,
+  type AuthorizedPublicationCreateGateway,
 } from "./create-publication";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
@@ -71,25 +71,29 @@ function createService(
   },
 ): {
   service: CreatePublicationService;
-  createPublication: ReturnType<typeof vi.fn>;
+  createAuthorizedPublication: ReturnType<typeof vi.fn>;
   authorize: CapabilityAuthorizer["authorize"];
 } {
-  const createPublication = vi.fn<
-    CreatePublicationRepository["createPublication"]
-  >(async () => result);
+  const createAuthorizedPublication = vi.fn<
+    AuthorizedPublicationCreateGateway["createAuthorizedPublication"]
+  >(async () =>
+    result === null
+      ? { outcome: "DENIED", code: "PERSISTENCE_FAILED" }
+      : { outcome: "CREATED", publication: result },
+  );
   return {
     service: new CreatePublicationService({
-      publications: { createPublication },
       capabilityAuthorizer,
+      authorizedPublicationCreate: { createAuthorizedPublication },
     }),
-    createPublication,
+    createAuthorizedPublication,
     authorize: capabilityAuthorizer.authorize,
   };
 }
 
 describe("CreatePublicationService", () => {
   it("AUTH-03 rejects a Tenant B request before authorization or repository access", async () => {
-    const { service, createPublication, authorize } = createService();
+    const { service, createAuthorizedPublication, authorize } = createService();
 
     await expect(
       service.createPublication(command({ requestedTenantId: tenantBId })),
@@ -98,7 +102,7 @@ describe("CreatePublicationService", () => {
       code: "TENANT_SCOPE_NOT_FOUND",
     });
     expect(authorize).not.toHaveBeenCalled();
-    expect(createPublication).not.toHaveBeenCalled();
+    expect(createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("rejects malformed Tenant or trusted-context UUIDs before repository access", async () => {
@@ -108,7 +112,7 @@ describe("CreatePublicationService", () => {
         command({ requestedTenantId: "not-a-uuid" }),
       ),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
-    expect(first.createPublication).not.toHaveBeenCalled();
+    expect(first.createAuthorizedPublication).not.toHaveBeenCalled();
 
     const second = createService();
     await expect(
@@ -118,11 +122,11 @@ describe("CreatePublicationService", () => {
         } as never),
       ),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
-    expect(second.createPublication).not.toHaveBeenCalled();
+    expect(second.createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("AUTH-01 denies when publication.create authorization is denied", async () => {
-    const { service, createPublication } = createService(publication, {
+    const { service, createAuthorizedPublication } = createService(publication, {
       authorize: vi.fn<CapabilityAuthorizer["authorize"]>(async () => ({
         allowed: false,
       })),
@@ -132,25 +136,31 @@ describe("CreatePublicationService", () => {
       outcome: "DENIED",
       code: "PERMISSION_DENIED",
     });
-    expect(createPublication).not.toHaveBeenCalled();
+    expect(createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("AUTH-02 creates after affirmative authorization and passes canonical input unchanged", async () => {
-    const { service, createPublication } = createService();
+    const { service, createAuthorizedPublication } = createService();
 
     await expect(service.createPublication(command())).resolves.toEqual({
       outcome: "CREATED",
       publication,
     });
-    expect(createPublication).toHaveBeenCalledTimes(1);
-    expect(createPublication).toHaveBeenCalledWith(tenantAId, publicationInput);
+    expect(createAuthorizedPublication).toHaveBeenCalledTimes(1);
+    expect(createAuthorizedPublication).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: expect.objectContaining({ tenantId: tenantAId }),
+      }),
+      tenantAId,
+      publicationInput,
+    );
   });
 
   it("AUTH-04 fails closed when authorization throws", async () => {
     const authorize = vi.fn<CapabilityAuthorizer["authorize"]>(async () => {
       throw new Error("authorization unavailable");
     });
-    const { service, createPublication } = createService(publication, {
+    const { service, createAuthorizedPublication } = createService(publication, {
       authorize,
     });
 
@@ -158,14 +168,14 @@ describe("CreatePublicationService", () => {
       outcome: "DENIED",
       code: "PERMISSION_DENIED",
     });
-    expect(createPublication).not.toHaveBeenCalled();
+    expect(createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("AUTH-05 fails closed on a malformed authorization response", async () => {
     const malformedAuthorizer = {
       authorize: vi.fn(async () => null),
     } as unknown as CapabilityAuthorizer;
-    const { service, createPublication } = createService(
+    const { service, createAuthorizedPublication } = createService(
       publication,
       malformedAuthorizer,
     );
@@ -174,7 +184,7 @@ describe("CreatePublicationService", () => {
       outcome: "DENIED",
       code: "PERMISSION_DENIED",
     });
-    expect(createPublication).not.toHaveBeenCalled();
+    expect(createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("AUTH-06, AUTH-07, and AUTH-08 request the fixed capability with trusted actor and Tenant facts", async () => {
@@ -216,7 +226,7 @@ describe("CreatePublicationService", () => {
       })),
     });
     await denied.service.createPublication(command());
-    expect(denied.createPublication).not.toHaveBeenCalled();
+    expect(denied.createAuthorizedPublication).not.toHaveBeenCalled();
 
     const thrown = createService(publication, {
       authorize: vi.fn<CapabilityAuthorizer["authorize"]>(async () => {
@@ -224,13 +234,13 @@ describe("CreatePublicationService", () => {
       }),
     });
     await thrown.service.createPublication(command());
-    expect(thrown.createPublication).not.toHaveBeenCalled();
+    expect(thrown.createAuthorizedPublication).not.toHaveBeenCalled();
 
     const malformed = createService(publication, {
       authorize: vi.fn(async () => ({ allowed: "yes" })) as never,
     });
     await malformed.service.createPublication(command());
-    expect(malformed.createPublication).not.toHaveBeenCalled();
+    expect(malformed.createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
   it("AUTH-10 preserves persistence failure after affirmative authorization", async () => {
@@ -240,18 +250,18 @@ describe("CreatePublicationService", () => {
       code: "PERSISTENCE_FAILED",
     });
 
-    const thrownRepository: CreatePublicationRepository = {
-      createPublication: vi.fn(async () => {
+    const thrownGateway: AuthorizedPublicationCreateGateway = {
+      createAuthorizedPublication: vi.fn(async () => {
         throw new Error("database unavailable");
       }),
     };
     const thrownService = new CreatePublicationService({
-      publications: thrownRepository,
       capabilityAuthorizer: {
         authorize: vi.fn<CapabilityAuthorizer["authorize"]>(async () => ({
           allowed: true,
         })),
       },
+      authorizedPublicationCreate: thrownGateway,
     });
     await expect(thrownService.createPublication(command())).resolves.toEqual({
       outcome: "DENIED",

@@ -890,6 +890,76 @@ async function readPublicationAudienceReadinessSnapshot(
   };
 }
 
+type PublicationInsertDatabase = Pick<CampusHubDatabase, "insert">;
+
+async function createPublicationUsingDatabase(
+  database: PublicationInsertDatabase,
+  tenantId: string,
+  input: CreatePublicationInput,
+): Promise<Publication | null> {
+  if (
+    !isUuid(tenantId) ||
+    typeof input !== "object" ||
+    input === null
+  ) {
+    return null;
+  }
+
+  const candidate = input as Record<string, unknown>;
+  const type = parsePublicationType(candidate.type);
+  const priority =
+    candidate.priority === undefined
+      ? "standard"
+      : parsePublicationPriority(candidate.priority);
+  const lifecycle =
+    candidate.lifecycle === undefined
+      ? "draft"
+      : parsePublicationLifecycle(candidate.lifecycle);
+  const audienceMode = parsePublicationAudienceMode(candidate.audienceMode);
+  const visibility =
+    candidate.visibility === undefined
+      ? "MEMBERS"
+      : parseResourceVisibility(candidate.visibility);
+  const publishAt =
+    candidate.publishAt === undefined ? null : candidate.publishAt;
+  const expiresAt =
+    candidate.expiresAt === undefined ? null : candidate.expiresAt;
+
+  if (
+    type === null ||
+    priority === null ||
+    lifecycle === null ||
+    audienceMode === null ||
+    visibility === null ||
+    !isNonEmptyString(candidate.title) ||
+    !isNonEmptyString(candidate.body) ||
+    !isNonEmptyString(candidate.authorOfficeLabel) ||
+    !isNullableDate(publishAt) ||
+    !isNullableDate(expiresAt)
+  ) {
+    return null;
+  }
+
+  const rows = await database
+    .insert(publications)
+    .values({
+      tenantId,
+      type,
+      title: candidate.title,
+      body: candidate.body,
+      priority,
+      visibility,
+      lifecycle,
+      audienceMode,
+      authorOfficeLabel: candidate.authorOfficeLabel,
+      publishAt,
+      expiresAt,
+    })
+    .returning();
+
+  return rows[0] ? toPublication(rows[0]) : null;
+}
+
 export class DrizzlePublicationRepository {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
@@ -897,67 +967,15 @@ export class DrizzlePublicationRepository {
     tenantId: string,
     input: CreatePublicationInput,
   ): Promise<Publication | null> {
-    if (
-      !isUuid(tenantId) ||
-      typeof input !== "object" ||
-      input === null
-    ) {
-      return null;
-    }
+    return createPublicationUsingDatabase(this.database, tenantId, input);
+  }
 
-    const candidate = input as Record<string, unknown>;
-    const type = parsePublicationType(candidate.type);
-    const priority =
-      candidate.priority === undefined
-        ? "standard"
-        : parsePublicationPriority(candidate.priority);
-    const lifecycle =
-      candidate.lifecycle === undefined
-        ? "draft"
-        : parsePublicationLifecycle(candidate.lifecycle);
-    const audienceMode = parsePublicationAudienceMode(candidate.audienceMode);
-    const visibility =
-      candidate.visibility === undefined
-        ? "MEMBERS"
-        : parseResourceVisibility(candidate.visibility);
-    const publishAt =
-      candidate.publishAt === undefined ? null : candidate.publishAt;
-    const expiresAt =
-      candidate.expiresAt === undefined ? null : candidate.expiresAt;
-
-    if (
-      type === null ||
-      priority === null ||
-      lifecycle === null ||
-      audienceMode === null ||
-      visibility === null ||
-      !isNonEmptyString(candidate.title) ||
-      !isNonEmptyString(candidate.body) ||
-      !isNonEmptyString(candidate.authorOfficeLabel) ||
-      !isNullableDate(publishAt) ||
-      !isNullableDate(expiresAt)
-    ) {
-      return null;
-    }
-
-    const rows = await this.database
-      .insert(publications)
-      .values({
-        tenantId,
-        type,
-        title: candidate.title,
-        body: candidate.body,
-        priority,
-        visibility,
-        lifecycle,
-        audienceMode,
-        authorOfficeLabel: candidate.authorOfficeLabel,
-        publishAt,
-        expiresAt,
-      })
-      .returning();
-
-    return rows[0] ? toPublication(rows[0]) : null;
+  public async createPublicationInTransaction(
+    transaction: PublicationInsertDatabase,
+    tenantId: string,
+    input: CreatePublicationInput,
+  ): Promise<Publication | null> {
+    return createPublicationUsingDatabase(transaction, tenantId, input);
   }
 
   public async findPublicationByIdForTenant(

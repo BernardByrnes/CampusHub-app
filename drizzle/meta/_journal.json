@@ -71,6 +71,13 @@
       "when": 1788593790779,
       "tag": "0009_swift_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788600645181,
+      "tag": "0010_yielding_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

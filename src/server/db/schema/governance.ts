@@ -124,15 +124,6 @@ export const roleGrants = pgTable(
   },
   (table) => [
     unique("role_grants_tenant_id_id_unique").on(table.tenantId, table.id),
-    unique(
-      "role_grants_tenant_term_membership_capability_module_unique",
-    ).on(
-      table.tenantId,
-      table.guildTermId,
-      table.membershipId,
-      table.capability,
-      table.moduleScope,
-    ),
     index("role_grants_tenant_membership_capability").on(
       table.tenantId,
       table.membershipId,
