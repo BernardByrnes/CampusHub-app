@@ -1781,7 +1781,8 @@ describe("Tenant isolation governance registry", () => {
             category: "repository",
             tenantScope: "TENANT_ROOT",
             implementationPath: "src/server/repositories/publication-repository.ts",
-            operation: "DrizzlePublicationRepository.createPublication",
+            operation:
+              "DrizzlePublicationRepository.createPublicationDraftInTransaction",
           }),
         ],
         governedImplementationPaths: [

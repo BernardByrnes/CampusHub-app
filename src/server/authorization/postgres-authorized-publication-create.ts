@@ -5,8 +5,8 @@ import type {
   AuthorizedPublicationCreateGateway,
 } from "@/application/content/create-publication";
 import type { CapabilityAuthorizationRequest } from "@/domain/authorization/capability-authorization";
+import type { CanonicalPublicationDraftInput } from "@/domain/content/publication-draft";
 import { isUuid } from "@/domain/identifiers/uuid";
-import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { PostgresCapabilityAuthorizer } from "./postgres-capability-authorizer";
@@ -37,7 +37,7 @@ export class PostgresAuthorizedPublicationCreateExecutor
   public async createAuthorizedPublication(
     request: CapabilityAuthorizationRequest,
     tenantId: string,
-    input: CreatePublicationInput,
+    input: CanonicalPublicationDraftInput,
   ): Promise<AtomicPublicationCreateResult> {
     try {
       if (
@@ -60,7 +60,7 @@ export class PostgresAuthorizedPublicationCreateExecutor
           return { outcome: "DENIED", code: "PERMISSION_DENIED" } as const;
         }
 
-        const publication = await new DrizzlePublicationRepository().createPublicationInTransaction(
+        const publication = await new DrizzlePublicationRepository().createPublicationDraftInTransaction(
           transaction,
           tenantId,
           input,

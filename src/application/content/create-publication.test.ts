@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CAPABILITIES } from "@/domain/authorization/capability";
 import type { CapabilityAuthorizer } from "@/domain/authorization/capability-authorization";
 import type { Publication } from "@/domain/content/publication";
-import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
+import type { CreatePublicationDraftInput } from "@/domain/content/publication-draft";
 
 import {
   CreatePublicationService,
@@ -25,12 +25,18 @@ const trustedContext = {
   membershipStatus: "verified" as const,
 };
 
-const publicationInput: CreatePublicationInput = {
+const publicationInput: CreatePublicationDraftInput = {
   type: "news",
   title: "Tenant A notice",
   body: "Tenant A notice body",
   audienceMode: "entire_tenant",
   authorOfficeLabel: "Communications",
+};
+const canonicalPublicationInput = {
+  ...publicationInput,
+  priority: "standard" as const,
+  visibility: "MEMBERS" as const,
+  expiresAt: null,
 };
 
 const publication: Publication = {
@@ -139,7 +145,7 @@ describe("CreatePublicationService", () => {
     expect(createAuthorizedPublication).not.toHaveBeenCalled();
   });
 
-  it("AUTH-02 creates after affirmative authorization and passes canonical input unchanged", async () => {
+  it("AUTH-02 creates after affirmative authorization and passes canonical draft input", async () => {
     const { service, createAuthorizedPublication } = createService();
 
     await expect(service.createPublication(command())).resolves.toEqual({
@@ -152,8 +158,66 @@ describe("CreatePublicationService", () => {
         actor: expect.objectContaining({ tenantId: tenantAId }),
       }),
       tenantAId,
-      publicationInput,
+      canonicalPublicationInput,
     );
+  });
+
+  it("DRAFT-04 through DRAFT-06 preserve explicit visibility, priority, and expiry as draft metadata", async () => {
+    const expiresAt = new Date("2026-12-01T00:00:00.000Z");
+    const explicitInput = {
+      ...publicationInput,
+      priority: "priority" as const,
+      visibility: "PUBLIC" as const,
+      expiresAt,
+    };
+    const { service, createAuthorizedPublication } = createService();
+
+    await expect(
+      service.createPublication(command({ publication: explicitInput })),
+    ).resolves.toEqual({ outcome: "CREATED", publication });
+    expect(createAuthorizedPublication).toHaveBeenCalledWith(
+      expect.anything(),
+      tenantAId,
+      explicitInput,
+    );
+  });
+
+  it("DRAFT-SEC rejects forged lifecycle, publish, ownership, actor, and media fields before authorization", async () => {
+    const forgedFields: readonly Record<string, unknown>[] = [
+      { lifecycle: "published" },
+      { lifecycle: "scheduled" },
+      { lifecycle: "expired" },
+      { lifecycle: "archived" },
+      { publishAt: new Date("2026-10-01T00:00:00.000Z") },
+      { id: publicationId },
+      { tenantId: tenantBId },
+      { version: 9 },
+      { createdAt: new Date("2026-01-01T00:00:00.000Z") },
+      { updatedAt: new Date("2026-01-01T00:00:00.000Z") },
+      { actorId: "attacker" },
+      { membershipId: membershipAId },
+      { identitySubjectId: "attacker" },
+      { role: "publisher" },
+      { capability: CAPABILITIES.PUBLICATION_CREATE },
+      { isPublisher: true },
+      { isAdmin: true },
+      { image: "image.png" },
+      { attachment: "attachment.pdf" },
+      { file: "file.bin" },
+      { mediaUrl: "https://example.test/media" },
+    ];
+
+    for (const forgedField of forgedFields) {
+      const { service, authorize, createAuthorizedPublication } =
+        createService();
+      await expect(
+        service.createPublication(
+          command({ publication: { ...publicationInput, ...forgedField } }),
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+      expect(authorize).not.toHaveBeenCalled();
+      expect(createAuthorizedPublication).not.toHaveBeenCalled();
+    }
   });
 
   it("AUTH-04 fails closed when authorization throws", async () => {

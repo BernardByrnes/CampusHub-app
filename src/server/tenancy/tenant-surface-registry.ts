@@ -917,25 +917,17 @@ export const tenantSurfaceRegistry = [
     operation: "PersistedPublicationAudienceBatchResolver.resolveAudienceBatch",
   },
   {
-    id: "publication.repository.create",
-    category: "repository",
-    implementationPath: "src/server/repositories/publication-repository.ts",
-    surface: "DrizzlePublicationRepository.createPublication",
-    tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Publication writes accept only a canonical Tenant UUID and persist that ownership field.",
-    requiredNegativeTestIds: ["publication.create"],
-    operation: "DrizzlePublicationRepository.createPublication",
-  },
-  {
     id: "publication.repository.atomic-create",
     category: "repository",
     implementationPath: "src/server/repositories/publication-repository.ts",
-    surface: "DrizzlePublicationRepository.createPublicationInTransaction",
+    surface:
+      "DrizzlePublicationRepository.createPublicationDraftInTransaction",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy:
-      "The insert helper accepts only the caller's existing PostgreSQL transaction handle, preserving the atomic authorization and Publication write boundary.",
+      "The insert helper accepts only the caller's existing PostgreSQL transaction handle and hardcodes server-owned version 1, draft lifecycle, and null publishAt values.",
     requiredNegativeTestIds: ["publication.create"],
-    operation: "DrizzlePublicationRepository.createPublicationInTransaction",
+    operation:
+      "DrizzlePublicationRepository.createPublicationDraftInTransaction",
   },
   {
     id: "publication.repository.direct",

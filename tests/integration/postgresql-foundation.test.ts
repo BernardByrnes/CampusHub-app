@@ -51,11 +51,11 @@ import type { NewTenantRow, TenantRow } from "@/server/db/schema/tenant";
 import type { Pool } from "pg";
 
 import type { RequestContextService } from "@/application/context/resolve-request-context";
+import type { CreatePublicationDraftInput } from "@/domain/content/publication-draft";
 import type {
   ReadPublicationInput,
   ReadPublicationService,
 } from "@/application/content/read-publication";
-import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 import type {
   ListPublicationsInput,
   ListPublicationsService,
@@ -891,19 +891,23 @@ describe("real Supabase PostgreSQL foundation", () => {
 
   it("generates a Publication UUID and round-trips exact fields", async () => {
     const tenant = await createTenant({ slug: nextSlug("publication-round-trip") });
+    const inserted = await createPublication(tenant.id, {
+      type: "notice",
+      title: "Synthetic notice",
+      body: "Synthetic notice body",
+      priority: "priority",
+      visibility: "PUBLIC",
+      lifecycle: "published",
+      audienceMode: "targeted",
+      authorOfficeLabel: "Guild President's Office",
+      publishAt: new Date("2030-01-15T09:30:00.000Z"),
+      expiresAt: new Date("2030-02-15T09:30:00.000Z"),
+    });
     const created = requireValue(
-      await getPublicationRepository().createPublication(tenant.id, {
-        type: "notice",
-        title: "Synthetic notice",
-        body: "Synthetic notice body",
-        priority: "priority",
-        visibility: "PUBLIC",
-        lifecycle: "published",
-        audienceMode: "targeted",
-        authorOfficeLabel: "Guild President's Office",
-        publishAt: new Date("2030-01-15T09:30:00.000Z"),
-        expiresAt: new Date("2030-02-15T09:30:00.000Z"),
-      }),
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        inserted.id,
+      ),
       "Publication repository did not return the inserted row.",
     );
 
@@ -936,14 +940,14 @@ describe("real Supabase PostgreSQL foundation", () => {
 
   it("uses the standard priority default and nullable timestamps for drafts", async () => {
     const tenant = await createTenant({ slug: nextSlug("publication-draft-defaults") });
+    const inserted = await createPublication(tenant.id, {
+      authorOfficeLabel: "Sports Office",
+    });
     const created = requireValue(
-      await getPublicationRepository().createPublication(tenant.id, {
-        type: "news",
-        title: "Synthetic draft",
-        body: "Synthetic draft body",
-        audienceMode: "entire_tenant",
-        authorOfficeLabel: "Sports Office",
-      }),
+      await getPublicationRepository().findPublicationByIdForTenant(
+        tenant.id,
+        inserted.id,
+      ),
       "Publication draft defaults were not returned.",
     );
 
@@ -973,13 +977,21 @@ describe("real Supabase PostgreSQL foundation", () => {
   it("rejects a Publication referencing a nonexistent Tenant", async () => {
     await expectPostgresCode(
       () =>
-        getPublicationRepository().createPublication(randomUUID(), {
-          type: "news",
-          title: "Synthetic foreign publication",
-          body: "This insert must fail at the Tenant foreign key.",
-          audienceMode: "entire_tenant",
-          authorOfficeLabel: "Guild Communications Office",
-        }),
+        getDatabase()
+          .insert(publications)
+          .values({
+            tenantId: randomUUID(),
+            type: "news",
+            title: "Synthetic foreign publication",
+            body: "This insert must fail at the Tenant foreign key.",
+            priority: "standard",
+            visibility: "MEMBERS",
+            lifecycle: "draft",
+            audienceMode: "entire_tenant",
+            authorOfficeLabel: "Guild Communications Office",
+            publishAt: null,
+            expiresAt: null,
+          }),
       "23503",
     );
   });
@@ -1025,7 +1037,7 @@ describe("real Supabase PostgreSQL foundation", () => {
           },
         ),
     });
-    const publicationInput: CreatePublicationInput = {
+    const publicationInput: CreatePublicationDraftInput = {
       type: "notice",
       title: `Trusted Tenant A create ${runPrefix}`,
       body: "Created through the matching trusted Tenant context.",
@@ -1091,10 +1103,22 @@ describe("real Supabase PostgreSQL foundation", () => {
 
     await expectPostgresCode(
       () =>
-        getPublicationRepository().createPublication(randomUUID(), {
-          ...publicationInput,
-          title: `Foreign FK create ${runPrefix}`,
-        }),
+        getDatabase()
+          .insert(publications)
+          .values({
+            tenantId: randomUUID(),
+            version: 1,
+            type: publicationInput.type,
+            title: `Foreign FK create ${runPrefix}`,
+            body: publicationInput.body,
+            priority: "standard",
+            visibility: "MEMBERS",
+            lifecycle: "draft",
+            audienceMode: publicationInput.audienceMode,
+            authorOfficeLabel: publicationInput.authorOfficeLabel,
+            publishAt: null,
+            expiresAt: null,
+          }),
       "23503",
     );
   });
@@ -1113,7 +1137,9 @@ describe("real Supabase PostgreSQL foundation", () => {
     });
     const termA = await createGuildTerm(tenantA.id);
     const termB = await createGuildTerm(tenantB.id);
-    const grantA = await createRoleGrant(tenantA.id, termA.id, membershipA.id);
+    const grantA = await createRoleGrant(tenantA.id, termA.id, membershipA.id, {
+      createdAt: CAPABILITY_NOW,
+    });
     await createRoleGrant(tenantB.id, termB.id, membershipB.id);
 
     const authorizationRequest = (

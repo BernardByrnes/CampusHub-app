@@ -11,6 +11,7 @@ import {
 import type { ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import type { Publication } from "@/domain/content/publication";
+import type { CreatePublicationDraftInput } from "@/domain/content/publication-draft";
 import { CreatePublicationService } from "@/application/content/create-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
@@ -41,7 +42,6 @@ import { DrizzlePublicationRepository } from "@/server/repositories/publication-
 import { DrizzleGuildTermRepository } from "@/server/repositories/guild-term-repository";
 import { DrizzleRoleGrantRepository } from "@/server/repositories/role-grant-repository";
 import { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
-import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
 const tenantBId = "00000000-0000-4000-8000-000000000002";
@@ -100,6 +100,11 @@ const publicationA: Publication = {
   expiresAt: null,
   createdAt: tenantA.createdAt,
   updatedAt: tenantA.updatedAt,
+};
+const publicationDraftA: Publication = {
+  ...publicationA,
+  lifecycle: "draft",
+  publishAt: null,
 };
 
 function expectTenantOwnedTable(table: unknown): void {
@@ -1041,12 +1046,15 @@ async function publicationCollectionProbe(): Promise<void> {
 }
 
 async function publicationCreateProbe(): Promise<void> {
-  const calls: Array<{ tenantId: string; input: CreatePublicationInput }> = [];
+  const calls: Array<{
+    tenantId: string;
+    input: CreatePublicationDraftInput;
+  }> = [];
   const service = new CreatePublicationService({
     authorizedPublicationCreate: {
       createAuthorizedPublication: async (_request, tenantId, input) => {
         calls.push({ tenantId, input });
-        return { outcome: "CREATED", publication: publicationA };
+        return { outcome: "CREATED", publication: publicationDraftA };
       },
     },
     capabilityAuthorizer: {
@@ -1061,12 +1069,18 @@ async function publicationCreateProbe(): Promise<void> {
     assuranceLevel: "L2",
     membershipStatus: "verified",
   };
-  const publicationInput: CreatePublicationInput = {
+  const publicationInput: CreatePublicationDraftInput = {
     type: "news",
     title: "Tenant A create probe",
     body: "Tenant A create probe body",
     audienceMode: "entire_tenant",
     authorOfficeLabel: "Communications",
+  };
+  const canonicalPublicationInput = {
+    ...publicationInput,
+    priority: "standard" as const,
+    visibility: "MEMBERS" as const,
+    expiresAt: null,
   };
 
   await expect(
@@ -1094,9 +1108,9 @@ async function publicationCreateProbe(): Promise<void> {
       requestedTenantId: tenantAId,
       publication: publicationInput,
     }),
-  ).resolves.toEqual({ outcome: "CREATED", publication: publicationA });
+  ).resolves.toEqual({ outcome: "CREATED", publication: publicationDraftA });
   expect(calls).toEqual([
-    { tenantId: tenantAId, input: publicationInput },
+    { tenantId: tenantAId, input: canonicalPublicationInput },
   ]);
 }
 

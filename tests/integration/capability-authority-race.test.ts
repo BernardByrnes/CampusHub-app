@@ -7,7 +7,7 @@ import type * as schema from "@/server/db/schema";
 import type { CampusHubDatabase } from "@/server/db/client";
 import type { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
 import type { PostgresAuthorizedPublicationCreateExecutor } from "@/server/authorization/postgres-authorized-publication-create";
-import type { CreatePublicationInput } from "@/server/repositories/publication-repository";
+import type { CanonicalPublicationDraftInput } from "@/domain/content/publication-draft";
 
 const NOW = new Date("2026-09-05T12:00:00.000Z");
 const TERM_START = new Date("2026-01-01T00:00:00.000Z");
@@ -167,13 +167,16 @@ function requestFor(fixture: Awaited<ReturnType<typeof createFixture>>) {
 
 type CapabilityRaceRequest = ReturnType<typeof requestFor>;
 
-function publicationInput(label: string): CreatePublicationInput {
+function publicationInput(label: string): CanonicalPublicationDraftInput {
   return {
     type: "notice",
     title: `Atomic capability ${label}`,
     body: `Atomic capability body ${label}`,
+    priority: "standard",
+    visibility: "MEMBERS",
     audienceMode: "entire_tenant",
     authorOfficeLabel: "Guild Communications Office",
+    expiresAt: null,
   };
 }
 
@@ -482,6 +485,56 @@ describe("durable capability commit-time authorization", () => {
       endsAt: ONE_SECOND_AFTER_NOW,
     });
     await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
+  });
+
+  it("DRAFT-01 through DRAFT-03 create only canonical draft defaults", async () => {
+    const fixture = await createFixture();
+    const result = await executor().createAuthorizedPublication(
+      requestFor(fixture),
+      fixture.tenant.id,
+      publicationInput("draft-defaults"),
+    );
+
+    expect(result).toMatchObject({
+      outcome: "CREATED",
+      publication: {
+        tenantId: fixture.tenant.id,
+        version: 1,
+        priority: "standard",
+        visibility: "MEMBERS",
+        lifecycle: "draft",
+        publishAt: null,
+        expiresAt: null,
+      },
+    });
+    await expect(publicationCount(fixture.tenant.id)).resolves.toBe(1);
+  });
+
+  it("DRAFT-04 through DRAFT-06 persist supported metadata without publishing", async () => {
+    const fixture = await createFixture();
+    const expiresAt = new Date("2026-11-01T00:00:00.000Z");
+    const result = await executor().createAuthorizedPublication(
+      requestFor(fixture),
+      fixture.tenant.id,
+      {
+        ...publicationInput("draft-metadata"),
+        priority: "priority",
+        visibility: "PUBLIC",
+        expiresAt,
+      },
+    );
+
+    expect(result).toMatchObject({
+      outcome: "CREATED",
+      publication: {
+        priority: "priority",
+        visibility: "PUBLIC",
+        lifecycle: "draft",
+        publishAt: null,
+        expiresAt,
+      },
+    });
+    await expect(publicationCount(fixture.tenant.id)).resolves.toBe(1);
   });
 
   it("rejects a stale preflight allow after the grant is revoked", async () => {

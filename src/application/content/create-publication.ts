@@ -8,18 +8,19 @@ import {
   type CapabilityAuthorizer,
 } from "@/domain/authorization/capability-authorization";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
+import {
+  parseCreatePublicationDraftInput,
+  type CanonicalPublicationDraftInput,
+} from "@/domain/content/publication-draft";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { parseMembershipLifecycle } from "@/domain/membership/membership";
 import { parseTenantLifecycle } from "@/domain/tenancy/tenant";
 import { isPublication, type Publication } from "@/domain/content/publication";
-import type {
-  CreatePublicationInput,
-} from "@/server/repositories/publication-repository";
 
 export type CreatePublicationCommand = Readonly<{
   trustedContext: TrustedRequestContext;
   requestedTenantId: string;
-  publication: CreatePublicationInput;
+  publication: unknown;
 }>;
 
 export const CREATE_PUBLICATION_DENIAL_CODES = [
@@ -52,7 +53,7 @@ export type AuthorizedPublicationCreateGateway = Readonly<{
   createAuthorizedPublication(
     request: CapabilityAuthorizationRequest,
     tenantId: string,
-    input: CreatePublicationInput,
+    input: CanonicalPublicationDraftInput,
   ): Promise<AtomicPublicationCreateResult>;
 }>;
 
@@ -96,7 +97,12 @@ function isAtomicPublicationCreateResult(
   }
 
   if (value.outcome === "CREATED") {
-    return isPublication(value.publication);
+    return (
+      isPublication(value.publication) &&
+      value.publication.version === 1 &&
+      value.publication.lifecycle === "draft" &&
+      value.publication.publishAt === null
+    );
   }
 
   return (
@@ -121,9 +127,13 @@ export class CreatePublicationService {
     if (
       !isRecord(input) ||
       !isTrustedRequestContext(input.trustedContext) ||
-      !isUuid(input.requestedTenantId) ||
-      !isRecord(input.publication)
+      !isUuid(input.requestedTenantId)
     ) {
+      return denied("INVALID_INPUT");
+    }
+
+    const draft = parseCreatePublicationDraftInput(input.publication);
+    if (draft === null) {
       return denied("INVALID_INPUT");
     }
 
@@ -172,7 +182,7 @@ export class CreatePublicationService {
         await this.dependencies.authorizedPublicationCreate.createAuthorizedPublication(
           authorizationRequest,
           input.requestedTenantId,
-          input.publication,
+          draft,
         );
       if (!isAtomicPublicationCreateResult(result)) {
         return denied("PERSISTENCE_FAILED");
