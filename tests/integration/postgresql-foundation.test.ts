@@ -872,6 +872,9 @@ describe("real Supabase PostgreSQL foundation", () => {
     );
     const service = new CreatePublicationService({
       publications: getPublicationRepository(),
+      capabilityAuthorizer: {
+        authorize: async () => ({ allowed: true }),
+      },
     });
     const publicationInput: CreatePublicationInput = {
       type: "notice",

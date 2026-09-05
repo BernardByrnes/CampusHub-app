@@ -23,6 +23,8 @@ const serverOnlyModules = [
   "src/application/content/create-publication.ts",
   "src/application/content/publication-read-resolvers.ts",
   "src/domain/authorization/context-policy.ts",
+  "src/domain/authorization/capability.ts",
+  "src/domain/authorization/capability-authorization.ts",
   "src/domain/authorization/trusted-request-context.ts",
   "src/domain/authorization/resource-read-policy.ts",
   "src/domain/authorization/publication-read-contract.ts",

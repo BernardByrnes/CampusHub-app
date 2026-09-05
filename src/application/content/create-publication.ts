@@ -1,6 +1,11 @@
 import "server-only";
 
 import { parseAssuranceLevel } from "@/domain/authorization/assurance-level";
+import { CAPABILITIES } from "@/domain/authorization/capability";
+import {
+  isCapabilityAuthorizationDecision,
+  type CapabilityAuthorizer,
+} from "@/domain/authorization/capability-authorization";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { parseMembershipLifecycle } from "@/domain/membership/membership";
@@ -19,6 +24,7 @@ export type CreatePublicationCommand = Readonly<{
 export const CREATE_PUBLICATION_DENIAL_CODES = [
   "INVALID_INPUT",
   "TENANT_SCOPE_NOT_FOUND",
+  "PERMISSION_DENIED",
   "PERSISTENCE_FAILED",
 ] as const;
 
@@ -38,6 +44,7 @@ export type CreatePublicationRepository = Readonly<{
 
 export type CreatePublicationServiceDependencies = Readonly<{
   publications: CreatePublicationRepository;
+  capabilityAuthorizer: CapabilityAuthorizer;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,8 +76,8 @@ function denied(code: CreatePublicationDenialCode): CreatePublicationResult {
 
 /**
  * Minimal trusted-context seam for a future create route or server action.
- * Matching scope is a necessary boundary check, not permission to create;
- * capability authorization remains a separate future policy decision.
+ * Matching scope is a necessary boundary check, not permission to create.
+ * Capability authorization is a separate server-owned dependency.
  */
 export class CreatePublicationService {
   public constructor(
@@ -91,6 +98,38 @@ export class CreatePublicationService {
 
     if (input.trustedContext.tenantId !== input.requestedTenantId) {
       return denied("TENANT_SCOPE_NOT_FOUND");
+    }
+
+    let authorizationDecision: unknown;
+    try {
+      authorizationDecision =
+        await this.dependencies.capabilityAuthorizer.authorize({
+          actor: {
+            identitySubjectId: input.trustedContext.identitySubjectId,
+            tenantId: input.trustedContext.tenantId,
+            membershipId: input.trustedContext.membershipId,
+          },
+          context: {
+            tenantStatus: input.trustedContext.tenantStatus,
+            membershipStatus: input.trustedContext.membershipStatus,
+            assuranceLevel: input.trustedContext.assuranceLevel,
+          },
+          capability: CAPABILITIES.PUBLICATION_CREATE,
+          scope: {
+            tenantId: input.requestedTenantId,
+            module: "publication",
+            resource: "publication",
+          },
+        });
+    } catch {
+      return denied("PERMISSION_DENIED");
+    }
+
+    if (
+      !isCapabilityAuthorizationDecision(authorizationDecision) ||
+      !authorizationDecision.allowed
+    ) {
+      return denied("PERMISSION_DENIED");
     }
 
     let publication: Publication | null;

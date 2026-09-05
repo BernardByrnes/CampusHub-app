@@ -920,7 +920,7 @@ export const tenantSurfaceRegistry = [
     implementationPath: "src/application/content/create-publication.ts",
     surface: "CreatePublicationService.createPublication",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Trusted context and requested Tenant must match before the repository write; scope validation is not capability authorization.",
+    isolationStrategy: "Trusted context and requested Tenant must match before server-owned capability authorization and the repository write; scope validation is not capability authorization.",
     requiredNegativeTestIds: ["publication.create"],
     operation: "CreatePublicationService.createPublication",
   },

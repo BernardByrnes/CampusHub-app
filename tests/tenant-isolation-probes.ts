@@ -1043,6 +1043,9 @@ async function publicationCreateProbe(): Promise<void> {
         return publicationA;
       },
     },
+    capabilityAuthorizer: {
+      authorize: async () => ({ allowed: true }),
+    },
   });
   const trustedContext: TrustedRequestContext = {
     identitySubjectId: "same-identity",
