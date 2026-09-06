@@ -292,7 +292,7 @@ async function publicationRow(
   return rows[0] ?? null;
 }
 
-async function waitForPublicationLockWaiters(
+async function waitForAnyPublicationLockWaiters(
   expectedWaiters = 1,
 ): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -316,6 +316,36 @@ async function waitForPublicationLockWaiters(
   );
 }
 
+/**
+ * EDIT-RACE-03 owns the lock-holder connection, so require that exact backend
+ * in each waiter's PostgreSQL blocking relationship.
+ */
+async function waitForPublicationLockWaitersBlockedByBackend(
+  blockingBackendPid: number,
+  expectedWaiters = 1,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await getDatabase().execute(sql`
+      select count(*)::int as count
+      from pg_stat_activity as waiter
+      where waiter.pid <> pg_backend_pid()
+        and waiter.state = 'active'
+        and waiter.wait_event_type = 'Lock'
+        and ${blockingBackendPid} = any(pg_blocking_pids(waiter.pid))
+        and waiter.query ilike '%from "publications"%'
+        and waiter.query ilike '%for update%'
+    `);
+    const count = Number((result.rows[0] as { count?: unknown } | undefined)?.count);
+    if (Number.isInteger(count) && count >= expectedWaiters) {
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(
+    `Timed out waiting for ${expectedWaiters} Publication lock waiter(s) blocked by backend ${blockingBackendPid}.`,
+  );
+}
+
 async function publicationCount(tenantId: string): Promise<number> {
   const result = await getDatabase().execute(sql`
     select count(*)::int as count
@@ -330,6 +360,17 @@ async function beginClient(): Promise<PoolClient> {
   const client = await getPool().connect();
   await client.query("BEGIN");
   return client;
+}
+
+async function backendPid(client: PoolClient): Promise<number> {
+  const result = await client.query<{ pid: number }>(
+    "select pg_backend_pid() as pid",
+  );
+  const pid = Number(result.rows[0]?.pid);
+  if (!Number.isInteger(pid)) {
+    throw new Error("PostgreSQL backend did not return a valid PID.");
+  }
+  return pid;
 }
 
 beforeAll(async () => {
@@ -946,7 +987,7 @@ describe("durable capability commit-time authorization", () => {
       publication.id,
       publicationEditInput(1, "editor-b"),
     );
-    await waitForPublicationLockWaiters();
+    await waitForAnyPublicationLockWaiters();
     releaseFirst();
 
     await expect(first).resolves.toMatchObject({
@@ -999,7 +1040,7 @@ describe("durable capability commit-time authorization", () => {
         groups: [],
       },
     );
-    await waitForPublicationLockWaiters();
+    await waitForAnyPublicationLockWaiters();
     releaseEdit();
 
     await expect(edit).resolves.toMatchObject({
@@ -1025,6 +1066,7 @@ describe("durable capability commit-time authorization", () => {
     let edit: Promise<unknown> = Promise.resolve();
 
     try {
+      const lockHolderBackendPid = await backendPid(lockHolder);
       await lockHolder.query(
         "select id from publications where id = $1 for update",
         [publication.id],
@@ -1043,7 +1085,7 @@ describe("durable capability commit-time authorization", () => {
           groups: [],
         },
       );
-      await waitForPublicationLockWaiters();
+      await waitForPublicationLockWaitersBlockedByBackend(lockHolderBackendPid);
 
       edit = editExecutor().editAuthorizedPublication(
         requestFor(fixture, "publication.edit"),
@@ -1051,7 +1093,7 @@ describe("durable capability commit-time authorization", () => {
         publication.id,
         publicationEditInput(1, "stale-after-audience"),
       );
-      await waitForPublicationLockWaiters(2);
+      await waitForPublicationLockWaitersBlockedByBackend(lockHolderBackendPid, 2);
 
       await lockHolder.query("commit");
       holderCommitted = true;
