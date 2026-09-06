@@ -292,23 +292,28 @@ async function publicationRow(
   return rows[0] ?? null;
 }
 
-async function waitForLockWait(): Promise<void> {
+async function waitForPublicationLockWaiters(
+  expectedWaiters = 1,
+): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const result = await getDatabase().execute(sql`
-      select 1
+      select count(*)::int as count
       from pg_stat_activity
       where pid <> pg_backend_pid()
         and state = 'active'
         and wait_event_type = 'Lock'
+        and query ilike '%from "publications"%'
         and query ilike '%for update%'
-      limit 1
     `);
-    if (result.rows.length > 0) {
+    const count = Number((result.rows[0] as { count?: unknown } | undefined)?.count);
+    if (Number.isInteger(count) && count >= expectedWaiters) {
       return;
     }
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  throw new Error("Timed out waiting for the edit lock request.");
+  throw new Error(
+    `Timed out waiting for ${expectedWaiters} Publication lock waiter(s).`,
+  );
 }
 
 async function publicationCount(tenantId: string): Promise<number> {
@@ -941,7 +946,7 @@ describe("durable capability commit-time authorization", () => {
       publication.id,
       publicationEditInput(1, "editor-b"),
     );
-    await waitForLockWait();
+    await waitForPublicationLockWaiters();
     releaseFirst();
 
     await expect(first).resolves.toMatchObject({
@@ -994,7 +999,7 @@ describe("durable capability commit-time authorization", () => {
         groups: [],
       },
     );
-    await waitForLockWait();
+    await waitForPublicationLockWaiters();
     releaseEdit();
 
     await expect(edit).resolves.toMatchObject({
@@ -1009,6 +1014,82 @@ describe("durable capability commit-time authorization", () => {
       version: 2,
       audienceMode: "targeted",
     });
+  });
+
+  it("EDIT-RACE-03 lets audience replacement win before a stale publication edit", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id);
+    const lockHolder = await beginClient();
+    let holderCommitted = false;
+    let audience: Promise<unknown> = Promise.resolve();
+    let edit: Promise<unknown> = Promise.resolve();
+
+    try {
+      await lockHolder.query(
+        "select id from publications where id = $1 for update",
+        [publication.id],
+      );
+
+      audience = new DrizzlePublicationRepository(
+        getDatabase(),
+      ).replaceDraftPublicationAudienceForTenant(
+        fixture.tenant.id,
+        publication.id,
+        1,
+        {
+          tenantId: fixture.tenant.id,
+          publicationId: publication.id,
+          mode: "entire_tenant",
+          groups: [],
+        },
+      );
+      await waitForPublicationLockWaiters();
+
+      edit = editExecutor().editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "stale-after-audience"),
+      );
+      await waitForPublicationLockWaiters(2);
+
+      await lockHolder.query("commit");
+      holderCommitted = true;
+
+      await expect(audience).resolves.toEqual({
+        ok: true,
+        definition: {
+          tenantId: fixture.tenant.id,
+          publicationId: publication.id,
+          mode: "entire_tenant",
+          groups: [],
+        },
+        version: 2,
+      });
+      await expect(edit).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        audienceMode: "entire_tenant",
+        title: publication.title,
+      });
+      await expect(
+        getDatabase()
+          .select()
+          .from(tables.publicationAudienceCriteria)
+          .where(
+            eq(tables.publicationAudienceCriteria.publicationId, publication.id),
+          ),
+      ).resolves.toHaveLength(0);
+    } finally {
+      if (!holderCommitted) {
+        await lockHolder.query("rollback").catch(() => undefined);
+      }
+      lockHolder.release();
+      await Promise.allSettled([audience, edit]);
+    }
   });
 
   it("rejects a stale preflight allow after the grant is revoked", async () => {
