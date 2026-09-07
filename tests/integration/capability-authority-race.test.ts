@@ -18,6 +18,8 @@ const TERM_END = new Date("2026-12-31T23:59:59.000Z");
 const GRANT_END = new Date("2026-12-01T00:00:00.000Z");
 const ONE_SECOND_AFTER_NOW = new Date("2026-09-05T12:00:01.000Z");
 const TWO_SECONDS_AFTER_NOW = new Date("2026-09-05T12:00:02.000Z");
+const POSTGRES_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const POSTGRES_LOCK_POLL_DELAY_MS = 25;
 
 let capabilityNow = NOW;
 
@@ -292,57 +294,212 @@ async function publicationRow(
   return rows[0] ?? null;
 }
 
+type PostgresActivity = Readonly<{
+  pid: number;
+  blockingPids: readonly number[];
+  state: string | null;
+  waitEventType: string | null;
+  query: string | null;
+}>;
+
+type PublicationLockWaiter = PostgresActivity;
+
+function isPublicationLockWaiter(activity: PostgresActivity): boolean {
+  const query = activity.query?.toLowerCase() ?? "";
+  return (
+    activity.state === "active" &&
+    activity.waitEventType === "Lock" &&
+    query.includes('from "publications"') &&
+    query.includes("for update")
+  );
+}
+
+async function readPostgresActivities(): Promise<readonly PostgresActivity[]> {
+  const result = await getDatabase().execute(sql`
+    select
+      activity.pid::int as pid,
+      pg_blocking_pids(activity.pid) as blocking_pids,
+      activity.state,
+      activity.wait_event_type,
+      activity.query
+    from pg_stat_activity as activity
+    where activity.pid <> pg_backend_pid()
+  `);
+
+  return (result.rows as Array<{
+    pid?: unknown;
+    blocking_pids?: unknown;
+    state?: unknown;
+    wait_event_type?: unknown;
+    query?: unknown;
+  }>).flatMap((row) => {
+    const pid = Number(row.pid);
+    if (!Number.isInteger(pid)) {
+      return [];
+    }
+
+    const blockingPids = Array.isArray(row.blocking_pids)
+      ? row.blocking_pids
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value))
+      : [];
+
+    return [
+      {
+        pid,
+        blockingPids,
+        state: typeof row.state === "string" ? row.state : null,
+        waitEventType:
+          typeof row.wait_event_type === "string" ? row.wait_event_type : null,
+        query: typeof row.query === "string" ? row.query : null,
+      },
+    ];
+  });
+}
+
+async function waitForPostgresCondition<T>(
+  read: () => Promise<T>,
+  isReady: (value: T) => boolean,
+  timeoutMessage: string,
+): Promise<T> {
+  const deadline = Date.now() + POSTGRES_LOCK_WAIT_TIMEOUT_MS;
+
+  while (true) {
+    const value = await read();
+    if (isReady(value)) {
+      return value;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(timeoutMessage);
+    }
+
+    await new Promise<void>((resolve) =>
+      setTimeout(
+        resolve,
+        Math.min(POSTGRES_LOCK_POLL_DELAY_MS, remainingMs),
+      ),
+    );
+  }
+}
+
+function publicationLockWaiters(
+  activities: readonly PostgresActivity[],
+): readonly PublicationLockWaiter[] {
+  return activities.filter(isPublicationLockWaiter);
+}
+
+function hasBlockingPath(
+  activities: readonly PostgresActivity[],
+  blockedPid: number,
+  targetBlockerPid: number,
+): boolean {
+  const activitiesByPid = new Map(
+    activities.map((activity) => [activity.pid, activity]),
+  );
+  const pendingPids = [blockedPid];
+  const visitedPids = new Set<number>();
+
+  while (pendingPids.length > 0) {
+    const pid = pendingPids.pop();
+    if (pid === undefined || visitedPids.has(pid)) {
+      continue;
+    }
+    visitedPids.add(pid);
+
+    const activity = activitiesByPid.get(pid);
+    if (activity === undefined) {
+      continue;
+    }
+
+    for (const blockerPid of activity.blockingPids) {
+      if (blockerPid === targetBlockerPid) {
+        return true;
+      }
+      if (!visitedPids.has(blockerPid)) {
+        pendingPids.push(blockerPid);
+      }
+    }
+  }
+
+  return false;
+}
+
 async function waitForAnyPublicationLockWaiters(
   expectedWaiters = 1,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const result = await getDatabase().execute(sql`
-      select count(*)::int as count
-      from pg_stat_activity
-      where pid <> pg_backend_pid()
-        and state = 'active'
-        and wait_event_type = 'Lock'
-        and query ilike '%from "publications"%'
-        and query ilike '%for update%'
-    `);
-    const count = Number((result.rows[0] as { count?: unknown } | undefined)?.count);
-    if (Number.isInteger(count) && count >= expectedWaiters) {
-      return;
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(
+  await waitForPostgresCondition(
+    async () => publicationLockWaiters(await readPostgresActivities()),
+    (waiters) => waiters.length >= expectedWaiters,
     `Timed out waiting for ${expectedWaiters} Publication lock waiter(s).`,
   );
 }
 
-/**
- * EDIT-RACE-03 owns the lock-holder connection, so require that exact backend
- * in each waiter's PostgreSQL blocking relationship.
- */
-async function waitForPublicationLockWaitersBlockedByBackend(
+async function waitForPublicationLockWaiterBlockedByBackend(
   blockingBackendPid: number,
-  expectedWaiters = 1,
-): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const result = await getDatabase().execute(sql`
-      select count(*)::int as count
-      from pg_stat_activity as waiter
-      where waiter.pid <> pg_backend_pid()
-        and waiter.state = 'active'
-        and waiter.wait_event_type = 'Lock'
-        and ${blockingBackendPid} = any(pg_blocking_pids(waiter.pid))
-        and waiter.query ilike '%from "publications"%'
-        and waiter.query ilike '%for update%'
-    `);
-    const count = Number((result.rows[0] as { count?: unknown } | undefined)?.count);
-    if (Number.isInteger(count) && count >= expectedWaiters) {
-      return;
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
+): Promise<PublicationLockWaiter> {
+  const activities = await waitForPostgresCondition(
+    readPostgresActivities,
+    (currentActivities) =>
+      publicationLockWaiters(currentActivities).some((waiter) =>
+        hasBlockingPath(currentActivities, waiter.pid, blockingBackendPid),
+      ),
+    `Timed out waiting for a Publication lock waiter blocked by backend ${blockingBackendPid}.`,
+  );
+  const waiter = publicationLockWaiters(activities).find((candidate) =>
+    hasBlockingPath(activities, candidate.pid, blockingBackendPid),
+  );
+  if (waiter === undefined) {
+    throw new Error(
+      `Publication lock waiter blocked by backend ${blockingBackendPid} disappeared.`,
+    );
   }
-  throw new Error(
-    `Timed out waiting for ${expectedWaiters} Publication lock waiter(s) blocked by backend ${blockingBackendPid}.`,
+  return waiter;
+}
+
+/**
+ * The audience operation is observed first while blocked by the manual holder.
+ * Once the editor starts, accept either a direct holder blocker or a PostgreSQL
+ * blocking path through that already-queued audience operation.
+ */
+async function waitForPublicationLockQueue(
+  blockingBackendPid: number,
+  firstWaiterPid: number,
+): Promise<void> {
+  await waitForPostgresCondition(
+    readPostgresActivities,
+    (activities) => {
+      const waiters = publicationLockWaiters(activities);
+      const firstWaiter = waiters.find(
+        (waiter) =>
+          waiter.pid === firstWaiterPid &&
+          hasBlockingPath(activities, waiter.pid, blockingBackendPid),
+      );
+      if (firstWaiter === undefined) {
+        return false;
+      }
+
+      return waiters.some((waiter) => {
+        if (waiter.pid === firstWaiter.pid) {
+          return false;
+        }
+        const blockedByHolder = hasBlockingPath(
+          activities,
+          waiter.pid,
+          blockingBackendPid,
+        );
+        const queuedBehindFirstWaiter = hasBlockingPath(
+          activities,
+          waiter.pid,
+          firstWaiter.pid,
+        );
+        return blockedByHolder &&
+          (waiter.blockingPids.includes(blockingBackendPid) ||
+            queuedBehindFirstWaiter);
+      });
+    },
+    `Timed out waiting for the Publication editor to queue behind audience waiter ${firstWaiterPid}.`,
   );
 }
 
@@ -476,6 +633,8 @@ describe("durable capability commit-time authorization", () => {
     });
 
     const revocationClient = await beginClient();
+    let revocationCommitted = false;
+    let mutation: Promise<unknown> = Promise.resolve();
     try {
       await revocationClient.query(
         `select id from tenants where id = $1 for update`,
@@ -490,18 +649,23 @@ describe("durable capability commit-time authorization", () => {
         [fixture.grant.id, NOW],
       );
 
-      const mutation = executor().createAuthorizedPublication(
+      mutation = executor().createAuthorizedPublication(
         request,
         fixture.tenant.id,
         publicationInput("revocation-wins"),
       );
       await revocationClient.query("commit");
+      revocationCommitted = true;
       await expect(mutation).resolves.toEqual({
         outcome: "DENIED",
         code: "PERMISSION_DENIED",
       });
     } finally {
+      if (!revocationCommitted) {
+        await revocationClient.query("rollback").catch(() => undefined);
+      }
       revocationClient.release();
+      await Promise.allSettled([mutation]);
     }
 
     await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
@@ -510,28 +674,37 @@ describe("durable capability commit-time authorization", () => {
   it("AUTH-RACE-02 create wins and revocation commits afterward", async () => {
     const fixture = await createFixture();
     const request = requestFor(fixture);
-    let releaseInsert!: () => void;
+    let releaseInsert: () => void = () => undefined;
     const insertMayProceed = new Promise<void>((resolve) => {
       releaseInsert = resolve;
     });
-    let authorityLocked!: () => void;
+    let authorityLocked: () => void = () => undefined;
     const authorityIsLocked = new Promise<void>((resolve) => {
       authorityLocked = resolve;
     });
 
-    const mutation = executor(async () => {
-      authorityLocked();
-      await insertMayProceed;
-    }).createAuthorizedPublication(
-      request,
-      fixture.tenant.id,
-      publicationInput("create-wins"),
-    );
-    await authorityIsLocked;
-
-    const revocationClient = await beginClient();
+    let mutation: Promise<unknown> = Promise.resolve();
+    let revocation: Promise<unknown> = Promise.resolve();
+    let revocationClient: PoolClient | undefined;
+    let revocationCommitted = false;
     try {
-      const revocation = revocationClient.query(
+      mutation = executor(async () => {
+        authorityLocked();
+        await insertMayProceed;
+      }).createAuthorizedPublication(
+        request,
+        fixture.tenant.id,
+        publicationInput("create-wins"),
+      );
+      await Promise.race([
+        authorityIsLocked,
+        mutation.then(() => {
+          throw new Error("Publication creation completed before its gate opened.");
+        }),
+      ]);
+
+      revocationClient = await beginClient();
+      revocation = revocationClient.query(
         `update role_grants set revoked_at = $2 where id = $1`,
         [fixture.grant.id, NOW],
       );
@@ -541,8 +714,16 @@ describe("durable capability commit-time authorization", () => {
       await expect(mutation).resolves.toMatchObject({ outcome: "CREATED" });
       await revocation;
       await revocationClient.query("commit");
+      revocationCommitted = true;
     } finally {
-      revocationClient.release();
+      releaseInsert();
+      await Promise.allSettled([mutation, revocation]);
+      if (revocationClient !== undefined) {
+        if (!revocationCommitted) {
+          await revocationClient.query("rollback").catch(() => undefined);
+        }
+        revocationClient.release();
+      }
     }
 
     await expect(publicationCount(fixture.tenant.id)).resolves.toBe(1);
@@ -569,6 +750,8 @@ describe("durable capability commit-time authorization", () => {
     const fixture = await createFixture();
     const request = requestFor(fixture);
     const closureClient = await beginClient();
+    let closureCommitted = false;
+    let mutation: Promise<unknown> = Promise.resolve();
     try {
       await closureClient.query(
         `select id from tenants where id = $1 for update`,
@@ -582,18 +765,23 @@ describe("durable capability commit-time authorization", () => {
         `update guild_terms set status = 'closed' where id = $1`,
         [fixture.term.id],
       );
-      const mutation = executor().createAuthorizedPublication(
+      mutation = executor().createAuthorizedPublication(
         request,
         fixture.tenant.id,
         publicationInput("term-closure"),
       );
       await closureClient.query("commit");
+      closureCommitted = true;
       await expect(mutation).resolves.toEqual({
         outcome: "DENIED",
         code: "PERMISSION_DENIED",
       });
     } finally {
+      if (!closureCommitted) {
+        await closureClient.query("rollback").catch(() => undefined);
+      }
       closureClient.release();
+      await Promise.allSettled([mutation]);
     }
     await expect(publicationCount(fixture.tenant.id)).resolves.toBe(0);
   });
@@ -962,99 +1150,125 @@ describe("durable capability commit-time authorization", () => {
   it("EDIT-RACE-01 lets one real PostgreSQL editor win and rejects the stale writer", async () => {
     const fixture = await createFixture();
     const publication = await createDraftPublication(fixture.tenant.id);
-    let releaseFirst!: () => void;
+    let releaseFirst: () => void = () => undefined;
     const firstMayCommit = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    let firstLocked!: () => void;
+    let firstLocked: () => void = () => undefined;
     const firstIsLocked = new Promise<void>((resolve) => {
       firstLocked = resolve;
     });
 
-    const first = editExecutor(async () => {
-      firstLocked();
-      await firstMayCommit;
-    }).editAuthorizedPublication(
-      requestFor(fixture, "publication.edit"),
-      fixture.tenant.id,
-      publication.id,
-      publicationEditInput(1, "editor-a"),
-    );
-    await firstIsLocked;
-    const second = editExecutor().editAuthorizedPublication(
-      requestFor(fixture, "publication.edit"),
-      fixture.tenant.id,
-      publication.id,
-      publicationEditInput(1, "editor-b"),
-    );
-    await waitForAnyPublicationLockWaiters();
-    releaseFirst();
+    let first: Promise<unknown> = Promise.resolve();
+    let second: Promise<unknown> = Promise.resolve();
 
-    await expect(first).resolves.toMatchObject({
-      outcome: "UPDATED",
-      publication: { version: 2, title: "Edited publication editor-a" },
-    });
-    await expect(second).resolves.toEqual({
-      outcome: "DENIED",
-      code: "VERSION_CONFLICT",
-    });
-    await expect(publicationRow(publication.id)).resolves.toMatchObject({
-      version: 2,
-      title: "Edited publication editor-a",
-    });
+    try {
+      first = editExecutor(async () => {
+        firstLocked();
+        await firstMayCommit;
+      }).editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "editor-a"),
+      );
+      await Promise.race([
+        firstIsLocked,
+        first.then(() => {
+          throw new Error("First publication edit completed before its gate opened.");
+        }),
+      ]);
+      second = editExecutor().editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "editor-b"),
+      );
+      await waitForAnyPublicationLockWaiters();
+      releaseFirst();
+
+      await expect(first).resolves.toMatchObject({
+        outcome: "UPDATED",
+        publication: { version: 2, title: "Edited publication editor-a" },
+      });
+      await expect(second).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        title: "Edited publication editor-a",
+      });
+    } finally {
+      releaseFirst();
+      await Promise.allSettled([first, second]);
+    }
   });
 
   it("EDIT-RACE-02 shares one version stream with audience replacement", async () => {
     const fixture = await createFixture();
     const publication = await createDraftPublication(fixture.tenant.id);
-    let releaseEdit!: () => void;
+    let releaseEdit: () => void = () => undefined;
     const editMayCommit = new Promise<void>((resolve) => {
       releaseEdit = resolve;
     });
-    let editLocked!: () => void;
+    let editLocked: () => void = () => undefined;
     const editIsLocked = new Promise<void>((resolve) => {
       editLocked = resolve;
     });
 
-    const edit = editExecutor(async () => {
-      editLocked();
-      await editMayCommit;
-    }).editAuthorizedPublication(
-      requestFor(fixture, "publication.edit"),
-      fixture.tenant.id,
-      publication.id,
-      publicationEditInput(1, "metadata-wins"),
-    );
-    await editIsLocked;
+    let edit: Promise<unknown> = Promise.resolve();
+    let audience: Promise<unknown> = Promise.resolve();
 
-    const audience = new DrizzlePublicationRepository(
-      getDatabase(),
-    ).replaceDraftPublicationAudienceForTenant(
-      fixture.tenant.id,
-      publication.id,
-      1,
-      {
-        tenantId: fixture.tenant.id,
-        publicationId: publication.id,
-        mode: "entire_tenant",
-        groups: [],
-      },
-    );
-    await waitForAnyPublicationLockWaiters();
-    releaseEdit();
+    try {
+      edit = editExecutor(async () => {
+        editLocked();
+        await editMayCommit;
+      }).editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "metadata-wins"),
+      );
+      await Promise.race([
+        editIsLocked,
+        edit.then(() => {
+          throw new Error("Publication edit completed before its gate opened.");
+        }),
+      ]);
 
-    await expect(edit).resolves.toMatchObject({
-      outcome: "UPDATED",
-      publication: { version: 2 },
-    });
-    await expect(audience).resolves.toEqual({
-      ok: false,
-      error: "VERSION_CONFLICT",
-    });
-    await expect(publicationRow(publication.id)).resolves.toMatchObject({
-      version: 2,
-      audienceMode: "targeted",
-    });
+      audience = new DrizzlePublicationRepository(
+        getDatabase(),
+      ).replaceDraftPublicationAudienceForTenant(
+        fixture.tenant.id,
+        publication.id,
+        1,
+        {
+          tenantId: fixture.tenant.id,
+          publicationId: publication.id,
+          mode: "entire_tenant",
+          groups: [],
+        },
+      );
+      await waitForAnyPublicationLockWaiters();
+      releaseEdit();
+
+      await expect(edit).resolves.toMatchObject({
+        outcome: "UPDATED",
+        publication: { version: 2 },
+      });
+      await expect(audience).resolves.toEqual({
+        ok: false,
+        error: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        audienceMode: "targeted",
+      });
+    } finally {
+      releaseEdit();
+      await Promise.allSettled([edit, audience]);
+    }
   });
 
   it("EDIT-RACE-03 lets audience replacement win before a stale publication edit", async () => {
@@ -1085,7 +1299,10 @@ describe("durable capability commit-time authorization", () => {
           groups: [],
         },
       );
-      await waitForPublicationLockWaitersBlockedByBackend(lockHolderBackendPid);
+      const audienceWaiter =
+        await waitForPublicationLockWaiterBlockedByBackend(
+          lockHolderBackendPid,
+        );
 
       edit = editExecutor().editAuthorizedPublication(
         requestFor(fixture, "publication.edit"),
@@ -1093,7 +1310,10 @@ describe("durable capability commit-time authorization", () => {
         publication.id,
         publicationEditInput(1, "stale-after-audience"),
       );
-      await waitForPublicationLockWaitersBlockedByBackend(lockHolderBackendPid, 2);
+      await waitForPublicationLockQueue(
+        lockHolderBackendPid,
+        audienceWaiter.pid,
+      );
 
       await lockHolder.query("commit");
       holderCommitted = true;
