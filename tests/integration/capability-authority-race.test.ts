@@ -314,6 +314,25 @@ function isPublicationLockWaiter(activity: PostgresActivity): boolean {
   );
 }
 
+function isPublicationLockHolder(activity: PostgresActivity): boolean {
+  const query = activity.query?.toLowerCase() ?? "";
+  return (
+    activity.state === "idle in transaction" &&
+    query.includes('from "publications"') &&
+    query.includes("for update")
+  );
+}
+
+function isAuthorityLockWaiter(activity: PostgresActivity): boolean {
+  const query = activity.query?.toLowerCase() ?? "";
+  return (
+    activity.state === "active" &&
+    activity.waitEventType === "Lock" &&
+    query.includes('from "tenants"') &&
+    query.includes("for update")
+  );
+}
+
 async function readPostgresActivities(): Promise<readonly PostgresActivity[]> {
   const result = await getDatabase().execute(sql`
     select
@@ -388,6 +407,48 @@ function publicationLockWaiters(
   activities: readonly PostgresActivity[],
 ): readonly PublicationLockWaiter[] {
   return activities.filter(isPublicationLockWaiter);
+}
+
+async function waitForPublicationLockHolder(): Promise<PostgresActivity> {
+  const activities = await waitForPostgresCondition(
+    readPostgresActivities,
+    (currentActivities) =>
+      currentActivities.filter(isPublicationLockHolder).length === 1,
+    "Timed out waiting for the first editor to hold the Publication lock.",
+  );
+  const holders = activities.filter(isPublicationLockHolder);
+  const holder = holders[0];
+  if (holder === undefined) {
+    throw new Error("The first editor's Publication lock holder disappeared.");
+  }
+  return holder;
+}
+
+async function waitForAuthorityLockWaiterBlockedByBackend(
+  blockingBackendPid: number,
+): Promise<PostgresActivity> {
+  const activities = await waitForPostgresCondition(
+    readPostgresActivities,
+    (currentActivities) =>
+      currentActivities.filter(
+        (activity) =>
+          isAuthorityLockWaiter(activity) &&
+          hasBlockingPath(currentActivities, activity.pid, blockingBackendPid),
+      ).length === 1,
+    `Timed out waiting for exactly one authority lock waiter blocked by backend ${blockingBackendPid}.`,
+  );
+  const waiters = activities.filter(
+    (activity) =>
+      isAuthorityLockWaiter(activity) &&
+      hasBlockingPath(activities, activity.pid, blockingBackendPid),
+  );
+  const waiter = waiters[0];
+  if (waiter === undefined) {
+    throw new Error(
+      `The authority lock waiter blocked by backend ${blockingBackendPid} disappeared.`,
+    );
+  }
+  return waiter;
 }
 
 function hasBlockingPath(
@@ -1178,13 +1239,17 @@ describe("durable capability commit-time authorization", () => {
           throw new Error("First publication edit completed before its gate opened.");
         }),
       ]);
+      const firstEditorBackendPid = (await waitForPublicationLockHolder()).pid;
       second = editExecutor().editAuthorizedPublication(
         requestFor(fixture, "publication.edit"),
         fixture.tenant.id,
         publication.id,
         publicationEditInput(1, "editor-b"),
       );
-      await waitForAnyPublicationLockWaiters();
+      const secondEditor = await waitForAuthorityLockWaiterBlockedByBackend(
+        firstEditorBackendPid,
+      );
+      expect(secondEditor.pid).not.toBe(firstEditorBackendPid);
       releaseFirst();
 
       await expect(first).resolves.toMatchObject({
