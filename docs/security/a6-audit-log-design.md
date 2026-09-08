@@ -149,18 +149,70 @@ content merely to defeat legitimate redaction.
 
 This design does not implement A7 redaction, cache, or media propagation.
 
-## 8. Append-only contract
+## 8. Append-only contract and deletion paths
 
-AuditEvent supports append. Ordinary application code exposes no update or
-delete repository operation. PostgreSQL must additionally reject UPDATE and
-DELETE against AuditEvent rows using database-level enforcement; application
-discipline alone is insufficient.
+AuditEvent supports append only. Ordinary application code exposes no update,
+delete, or truncate repository operation. The future PostgreSQL implementation
+must reject all three destructive table operations against `audit_events` for
+the application/runtime database authority:
 
-Implementation tests must demonstrate direct UPDATE and DELETE rejection. The
-design does not claim that a PostgreSQL superuser or physical-storage
-administrator is cryptographically incapable of altering bytes. That threat is
-addressed by tamper evidence and operational controls rather than a false
-absolute-immutability claim.
+```text
+UPDATE
+DELETE
+TRUNCATE
+```
+
+The implementation migration must provide database-level enforcement for all
+three operations; application discipline alone is insufficient.
+
+The normal CampusHub runtime database principal must not own `audit_events` and
+must not have DROP, ALTER, TRUNCATE, UPDATE, or DELETE privilege over it. Its
+ordinary table capabilities are bounded to those actually needed by the
+reviewed repository contract, such as:
+
+```text
+SELECT
+INSERT
+```
+
+Schema migration/DDL authority is operationally distinct from normal
+application runtime authority. This does not claim that a migration/owner
+principal or database superuser is cryptographically unable to destroy history;
+that privileged-database threat remains part of the residual-risk model in the
+tamper-evidence section.
+
+The future schema must not define a cascading foreign-key action that can
+delete AuditEvents when another record is removed. In particular, the Tenant
+relationship, actor Membership relationship, and content/resource relationship
+must not use `ON DELETE CASCADE`. Required relational integrity uses restrictive
+or no-action semantics where appropriate.
+
+The generic audit resource reference is a historical typed reference:
+
+```text
+resourceType
+resourceId
+```
+
+It does not require a cascading foreign key to the business resource merely to
+prove that the resource exists forever. A resource may later be redacted,
+restricted, removed, or unavailable while its minimum audit fact remains. Where
+a relational foreign key would conflict with CH-CNT-001 deletion/redaction
+semantics, the immutable historical identifier is preserved without a
+destructive relation.
+
+For the current Membership-backed event family, any relational actor reference
+must preserve the same-Tenant actor invariant and must not cascade-delete
+AuditEvents. Membership closure, anonymisation, and data-right handling must
+preserve the minimum permitted audit attribution under the governing
+retention/legal contract. A6 does not resolve the open legal retention period
+and invents no retention duration.
+
+Implementation tests must demonstrate direct UPDATE, DELETE, and TRUNCATE
+rejection. The design does not claim that a PostgreSQL superuser or
+physical-storage administrator is cryptographically incapable of altering
+bytes. That threat is addressed by tamper evidence and operational controls
+rather than a false absolute-immutability claim.
 
 ## 9. Tamper-evidence design
 
@@ -409,6 +461,14 @@ The later implementation checkpoint must prove at minimum:
 - Tenant chains are independent;
 - database UPDATE fails;
 - database DELETE fails.
+- database TRUNCATE fails;
+
+### Deletion and privilege paths
+
+- resource removal leaves the AuditEvent present;
+- actor and resource relational operations cannot cascade-delete audit history;
+- the runtime database principal lacks destructive and DDL privilege over
+  `audit_events`;
 
 ### Data minimisation
 
