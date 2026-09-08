@@ -157,6 +157,30 @@ describe("PostgresCapabilityAuthorizer", () => {
     ).resolves.toEqual({ allowed: false });
   });
 
+  it("does not treat a Priority grant as standard publish authority", async () => {
+    await expect(
+      createAuthorizer({
+        currentGrant: {
+          ...grant,
+          capability: CAPABILITIES.PUBLICATION_PRIORITY_PUBLISH,
+        },
+      }).authorize(
+        request({ capability: CAPABILITIES.PUBLICATION_PUBLISH }),
+      ),
+    ).resolves.toEqual({ allowed: false });
+
+    await expect(
+      createAuthorizer({
+        currentGrant: {
+          ...grant,
+          capability: CAPABILITIES.PUBLICATION_PRIORITY_PUBLISH,
+        },
+      }).authorize(
+        request({ capability: CAPABILITIES.PUBLICATION_PRIORITY_PUBLISH }),
+      ),
+    ).resolves.toEqual({ allowed: false });
+  });
+
   it("denies wrong Tenant, identity, capability, and module scope", async () => {
     await expect(
       createAuthorizer({}).authorize(

@@ -33,7 +33,6 @@ import {
   guildTerms,
   memberships,
   publicationAudienceCriteria,
-  publicationAuditEvents,
   programmes,
   publications,
   residences,
@@ -371,29 +370,6 @@ function publicationAudienceCriteriaPersistenceProbe(): void {
       "publication_audience_criteria_academic_year_unique",
       "publication_audience_criteria_specific_residence_unique",
       "publication_audience_criteria_residence_target_unique",
-    ]),
-  );
-}
-
-function publicationAuditEventsPersistenceProbe(): void {
-  expectTenantOwnedTable(publicationAuditEvents);
-  expectForeignKey(
-    publicationAuditEvents,
-    ["tenant_id", "publication_id"],
-    ["tenant_id", "id"],
-  );
-  expectForeignKey(
-    publicationAuditEvents,
-    ["tenant_id", "actor_membership_id"],
-    ["tenant_id", "id"],
-  );
-
-  const config = getTableConfig(publicationAuditEvents);
-  expect(config.checks.map((constraint) => constraint.name)).toEqual(
-    expect.arrayContaining([
-      "publication_audit_events_actor_identity_nonempty",
-      "publication_audit_events_version_positive",
-      "publication_audit_events_recipient_count_nonnegative",
     ]),
   );
 }
@@ -1404,7 +1380,6 @@ export const tenantIsolationProbeRegistry: Readonly<
   },
   "publication-audience-criteria.persistence":
     publicationAudienceCriteriaPersistenceProbe,
-  "publication-audit-events.persistence": publicationAuditEventsPersistenceProbe,
   "campus.persistence": () => {
     expectTenantOwnedTable(campuses);
     expectTenantCompositeIdentity(campuses);

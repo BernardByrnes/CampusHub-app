@@ -36,9 +36,7 @@ import {
   type Publication,
 } from "@/domain/content/publication";
 import {
-  isPublicationPublishAuditEvent,
-  type PublicationPublishAudienceSnapshot,
-  type PublicationPublishAuditEvent,
+  isPublicationExpiryValidAtPublish,
   type PublishPublicationInput,
 } from "@/domain/content/publication-publish";
 import {
@@ -60,8 +58,6 @@ import {
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import {
   publicationAudienceCriteria,
-  publicationAuditEvents,
-  type NewPublicationAuditEventRow,
   publications,
   type NewPublicationAudienceCriteriaRow,
   type PublicationRow,
@@ -105,7 +101,6 @@ export type PublicationPublishMutationResult =
   | Readonly<{
       ok: true;
       publication: Publication;
-      auditEvent: PublicationPublishAuditEvent;
     }>
   | Readonly<{
       ok: false;
@@ -117,11 +112,6 @@ export type PublicationPublishMutationResult =
         | "INVALID_STATE"
         | "PERSISTENCE_FAILED";
     }>;
-
-export type PublicationPublishActor = Readonly<{
-  identitySubjectId: string;
-  membershipId: string;
-}>;
 
 function toPublication(row: PublicationRow): Publication | null {
   const type = parsePublicationType(row.type);
@@ -906,198 +896,11 @@ async function readPublicationAudienceReadinessSnapshot(
   };
 }
 
-type LabelRow = Readonly<{ id: string; label: string }>;
-
-async function readAudienceTargetLabels(
-  database: SelectOnlyDatabase,
-  definition: PublicationAudienceDefinition,
-): Promise<PublicationPublishAudienceSnapshot | null> {
-  if (definition.mode === "entire_tenant") {
-    return { mode: "entire_tenant", targets: [] };
-  }
-
-  const targets: Array<PublicationPublishAudienceSnapshot["targets"][number]> =
-    [];
-
-  for (const group of definition.groups) {
-    switch (group.dimension) {
-      case "campus": {
-        const rows = await database
-          .select({ id: campuses.id, label: campuses.label })
-          .from(campuses)
-          .where(
-            and(
-              eq(campuses.tenantId, definition.tenantId),
-              inArray(campuses.id, [...group.campusIds]),
-            ),
-          );
-        const labels = new Map(rows.map((row: LabelRow) => [row.id, row.label]));
-        if (labels.size !== group.campusIds.length) {
-          return null;
-        }
-        for (const id of group.campusIds) {
-          const label = labels.get(id);
-          if (label === undefined || label.trim().length === 0) {
-            return null;
-          }
-          targets.push({
-            dimension: group.dimension,
-            targetId: id,
-            targetValue: null,
-            label,
-          });
-        }
-        break;
-      }
-      case "academic_division": {
-        const rows = await database
-          .select({
-            id: academicDivisions.id,
-            label: academicDivisions.label,
-          })
-          .from(academicDivisions)
-          .where(
-            and(
-              eq(academicDivisions.tenantId, definition.tenantId),
-              inArray(academicDivisions.id, [...group.academicDivisionIds]),
-            ),
-          );
-        const labels = new Map(rows.map((row: LabelRow) => [row.id, row.label]));
-        if (labels.size !== group.academicDivisionIds.length) {
-          return null;
-        }
-        for (const id of group.academicDivisionIds) {
-          const label = labels.get(id);
-          if (label === undefined || label.trim().length === 0) {
-            return null;
-          }
-          targets.push({
-            dimension: group.dimension,
-            targetId: id,
-            targetValue: null,
-            label,
-          });
-        }
-        break;
-      }
-      case "programme": {
-        const rows = await database
-          .select({ id: programmes.id, label: programmes.label })
-          .from(programmes)
-          .where(
-            and(
-              eq(programmes.tenantId, definition.tenantId),
-              inArray(programmes.id, [...group.programmeIds]),
-            ),
-          );
-        const labels = new Map(rows.map((row: LabelRow) => [row.id, row.label]));
-        if (labels.size !== group.programmeIds.length) {
-          return null;
-        }
-        for (const id of group.programmeIds) {
-          const label = labels.get(id);
-          if (label === undefined || label.trim().length === 0) {
-            return null;
-          }
-          targets.push({
-            dimension: group.dimension,
-            targetId: id,
-            targetValue: null,
-            label,
-          });
-        }
-        break;
-      }
-      case "academic_year":
-        for (const academicYear of group.academicYears) {
-          targets.push({
-            dimension: group.dimension,
-            targetId: null,
-            targetValue: String(academicYear),
-            label: `Academic year ${academicYear}`,
-          });
-        }
-        break;
-      case "residence": {
-        const specificResidenceIds = group.residenceTargets
-          .filter(
-            (target): target is Extract<
-              PublicationResidenceTarget,
-              { kind: "specific_residence" }
-            > => target.kind === "specific_residence",
-          )
-          .map((target) => target.residenceId);
-        const rows =
-          specificResidenceIds.length === 0
-            ? []
-            : await database
-                .select({ id: residences.id, label: residences.label })
-                .from(residences)
-                .where(
-                  and(
-                    eq(residences.tenantId, definition.tenantId),
-                    inArray(residences.id, specificResidenceIds),
-                  ),
-                );
-        const labels = new Map(rows.map((row: LabelRow) => [row.id, row.label]));
-        if (labels.size !== specificResidenceIds.length) {
-          return null;
-        }
-        for (const target of group.residenceTargets) {
-          if (target.kind === "specific_residence") {
-            const label = labels.get(target.residenceId);
-            if (label === undefined || label.trim().length === 0) {
-              return null;
-            }
-            targets.push({
-              dimension: group.dimension,
-              targetId: target.residenceId,
-              targetValue: target.kind,
-              label,
-            });
-          } else {
-            targets.push({
-              dimension: group.dimension,
-              targetId: null,
-              targetValue: target.kind,
-              label:
-                target.kind === "any_resident"
-                  ? "Any resident"
-                  : "Non-resident",
-            });
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  return { mode: "targeted", targets };
-}
-
-function toPublicationPublishAuditRow(
-  event: PublicationPublishAuditEvent,
-): NewPublicationAuditEventRow | null {
-  return isPublicationPublishAuditEvent(event)
-    ? {
-        tenantId: event.tenantId,
-        publicationId: event.publicationId,
-        actorMembershipId: event.actorMembershipId,
-        actorIdentitySubjectId: event.actorIdentitySubjectId,
-        eventType: event.eventType,
-        publicationVersion: event.publicationVersion,
-        confirmedRecipientCount: event.confirmedRecipientCount,
-        audienceSnapshot: event.audienceSnapshot,
-        occurredAt: event.occurredAt,
-      }
-    : null;
-}
-
 type PublicationInsertDatabase = Pick<CampusHubDatabase, "insert">;
 type PublicationUpdateDatabase = Pick<CampusHubDatabase, "update">;
 type PublicationPublishDatabase = Pick<
   CampusHubDatabase,
-  "select" | "update" | "insert"
+  "select" | "update"
 >;
 
 async function createPublicationUsingDatabase(
@@ -1202,15 +1005,11 @@ export class DrizzlePublicationRepository {
     tenantId: string,
     publicationId: string,
     input: PublishPublicationInput,
-    actor: PublicationPublishActor,
     occurredAt: Date,
   ): Promise<PublicationPublishMutationResult> {
     if (
       !isUuid(tenantId) ||
       !isUuid(publicationId) ||
-      !isUuid(actor.membershipId) ||
-      typeof actor.identitySubjectId !== "string" ||
-      actor.identitySubjectId.trim().length === 0 ||
       !isPositivePublicationVersion(input.expectedVersion) ||
       !Number.isInteger(input.confirmedRecipientCount) ||
       input.confirmedRecipientCount < 0 ||
@@ -1220,111 +1019,87 @@ export class DrizzlePublicationRepository {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
 
-    try {
-      const snapshot = await readPublicationAudienceReadinessSnapshot(
-        transaction,
-        tenantId,
-        publicationId,
-      );
-      if (snapshot === null) {
-        return { ok: false, error: "NOT_FOUND" };
-      }
-
-      if (snapshot.publication.version !== input.expectedVersion) {
-        return { ok: false, error: "VERSION_CONFLICT" };
-      }
-
-      if (snapshot.publication.lifecycle !== "draft") {
-        return { ok: false, error: "INVALID_STATE" };
-      }
-
-      const confirmation = validatePublicationAudienceConfirmation(
-        {
-          expectedPublicationVersion: input.expectedVersion,
-          confirmedRecipientCount: input.confirmedRecipientCount,
-        },
-        {
-          publicationVersion: snapshot.publication.version,
-          estimatedRecipientCount: snapshot.estimatedRecipientCount,
-          audienceDefinitionValid: snapshot.definition !== null,
-          targetsCurrentlyValid: snapshot.targetsCurrentlyValid,
-        },
-      );
-      if (!confirmation.ok) {
-        return { ok: false, error: confirmation.error };
-      }
-
-      if (snapshot.definition === null) {
-        return { ok: false, error: "NOT_READY" };
-      }
-
-      const audienceSnapshot = await readAudienceTargetLabels(
-        transaction,
-        snapshot.definition,
-      );
-      if (audienceSnapshot === null) {
-        return { ok: false, error: "NOT_READY" };
-      }
-
-      const publishedRows = await transaction
-        .update(publications)
-        .set({
-          lifecycle: "published",
-          publishAt: occurredAt,
-          version: sql`${publications.version} + 1`,
-          updatedAt: occurredAt,
-        })
-        .where(
-          and(
-            eq(publications.tenantId, tenantId),
-            eq(publications.id, publicationId),
-            eq(publications.version, input.expectedVersion),
-            eq(publications.lifecycle, "draft"),
-          ),
-        )
-        .returning();
-
-      if (publishedRows.length !== 1) {
-        return { ok: false, error: "PERSISTENCE_FAILED" };
-      }
-
-      const publication = toPublication(publishedRows[0]);
-      if (
-        publication === null ||
-        publication.lifecycle !== "published" ||
-        publication.publishAt === null
-      ) {
-        return { ok: false, error: "PERSISTENCE_FAILED" };
-      }
-
-      const auditEvent: PublicationPublishAuditEvent = {
-        tenantId,
-        publicationId,
-        eventType: "published",
-        actorIdentitySubjectId: actor.identitySubjectId,
-        actorMembershipId: actor.membershipId,
-        publicationVersion: publication.version,
-        confirmedRecipientCount: input.confirmedRecipientCount,
-        audienceSnapshot,
-        occurredAt,
-      };
-      const auditRow = toPublicationPublishAuditRow(auditEvent);
-      if (auditRow === null) {
-        return { ok: false, error: "PERSISTENCE_FAILED" };
-      }
-
-      const auditRows = await transaction
-        .insert(publicationAuditEvents)
-        .values(auditRow)
-        .returning();
-      if (auditRows.length !== 1) {
-        return { ok: false, error: "PERSISTENCE_FAILED" };
-      }
-
-      return { ok: true, publication, auditEvent };
-    } catch {
-      return { ok: false, error: "PERSISTENCE_FAILED" };
+    const snapshot = await readPublicationAudienceReadinessSnapshot(
+      transaction,
+      tenantId,
+      publicationId,
+    );
+    if (snapshot === null) {
+      return { ok: false, error: "NOT_FOUND" };
     }
+
+    if (snapshot.publication.version !== input.expectedVersion) {
+      return { ok: false, error: "VERSION_CONFLICT" };
+    }
+
+    if (snapshot.publication.lifecycle !== "draft") {
+      return { ok: false, error: "INVALID_STATE" };
+    }
+
+    if (
+      !isPublicationExpiryValidAtPublish(
+        snapshot.publication.expiresAt,
+        occurredAt,
+      )
+    ) {
+      return { ok: false, error: "INVALID_STATE" };
+    }
+
+    const confirmation = validatePublicationAudienceConfirmation(
+      {
+        expectedPublicationVersion: input.expectedVersion,
+        confirmedRecipientCount: input.confirmedRecipientCount,
+      },
+      {
+        publicationVersion: snapshot.publication.version,
+        estimatedRecipientCount: snapshot.estimatedRecipientCount,
+        audienceDefinitionValid: snapshot.definition !== null,
+        targetsCurrentlyValid: snapshot.targetsCurrentlyValid,
+      },
+    );
+    if (!confirmation.ok) {
+      return { ok: false, error: confirmation.error };
+    }
+
+    if (snapshot.definition === null) {
+      return { ok: false, error: "NOT_READY" };
+    }
+
+    const publishedRows = await transaction
+      .update(publications)
+      .set({
+        lifecycle: "published",
+        publishAt: occurredAt,
+        version: sql`${publications.version} + 1`,
+        updatedAt: occurredAt,
+      })
+      .where(
+        and(
+          eq(publications.tenantId, tenantId),
+          eq(publications.id, publicationId),
+          eq(publications.version, input.expectedVersion),
+          eq(publications.lifecycle, "draft"),
+        ),
+      )
+      .returning();
+
+    // A denial after this UPDATE would let the transaction callback resolve
+    // and commit a partial publish. Throw so PostgreSQL rolls back every
+    // post-mutation failure and the gateway maps it to PERSISTENCE_FAILED.
+    if (publishedRows.length !== 1) {
+      throw new Error("Publication publish update returned an unexpected row count.");
+    }
+
+    const publication = toPublication(publishedRows[0]);
+    if (
+      publication === null ||
+      publication.lifecycle !== "published" ||
+      publication.publishAt === null
+    ) {
+      throw new Error("Publication publish returned an invalid persisted row.");
+    }
+
+    return { ok: true, publication };
   }
 
   public async findPublicationByIdForTenant(

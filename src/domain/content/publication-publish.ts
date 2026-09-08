@@ -1,40 +1,6 @@
-import { isUuid } from "@/domain/identifiers/uuid";
-
-export const PUBLICATION_AUDIT_EVENT_TYPES = ["published"] as const;
-
-export type PublicationAuditEventType =
-  (typeof PUBLICATION_AUDIT_EVENT_TYPES)[number];
-
 export type PublishPublicationInput = Readonly<{
   expectedVersion: number;
   confirmedRecipientCount: number;
-}>;
-
-export type PublicationPublishAudienceSnapshot = Readonly<{
-  mode: "entire_tenant" | "targeted";
-  targets: readonly Readonly<{
-    dimension:
-      | "campus"
-      | "academic_division"
-      | "programme"
-      | "academic_year"
-      | "residence";
-    targetId: string | null;
-    targetValue: string | null;
-    label: string;
-  }>[];
-}>;
-
-export type PublicationPublishAuditEvent = Readonly<{
-  tenantId: string;
-  publicationId: string;
-  eventType: PublicationAuditEventType;
-  actorIdentitySubjectId: string;
-  actorMembershipId: string;
-  publicationVersion: number;
-  confirmedRecipientCount: number;
-  audienceSnapshot: PublicationPublishAudienceSnapshot;
-  occurredAt: Date;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,8 +17,8 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 /**
  * Parses the complete server-controlled confirmation for a manual publish.
- * Publication identity, actor identity, lifecycle, publish time, audience
- * definition, and target labels are intentionally not caller-controlled.
+ * Publication identity, lifecycle, publish time, and audience definition are
+ * intentionally not caller-controlled.
  */
 export function parsePublishPublicationInput(
   value: unknown,
@@ -80,47 +46,21 @@ export function parsePublishPublicationInput(
 
 export const parsePublicationPublishInput = parsePublishPublicationInput;
 
-export function isPublicationPublishAuditEvent(
-  value: unknown,
-): value is PublicationPublishAuditEvent {
-  if (!isRecord(value)) {
-    return false;
-  }
+function isValidDate(value: unknown): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime());
+}
 
+/**
+ * A Publication must remain live for a non-zero interval when it is
+ * published. The check belongs to the publish transition because the
+ * authoritative publish time is chosen inside that transaction.
+ */
+export function isPublicationExpiryValidAtPublish(
+  expiresAt: Date | null,
+  publishAt: Date,
+): boolean {
   return (
-    isUuid(value.tenantId) &&
-    isUuid(value.publicationId) &&
-    value.eventType === "published" &&
-    typeof value.actorIdentitySubjectId === "string" &&
-    value.actorIdentitySubjectId.trim().length > 0 &&
-    isUuid(value.actorMembershipId) &&
-    isPositiveInteger(value.publicationVersion) &&
-    isNonNegativeInteger(value.confirmedRecipientCount) &&
-    isRecord(value.audienceSnapshot) &&
-    (value.audienceSnapshot.mode === "entire_tenant" ||
-      value.audienceSnapshot.mode === "targeted") &&
-    Array.isArray(value.audienceSnapshot.targets) &&
-    value.audienceSnapshot.targets.every((target) => {
-      if (!isRecord(target)) {
-        return false;
-      }
-
-      return (
-        typeof target.dimension === "string" &&
-        [
-          "campus",
-          "academic_division",
-          "programme",
-          "academic_year",
-          "residence",
-        ].includes(target.dimension) &&
-        (target.targetId === null || isUuid(target.targetId)) &&
-        (target.targetValue === null || typeof target.targetValue === "string") &&
-        typeof target.label === "string" &&
-        target.label.trim().length > 0
-      );
-    }) &&
-    value.occurredAt instanceof Date &&
-    !Number.isNaN(value.occurredAt.getTime())
+    isValidDate(publishAt) &&
+    (expiresAt === null || (isValidDate(expiresAt) && expiresAt > publishAt))
   );
 }

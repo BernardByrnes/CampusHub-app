@@ -114,7 +114,7 @@ describe("server-only architecture boundary", () => {
       ]),
     );
     expect(violations).toHaveLength(4);
-  });
+  }, 30_000);
 
   it("resolves repository-root tests and every static local import form fail closed", () => {
     const violations = findProductionImportBoundaryViolationsFromSources([

@@ -4,7 +4,6 @@ import {
   foreignKey,
   index,
   integer,
-  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -26,7 +25,6 @@ import {
   PUBLICATION_PRIORITIES,
   PUBLICATION_TYPES,
 } from "@/domain/content/publication";
-import { PUBLICATION_AUDIT_EVENT_TYPES } from "@/domain/content/publication-publish";
 
 import {
   academicDivisions,
@@ -34,7 +32,6 @@ import {
   programmes,
   residences,
 } from "./organization";
-import { memberships } from "./membership";
 import { tenants } from "./tenant";
 
 export const publicationTypeEnum = pgEnum("publication_type", PUBLICATION_TYPES);
@@ -72,11 +69,6 @@ export const publicationAudienceProvenancePolicyEnum = pgEnum(
 export const publicationAudienceResidenceTargetEnum = pgEnum(
   "publication_audience_residence_target",
   PUBLICATION_RESIDENCE_TARGETS,
-);
-
-export const publicationAuditEventTypeEnum = pgEnum(
-  "publication_audit_event_type",
-  PUBLICATION_AUDIT_EVENT_TYPES,
 );
 
 export const publications = pgTable(
@@ -279,60 +271,3 @@ export type PublicationAudienceCriteriaRow =
   typeof publicationAudienceCriteria.$inferSelect;
 export type NewPublicationAudienceCriteriaRow =
   typeof publicationAudienceCriteria.$inferInsert;
-
-export const publicationAuditEvents = pgTable(
-  "publication_audit_events",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    tenantId: uuid("tenant_id").notNull(),
-    publicationId: uuid("publication_id").notNull(),
-    actorMembershipId: uuid("actor_membership_id").notNull(),
-    actorIdentitySubjectId: text("actor_identity_subject_id").notNull(),
-    eventType: publicationAuditEventTypeEnum("event_type").notNull(),
-    publicationVersion: integer("publication_version").notNull(),
-    confirmedRecipientCount: integer("confirmed_recipient_count").notNull(),
-    audienceSnapshot: jsonb("audience_snapshot").notNull(),
-    occurredAt: timestamp("occurred_at", {
-      withTimezone: true,
-      mode: "date",
-    })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    foreignKey({
-      name: "publication_audit_events_publication_same_tenant_fk",
-      columns: [table.tenantId, table.publicationId],
-      foreignColumns: [publications.tenantId, publications.id],
-    })
-      .onDelete("restrict")
-      .onUpdate("cascade"),
-    foreignKey({
-      name: "publication_audit_events_actor_membership_same_tenant_fk",
-      columns: [table.tenantId, table.actorMembershipId],
-      foreignColumns: [memberships.tenantId, memberships.id],
-    })
-      .onDelete("restrict")
-      .onUpdate("cascade"),
-    index("publication_audit_events_tenant_occurred_at").on(
-      table.tenantId,
-      table.occurredAt,
-      table.id,
-    ),
-    check(
-      "publication_audit_events_actor_identity_nonempty",
-      sql`char_length(btrim(${table.actorIdentitySubjectId})) > 0`,
-    ),
-    check(
-      "publication_audit_events_version_positive",
-      sql`${table.publicationVersion} >= 1`,
-    ),
-    check(
-      "publication_audit_events_recipient_count_nonnegative",
-      sql`${table.confirmedRecipientCount} >= 0`,
-    ),
-  ],
-);
-
-export type PublicationAuditEventRow = typeof publicationAuditEvents.$inferSelect;
-export type NewPublicationAuditEventRow = typeof publicationAuditEvents.$inferInsert;

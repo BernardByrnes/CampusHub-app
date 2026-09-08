@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, gt, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte } from "drizzle-orm";
 
 import type {
   MembershipContextReader,
@@ -342,15 +342,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
             eq(roleGrants.tenantId, tenant.id),
             eq(roleGrants.guildTermId, term.id),
             eq(roleGrants.membershipId, membership.id),
-            inArray(
-              roleGrants.capability,
-              expectedCapability === CAPABILITIES.PUBLICATION_PUBLISH
-                ? [
-                    CAPABILITIES.PUBLICATION_PUBLISH,
-                    CAPABILITIES.PUBLICATION_PRIORITY_PUBLISH,
-                  ]
-                : [expectedCapability],
-            ),
+            eq(roleGrants.capability, expectedCapability),
             eq(roleGrants.moduleScope, "publication"),
             isNull(roleGrants.revokedAt),
             gt(roleGrants.expiresAt, initialNow),
@@ -375,22 +367,6 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
       if (currentGrant === undefined) {
         return { allowed: false, code: "PERMISSION_DENIED" };
       }
-
-      const priorityGrant =
-        expectedCapability === CAPABILITIES.PUBLICATION_PUBLISH
-          ? grantRows.find(
-              (grant) =>
-                grant.capability === CAPABILITIES.PUBLICATION_PRIORITY_PUBLISH &&
-                grant.tenantId === tenant.id &&
-                grant.guildTermId === term.id &&
-                grant.membershipId === membership.id &&
-                grant.moduleScope === "publication" &&
-                grant.revokedAt === null &&
-                grant.expiresAt > initialNow &&
-                grant.expiresAt <= term.endsAt,
-            )
-          : undefined;
-      let priorityGrantRequired = false;
 
       if (isPublicationTransition) {
         const publicationRows = await database
@@ -419,10 +395,10 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           expectedCapability === CAPABILITIES.PUBLICATION_PUBLISH &&
           publication.priority === "priority"
         ) {
-          priorityGrantRequired = true;
-          if (priorityGrant === undefined) {
-            return { allowed: false, code: "PERMISSION_DENIED" };
-          }
+          // This manual transition is intentionally standard-only. The
+          // separate Priority capability remains a future product path and
+          // must not turn this gateway into a Priority publish surface.
+          return { allowed: false, code: "PERMISSION_DENIED" };
         }
       }
 
@@ -440,12 +416,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         finalNow < term.endsAt &&
         currentGrant.revokedAt === null &&
         currentGrant.expiresAt > finalNow &&
-        currentGrant.expiresAt <= term.endsAt &&
-        (!priorityGrantRequired ||
-          (priorityGrant !== undefined &&
-            priorityGrant.revokedAt === null &&
-            priorityGrant.expiresAt > finalNow &&
-            priorityGrant.expiresAt <= term.endsAt))
+        currentGrant.expiresAt <= term.endsAt
         ? { allowed: true }
         : { allowed: false, code: "PERMISSION_DENIED" };
     } catch {

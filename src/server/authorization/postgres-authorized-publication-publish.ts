@@ -8,10 +8,7 @@ import type { CapabilityAuthorizationRequest } from "@/domain/authorization/capa
 import type { PublishPublicationInput } from "@/domain/content/publication-publish";
 import { isUuid } from "@/domain/identifiers/uuid";
 import type { CampusHubDatabase } from "@/server/db/client";
-import {
-  DrizzlePublicationRepository,
-  type PublicationPublishActor,
-} from "@/server/repositories/publication-repository";
+import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
 import {
   PostgresCapabilityAuthorizer,
   type CapabilityClock,
@@ -23,6 +20,8 @@ export type PostgresAuthorizedPublicationPublishDependencies = Readonly<{
   clock?: CapabilityClock;
   /** Test-only gate after the Publication lock and before fresh authority time. */
   beforePublish?: () => Promise<void>;
+  /** Test-only failure point after the lifecycle mutation, before commit. */
+  afterPublishMutation?: () => Promise<void>;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,8 +30,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Commit-time Publication publish gateway. Authority, the exact resource
- * lock, the audience confirmation, the lifecycle update, and the audit event
- * all use one PostgreSQL transaction.
+ * lock, the audience confirmation, and the lifecycle update all use one
+ * PostgreSQL transaction.
  */
 export class PostgresAuthorizedPublicationPublishExecutor
   implements AuthorizedPublicationPublishGateway
@@ -60,8 +59,6 @@ export class PostgresAuthorizedPublicationPublishExecutor
         return { outcome: "DENIED", code: "PERMISSION_DENIED" };
       }
 
-      const actorMembershipId = request.actor.membershipId;
-
       return await this.dependencies.database.transaction(async (transaction) => {
         const decision =
           await this.dependencies.authorizer.authorizePublicationPublishInTransaction(
@@ -80,19 +77,17 @@ export class PostgresAuthorizedPublicationPublishExecutor
           return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
         }
 
-        const actor: PublicationPublishActor = {
-          identitySubjectId: request.actor.identitySubjectId,
-          membershipId: actorMembershipId,
-        };
         const mutation =
           await new DrizzlePublicationRepository().publishPublicationInTransaction(
             transaction,
             tenantId,
             publicationId,
             input,
-            actor,
             occurredAt,
           );
+        if (mutation.ok) {
+          await this.dependencies.afterPublishMutation?.();
+        }
         return mutation.ok
           ? ({ outcome: "PUBLISHED", publication: mutation.publication } as const)
           : ({ outcome: "DENIED", code: mutation.error } as const);

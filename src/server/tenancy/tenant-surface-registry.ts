@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0011_dark_jazinda.sql",
+    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -297,22 +297,12 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   },
   {
     implementationPath: "src/server/db/schema/publication.ts",
-    exportName: "publicationAuditEventTypeEnum",
-    expectedAstForm: "CallExpression",
-  },
-  {
-    implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publications",
     expectedAstForm: "CallExpression",
   },
   {
     implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publicationAudienceCriteria",
-    expectedAstForm: "CallExpression",
-  },
-  {
-    implementationPath: "src/server/db/schema/publication.ts",
-    exportName: "publicationAuditEvents",
     expectedAstForm: "CallExpression",
   },
   {
@@ -969,7 +959,7 @@ export const tenantSurfaceRegistry = [
       "PostgresAuthorizedPublicationPublishExecutor.publishAuthorizedPublication",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy:
-      "Preflight is advisory; authorization, exact Publication lock, audience readiness/confirmation, lifecycle UPDATE, and immutable publish audit INSERT share one PostgreSQL transaction.",
+      "Preflight is advisory; authorization, exact Publication lock, audience readiness/confirmation, and lifecycle UPDATE share one PostgreSQL transaction.",
     requiredNegativeTestIds: ["publication.publish"],
     operation:
       "PostgresAuthorizedPublicationPublishExecutor.publishAuthorizedPublication",
@@ -996,18 +986,6 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication-audience-criteria.persistence"],
     databaseObjectName: "publication_audience_criteria",
     operation: "table:publication_audience_criteria",
-  },
-  {
-    id: "publication-audit-events.persistence",
-    category: "model",
-    implementationPath: "src/server/db/schema/publication.ts",
-    surface: "publication_audit_events",
-    tenantScope: "TENANT_SCOPED",
-    isolationStrategy:
-      "Publication publish audit rows require explicit Tenant ownership plus same-Tenant Publication and actor Membership foreign keys, immutable event type, version, count, and audience snapshot fields.",
-    requiredNegativeTestIds: ["publication-audit-events.persistence"],
-    databaseObjectName: "publication_audit_events",
-    operation: "table:publication_audit_events",
   },
   {
     id: "publication.authorization.resolvers",
@@ -1074,7 +1052,7 @@ export const tenantSurfaceRegistry = [
       "DrizzlePublicationRepository.publishPublicationInTransaction",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy:
-      "The row-locked Tenant-bound draft is rechecked against the expected version and canonical audience readiness; lifecycle update and immutable audit insert use the same transaction handle.",
+      "The row-locked Tenant-bound draft is rechecked against the expected version and canonical audience readiness; the lifecycle update uses the same transaction handle.",
     requiredNegativeTestIds: ["publication.publish"],
     operation:
       "DrizzlePublicationRepository.publishPublicationInTransaction",
@@ -1260,7 +1238,7 @@ export const tenantSurfaceRegistry = [
     surface: "PublishPublicationService.publishPublication",
     tenantScope: "TENANT_SCOPED",
     isolationStrategy:
-      "Trusted context and requested Tenant must match before publication.publish preflight; only the atomic gateway may return a published Publication after exact version, audience confirmation, and audit persistence succeed.",
+      "Trusted context and requested Tenant must match before publication.publish preflight; only the atomic gateway may return a published Publication after exact version and audience confirmation succeed.",
     requiredNegativeTestIds: ["publication.publish"],
     operation: "PublishPublicationService.publishPublication",
   },
@@ -1342,8 +1320,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0011_dark_jazinda.sql",
-    surface: "Reviewed Drizzle migration history through 0011",
+    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
+    surface: "Reviewed Drizzle migration history through 0010",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1360,9 +1338,8 @@ export const tenantSurfaceRegistry = [
       "drizzle/0008_loving_dagger.sql",
       "drizzle/0009_swift_salo.sql",
       "drizzle/0010_yielding_ghost_rider.sql",
-      "drizzle/0011_dark_jazinda.sql",
     ],
-    migrationHead: "drizzle/0011_dark_jazinda.sql",
+    migrationHead: "drizzle/0010_yielding_ghost_rider.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

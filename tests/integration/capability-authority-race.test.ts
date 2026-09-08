@@ -9,6 +9,7 @@ import type { CampusHubDatabase } from "@/server/db/client";
 import type { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
 import type { PostgresAuthorizedPublicationCreateExecutor } from "@/server/authorization/postgres-authorized-publication-create";
 import type { PostgresAuthorizedPublicationDraftEditExecutor } from "@/server/authorization/postgres-authorized-publication-draft-edit";
+import type { PostgresAuthorizedPublicationPublishExecutor } from "@/server/authorization/postgres-authorized-publication-publish";
 import type { CanonicalPublicationDraftInput } from "@/domain/content/publication-draft";
 import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
 
@@ -55,6 +56,7 @@ let tables: typeof schema;
 let capabilityAuthorizer: PostgresCapabilityAuthorizer;
 let AuthorizedPublicationCreateExecutor: typeof PostgresAuthorizedPublicationCreateExecutor;
 let AuthorizedPublicationDraftEditExecutor: typeof PostgresAuthorizedPublicationDraftEditExecutor;
+let AuthorizedPublicationPublishExecutor: typeof PostgresAuthorizedPublicationPublishExecutor;
 let DrizzlePublicationRepository: typeof import("@/server/repositories/publication-repository").DrizzlePublicationRepository;
 let CreatePublicationService: typeof import("@/application/content/create-publication").CreatePublicationService;
 const syntheticTenantIds = new Set<string>();
@@ -166,12 +168,33 @@ async function createFixture() {
     throw new Error("Publication edit Role Grant fixture insert returned no row.");
   }
 
-  return { tenant, membership, term, grant, editGrant };
+  const publishGrantRows = await db
+    .insert(tables.roleGrants)
+    .values({
+      tenantId: tenant.id,
+      guildTermId: term.id,
+      membershipId: membership.id,
+      role: "publisher",
+      capability: "publication.publish",
+      moduleScope: "publication",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      expiresAt: GRANT_END,
+    })
+    .returning();
+  const publishGrant = publishGrantRows[0];
+  if (publishGrant === undefined) {
+    throw new Error("Publication publish Role Grant fixture insert returned no row.");
+  }
+
+  return { tenant, membership, term, grant, editGrant, publishGrant };
 }
 
 function requestFor(
   fixture: Awaited<ReturnType<typeof createFixture>>,
-  capability: "publication.create" | "publication.edit" = "publication.create",
+  capability:
+    | "publication.create"
+    | "publication.edit"
+    | "publication.publish" = "publication.create",
 ) {
   return {
     actor: {
@@ -312,6 +335,19 @@ function isPublicationLockWaiter(activity: PostgresActivity): boolean {
     query.includes('from "publications"') &&
     query.includes("for update")
   );
+}
+
+function publishExecutor(
+  beforePublish?: () => Promise<void>,
+  afterPublishMutation?: () => Promise<void>,
+): PostgresAuthorizedPublicationPublishExecutor {
+  return new AuthorizedPublicationPublishExecutor({
+    database: getDatabase(),
+    authorizer: capabilityAuthorizer,
+    clock: { now: () => capabilityNow },
+    beforePublish,
+    afterPublishMutation,
+  });
 }
 
 function isPublicationLockHolder(activity: PostgresActivity): boolean {
@@ -615,6 +651,9 @@ beforeAll(async () => {
   const editExecutorModule = await import(
     "@/server/authorization/postgres-authorized-publication-draft-edit"
   );
+  const publishExecutorModule = await import(
+    "@/server/authorization/postgres-authorized-publication-publish"
+  );
   const publicationRepositoryModule = await import(
     "@/server/repositories/publication-repository"
   );
@@ -645,6 +684,8 @@ beforeAll(async () => {
     executorModule.PostgresAuthorizedPublicationCreateExecutor;
   AuthorizedPublicationDraftEditExecutor =
     editExecutorModule.PostgresAuthorizedPublicationDraftEditExecutor;
+  AuthorizedPublicationPublishExecutor =
+    publishExecutorModule.PostgresAuthorizedPublicationPublishExecutor;
   DrizzlePublicationRepository =
     publicationRepositoryModule.DrizzlePublicationRepository;
   CreatePublicationService = createPublicationModule.CreatePublicationService;
@@ -684,6 +725,315 @@ afterAll(async () => {
 describe("durable capability commit-time authorization", () => {
   beforeEach(() => {
     capabilityNow = NOW;
+  });
+
+  it("PUBLISH-01 publishes a standard Publication with the locked confirmation", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toMatchObject({
+      outcome: "PUBLISHED",
+      publication: {
+        id: publication.id,
+        tenantId: fixture.tenant.id,
+        version: 2,
+        lifecycle: "published",
+        publishAt: NOW,
+      },
+    });
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 2,
+      lifecycle: "published",
+      publishAt: NOW,
+    });
+  });
+
+  it("PUBLISH-02 fails closed for every Priority Publication even when both grants exist", async () => {
+    const fixture = await createFixture();
+    await getDatabase().insert(tables.roleGrants).values({
+      tenantId: fixture.tenant.id,
+      guildTermId: fixture.term.id,
+      membershipId: fixture.membership.id,
+      role: "guild_administrator",
+      capability: "publication.priority_publish",
+      moduleScope: "publication",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      expiresAt: GRANT_END,
+    });
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+      priority: "priority",
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "PERMISSION_DENIED" });
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+      publishAt: null,
+    });
+  });
+
+  it("PUBLISH-03 rejects an expiry at or before the authoritative publish time", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+      expiresAt: NOW,
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_STATE" });
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+      publishAt: null,
+      expiresAt: NOW,
+    });
+  });
+
+  it("PUBLISH-04 rejects stale versions without changing the draft", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 2, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "VERSION_CONFLICT" });
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+    });
+  });
+
+  it("PUBLISH-05 rechecks the current audience confirmation under the Publication lock", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "RECONFIRM_REQUIRED" });
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+    });
+  });
+
+  it("PUBLISH-RACE-01 lets one locked publish win and rejects the stale publisher", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    const request = requestFor(fixture, "publication.publish");
+
+    const results = await Promise.all([
+      publishExecutor().publishAuthorizedPublication(
+        request,
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+      publishExecutor().publishAuthorizedPublication(
+        request,
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ]);
+
+    expect(results.filter((result) => result.outcome === "PUBLISHED")).toHaveLength(1);
+    expect(results.filter((result) => result.outcome === "DENIED")).toEqual([
+      { outcome: "DENIED", code: "VERSION_CONFLICT" },
+    ]);
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 2,
+      lifecycle: "published",
+    });
+  });
+
+  it("PUBLISH-RACE-02 rejects a publish queued behind a concurrent draft edit", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    const holder = await beginClient();
+    let holderCommitted = false;
+    let publish: Promise<unknown> = Promise.resolve();
+    try {
+      await holder.query(
+        `select id from publications where tenant_id = $1 and id = $2 for update`,
+        [fixture.tenant.id, publication.id],
+      );
+      publish = publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await waitForPublicationLockWaiterBlockedByBackend(
+        await backendPid(holder),
+      );
+      await holder.query(
+        `update publications set title = $3, version = version + 1, updated_at = $4 where tenant_id = $1 and id = $2`,
+        [fixture.tenant.id, publication.id, "Edited before publish", NOW],
+      );
+      await holder.query("commit");
+      holderCommitted = true;
+
+      await expect(publish).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+    } finally {
+      if (!holderCommitted) {
+        await holder.query("rollback").catch(() => undefined);
+      }
+      holder.release();
+      await Promise.allSettled([publish]);
+    }
+
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 2,
+      lifecycle: "draft",
+      title: "Edited before publish",
+    });
+  });
+
+  it("PUBLISH-AUTH-01 denies when the publish grant expires after the authority lock", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    await getDatabase()
+      .update(tables.roleGrants)
+      .set({ expiresAt: ONE_SECOND_AFTER_NOW })
+      .where(eq(tables.roleGrants.id, fixture.publishGrant.id));
+
+    const result = await publishExecutor(async () => {
+      capabilityNow = TWO_SECONDS_AFTER_NOW;
+    }).publishAuthorizedPublication(
+      requestFor(fixture, "publication.publish"),
+      fixture.tenant.id,
+      publication.id,
+      { expectedVersion: 1, confirmedRecipientCount: 1 },
+    );
+
+    expect(result).toEqual({ outcome: "DENIED", code: "PERMISSION_DENIED" });
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+    });
+  });
+
+  it("PUBLISH-AUTH-02 denies after a committed revocation and preserves the draft", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    await getDatabase()
+      .update(tables.roleGrants)
+      .set({ revokedAt: NOW })
+      .where(eq(tables.roleGrants.id, fixture.publishGrant.id));
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "PERMISSION_DENIED" });
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+    });
+  });
+
+  it("PUBLISH-TENANT-01 normalizes a foreign Publication to NOT_FOUND", async () => {
+    const fixtureA = await createFixture();
+    const fixtureB = await createFixture();
+    const foreignPublication = await createDraftPublication(fixtureB.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixtureA, "publication.publish"),
+        fixtureA.tenant.id,
+        foreignPublication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "NOT_FOUND" });
+    await expect(publicationRow(foreignPublication.id)).resolves.toMatchObject({
+      tenantId: fixtureB.tenant.id,
+      version: 1,
+      lifecycle: "draft",
+    });
+  });
+
+  it("PUBLISH-ROLLBACK-01 rolls back a post-mutation failure", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    let failureHookCalled = false;
+
+    await expect(
+      publishExecutor(undefined, async () => {
+        failureHookCalled = true;
+        throw new Error("simulated post-mutation failure");
+      }).publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+
+    expect(failureHookCalled).toBe(true);
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+      publishAt: null,
+    });
   });
 
   it("AUTH-RACE-01 revocation wins and commits no Publication", async () => {
