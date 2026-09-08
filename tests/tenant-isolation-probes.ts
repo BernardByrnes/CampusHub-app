@@ -13,8 +13,10 @@ import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication
 import type { Publication } from "@/domain/content/publication";
 import type { CreatePublicationDraftInput } from "@/domain/content/publication-draft";
 import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
+import type { PublishPublicationInput } from "@/domain/content/publication-publish";
 import { CreatePublicationService } from "@/application/content/create-publication";
 import { EditPublicationDraftService } from "@/application/content/edit-publication-draft";
+import { PublishPublicationService } from "@/application/content/publish-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
 import {
@@ -31,6 +33,7 @@ import {
   guildTerms,
   memberships,
   publicationAudienceCriteria,
+  publicationAuditEvents,
   programmes,
   publications,
   residences,
@@ -368,6 +371,29 @@ function publicationAudienceCriteriaPersistenceProbe(): void {
       "publication_audience_criteria_academic_year_unique",
       "publication_audience_criteria_specific_residence_unique",
       "publication_audience_criteria_residence_target_unique",
+    ]),
+  );
+}
+
+function publicationAuditEventsPersistenceProbe(): void {
+  expectTenantOwnedTable(publicationAuditEvents);
+  expectForeignKey(
+    publicationAuditEvents,
+    ["tenant_id", "publication_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    publicationAuditEvents,
+    ["tenant_id", "actor_membership_id"],
+    ["tenant_id", "id"],
+  );
+
+  const config = getTableConfig(publicationAuditEvents);
+  expect(config.checks.map((constraint) => constraint.name)).toEqual(
+    expect.arrayContaining([
+      "publication_audit_events_actor_identity_nonempty",
+      "publication_audit_events_version_positive",
+      "publication_audit_events_recipient_count_nonnegative",
     ]),
   );
 }
@@ -1181,6 +1207,68 @@ async function publicationEditProbe(): Promise<void> {
   expect(tenantBMutations).toHaveLength(0);
 }
 
+async function publicationPublishProbe(): Promise<void> {
+  const calls: Array<{
+    tenantId: string;
+    publicationId: string;
+    input: PublishPublicationInput;
+  }> = [];
+  const service = new PublishPublicationService({
+    authorizedPublicationPublish: {
+      publishAuthorizedPublication: async (
+        _request,
+        tenantId,
+        publicationId,
+        input,
+      ) => {
+        calls.push({ tenantId, publicationId, input });
+        return { outcome: "DENIED", code: "NOT_FOUND" };
+      },
+    },
+    capabilityAuthorizer: {
+      authorize: async () => ({ allowed: true }),
+    },
+  });
+  const trustedContext: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+  const publishInput = {
+    expectedVersion: 1,
+    confirmedRecipientCount: 0,
+  };
+
+  await expect(
+    service.publishPublication({
+      trustedContext,
+      requestedTenantId: tenantAId,
+      publicationId: foreignPublicationId,
+      publish: publishInput,
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "NOT_FOUND" });
+  expect(calls).toEqual([
+    {
+      tenantId: tenantAId,
+      publicationId: foreignPublicationId,
+      input: publishInput,
+    },
+  ]);
+
+  await expect(
+    service.publishPublication({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      publicationId: foreignPublicationId,
+      publish: publishInput,
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "TENANT_SCOPE_NOT_FOUND" });
+  expect(calls).toHaveLength(1);
+}
+
 async function guildTermActiveProbe(): Promise<void> {
   const database = {
     select: () => {
@@ -1316,6 +1404,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   },
   "publication-audience-criteria.persistence":
     publicationAudienceCriteriaPersistenceProbe,
+  "publication-audit-events.persistence": publicationAuditEventsPersistenceProbe,
   "campus.persistence": () => {
     expectTenantOwnedTable(campuses);
     expectTenantCompositeIdentity(campuses);
@@ -1386,6 +1475,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.collection": publicationCollectionProbe,
   "publication.create": publicationCreateProbe,
   "publication.edit": publicationEditProbe,
+  "publication.publish": publicationPublishProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":
     publicationAudienceDefinitionBatchProbe,

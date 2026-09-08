@@ -124,7 +124,7 @@ describe("PostgresCapabilityAuthorizer", () => {
     ).resolves.toEqual({ allowed: true });
   });
 
-  it("allows publication.edit only when the current grant contains publication.edit", async () => {
+  it("allows publication mutations only when the current grant matches", async () => {
     await expect(
       createAuthorizer({
         currentGrant: {
@@ -140,6 +140,16 @@ describe("PostgresCapabilityAuthorizer", () => {
         currentGrant: {
           ...grant,
           capability: CAPABILITIES.PUBLICATION_PUBLISH,
+        },
+      }).authorize(
+        request({ capability: CAPABILITIES.PUBLICATION_PUBLISH }),
+      ),
+    ).resolves.toEqual({ allowed: true });
+    await expect(
+      createAuthorizer({
+        currentGrant: {
+          ...grant,
+          capability: CAPABILITIES.PUBLICATION_EDIT,
         },
       }).authorize(
         request({ capability: CAPABILITIES.PUBLICATION_PUBLISH }),

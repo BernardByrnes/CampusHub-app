@@ -42,6 +42,7 @@ function implementationPathForDatabaseObject(
     role_grants: "src/server/db/schema/governance.ts",
     publications: "src/server/db/schema/publication.ts",
     publication_audience_criteria: "src/server/db/schema/publication.ts",
+    publication_audit_events: "src/server/db/schema/publication.ts",
   };
 
   return (

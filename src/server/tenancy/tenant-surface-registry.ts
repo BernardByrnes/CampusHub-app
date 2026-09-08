@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
+    implementationPath: "drizzle/0011_dark_jazinda.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -297,12 +297,22 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   },
   {
     implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAuditEventTypeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publications",
     expectedAstForm: "CallExpression",
   },
   {
     implementationPath: "src/server/db/schema/publication.ts",
     exportName: "publicationAudienceCriteria",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/publication.ts",
+    exportName: "publicationAuditEvents",
     expectedAstForm: "CallExpression",
   },
   {
@@ -418,6 +428,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterCount: 1,
     parameterNames: ["dependencies"],
     parameterTypeTexts: ["EditPublicationDraftServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath: "src/application/content/publish-publication.ts",
+    classIdentity: "PublishPublicationService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["PublishPublicationServiceDependencies"],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
   },
@@ -544,6 +564,19 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterNames: ["dependencies"],
     parameterTypeTexts: [
       "PostgresAuthorizedPublicationDraftEditDependencies",
+    ],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-publish.ts",
+    classIdentity: "PostgresAuthorizedPublicationPublishExecutor",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: [
+      "PostgresAuthorizedPublicationPublishDependencies",
     ],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
@@ -886,6 +919,20 @@ export const tenantSurfaceRegistry = [
       "PostgresCapabilityAuthorizer.authorizePublicationEditInTransaction",
   },
   {
+    id: "capability.authorization.atomic-publication-publish",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    surface:
+      "PostgresCapabilityAuthorizer.authorizePublicationPublishInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Commit-time manual-publish authority locks Tenant, Membership, active Guild Term, RoleGrant(publication.publish), and the exact draft Publication before a fresh authority check and version-guarded lifecycle transition.",
+    requiredNegativeTestIds: ["publication.publish"],
+    operation:
+      "PostgresCapabilityAuthorizer.authorizePublicationPublishInTransaction",
+  },
+  {
     id: "publication.atomic-authorized-create",
     category: "application_service",
     implementationPath:
@@ -914,6 +961,20 @@ export const tenantSurfaceRegistry = [
       "PostgresAuthorizedPublicationDraftEditExecutor.editAuthorizedPublication",
   },
   {
+    id: "publication.atomic-authorized-publish",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-publication-publish.ts",
+    surface:
+      "PostgresAuthorizedPublicationPublishExecutor.publishAuthorizedPublication",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Preflight is advisory; authorization, exact Publication lock, audience readiness/confirmation, lifecycle UPDATE, and immutable publish audit INSERT share one PostgreSQL transaction.",
+    requiredNegativeTestIds: ["publication.publish"],
+    operation:
+      "PostgresAuthorizedPublicationPublishExecutor.publishAuthorizedPublication",
+  },
+  {
     id: "publication.persistence",
     category: "model",
     implementationPath: "src/server/db/schema/publication.ts",
@@ -935,6 +996,18 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication-audience-criteria.persistence"],
     databaseObjectName: "publication_audience_criteria",
     operation: "table:publication_audience_criteria",
+  },
+  {
+    id: "publication-audit-events.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/publication.ts",
+    surface: "publication_audit_events",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Publication publish audit rows require explicit Tenant ownership plus same-Tenant Publication and actor Membership foreign keys, immutable event type, version, count, and audience snapshot fields.",
+    requiredNegativeTestIds: ["publication-audit-events.persistence"],
+    databaseObjectName: "publication_audit_events",
+    operation: "table:publication_audit_events",
   },
   {
     id: "publication.authorization.resolvers",
@@ -992,6 +1065,19 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.edit"],
     operation:
       "DrizzlePublicationRepository.updatePublicationDraftInTransaction",
+  },
+  {
+    id: "publication.repository.atomic-publish",
+    category: "repository",
+    implementationPath: "src/server/repositories/publication-repository.ts",
+    surface:
+      "DrizzlePublicationRepository.publishPublicationInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The row-locked Tenant-bound draft is rechecked against the expected version and canonical audience readiness; lifecycle update and immutable audit insert use the same transaction handle.",
+    requiredNegativeTestIds: ["publication.publish"],
+    operation:
+      "DrizzlePublicationRepository.publishPublicationInTransaction",
   },
   {
     id: "publication.repository.direct",
@@ -1168,6 +1254,17 @@ export const tenantSurfaceRegistry = [
     operation: "EditPublicationDraftService.editPublicationDraft",
   },
   {
+    id: "publication.publish",
+    category: "application_service",
+    implementationPath: "src/application/content/publish-publication.ts",
+    surface: "PublishPublicationService.publishPublication",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Trusted context and requested Tenant must match before publication.publish preflight; only the atomic gateway may return a published Publication after exact version, audience confirmation, and audit persistence succeed.",
+    requiredNegativeTestIds: ["publication.publish"],
+    operation: "PublishPublicationService.publishPublication",
+  },
+  {
     id: "global.health.route",
     category: "route",
     implementationPath: "src/app/api/health/route.ts",
@@ -1245,8 +1342,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
-    surface: "Reviewed Drizzle migration history through 0010",
+    implementationPath: "drizzle/0011_dark_jazinda.sql",
+    surface: "Reviewed Drizzle migration history through 0011",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1263,8 +1360,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0008_loving_dagger.sql",
       "drizzle/0009_swift_salo.sql",
       "drizzle/0010_yielding_ghost_rider.sql",
+      "drizzle/0011_dark_jazinda.sql",
     ],
-    migrationHead: "drizzle/0010_yielding_ghost_rider.sql",
+    migrationHead: "drizzle/0011_dark_jazinda.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 
