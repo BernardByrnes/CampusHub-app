@@ -344,7 +344,6 @@ function publishExecutor(
   return new AuthorizedPublicationPublishExecutor({
     database: getDatabase(),
     authorizer: capabilityAuthorizer,
-    clock: { now: () => capabilityNow },
     beforePublish,
     afterPublishMutation,
   });

@@ -9,15 +9,11 @@ import type { PublishPublicationInput } from "@/domain/content/publication-publi
 import { isUuid } from "@/domain/identifiers/uuid";
 import type { CampusHubDatabase } from "@/server/db/client";
 import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
-import {
-  PostgresCapabilityAuthorizer,
-  type CapabilityClock,
-} from "./postgres-capability-authorizer";
+import { PostgresCapabilityAuthorizer } from "./postgres-capability-authorizer";
 
 export type PostgresAuthorizedPublicationPublishDependencies = Readonly<{
   database: CampusHubDatabase;
   authorizer: PostgresCapabilityAuthorizer;
-  clock?: CapabilityClock;
   /** Test-only gate after the Publication lock and before fresh authority time. */
   beforePublish?: () => Promise<void>;
   /** Test-only failure point after the lifecycle mutation, before commit. */
@@ -60,6 +56,7 @@ export class PostgresAuthorizedPublicationPublishExecutor
       }
 
       return await this.dependencies.database.transaction(async (transaction) => {
+        const authorizationTimestamp: { value?: Date } = {};
         const decision =
           await this.dependencies.authorizer.authorizePublicationPublishInTransaction(
             transaction,
@@ -67,13 +64,19 @@ export class PostgresAuthorizedPublicationPublishExecutor
             publicationId,
             input.expectedVersion,
             this.dependencies.beforePublish,
+            (checkedAt) => {
+              authorizationTimestamp.value = checkedAt;
+            },
           );
         if (!decision.allowed) {
           return { outcome: "DENIED", code: decision.code } as const;
         }
 
-        const occurredAt = this.dependencies.clock?.now() ?? new Date();
-        if (!(occurredAt instanceof Date) || Number.isNaN(occurredAt.getTime())) {
+        const occurredAt = authorizationTimestamp.value;
+        if (
+          !(occurredAt instanceof Date) ||
+          Number.isNaN(occurredAt.getTime())
+        ) {
           return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
         }
 

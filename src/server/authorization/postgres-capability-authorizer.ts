@@ -64,6 +64,7 @@ type PublicationMutationTransactionOptions = Readonly<{
   publicationId?: string;
   expectedVersion?: number;
   beforeFinalCheck?: () => Promise<void>;
+  afterFinalCheck?: (checkedAt: Date) => void;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -411,14 +412,19 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         return { allowed: false, code: "PERMISSION_DENIED" };
       }
 
-      return term.status === "active" &&
+      const authorityIsCurrent =
+        term.status === "active" &&
         finalNow >= term.startsAt &&
         finalNow < term.endsAt &&
         currentGrant.revokedAt === null &&
         currentGrant.expiresAt > finalNow &&
-        currentGrant.expiresAt <= term.endsAt
-        ? { allowed: true }
-        : { allowed: false, code: "PERMISSION_DENIED" };
+        currentGrant.expiresAt <= term.endsAt;
+      if (!authorityIsCurrent) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      options.afterFinalCheck?.(finalNow);
+      return { allowed: true };
     } catch {
       return { allowed: false, code: "PERMISSION_DENIED" };
     }
@@ -479,6 +485,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
     publicationId: string,
     expectedVersion: number,
     beforeFinalCheck?: () => Promise<void>,
+    afterFinalCheck?: (checkedAt: Date) => void,
   ): Promise<PublicationEditTransactionDecision> {
     return this.authorizePublicationMutationInTransaction(
       database,
@@ -488,6 +495,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         publicationId,
         expectedVersion,
         beforeFinalCheck,
+        afterFinalCheck,
       },
     );
   }
