@@ -166,31 +166,67 @@ absolute-immutability claim.
 
 Audit events form an independent ordered integrity chain per Tenant. For event
 sequence `N`, `previousHash` is the current integrity hash of sequence `N - 1`.
-The first Tenant event uses a documented fixed genesis representation.
+For the first event in a Tenant chain, `previousHash` is the fixed 32-byte
+zero value. Hashes use one documented representation throughout the storage and
+serialization contract: lowercase hexadecimal encoding of the 32-byte
+SHA-256 value.
 
-`currentHash` is:
+The initial integrity and event contract versions are:
 
 ```text
-HMAC-SHA-256(secret-key-version, canonical-event-representation)
+integrityFormatVersion = 1
+eventContractVersion = 1
 ```
 
-The canonical representation includes at minimum:
+`currentHash` is precisely:
 
-- Tenant ID;
-- sequence;
-- event ID;
-- event type;
-- actor reference;
-- resource type;
-- resource ID;
-- resource version where present;
-- occurrence timestamp in one canonical UTC representation;
-- canonical closed event facts;
-- previous hash;
-- key version.
+```text
+currentHash =
+HMAC-SHA-256(
+  K[keyVersion],
+  UTF8(JCS(integrityEnvelopeV1))
+)
+```
 
-Serialization is deterministic and versioned. Normal JSON object insertion
-order is never relied on as the integrity contract.
+`K[keyVersion]` is the secret signing key obtained from the external
+integrity-key boundary for the non-secret `keyVersion` identifier. The key
+version is not the HMAC secret.
+
+`integrityEnvelopeV1` contains exactly the fields required by the closed event
+contract, including:
+
+- `integrityFormatVersion`;
+- `eventContractVersion`;
+- `tenantId`;
+- `sequence`;
+- `eventId`;
+- `eventType`;
+- `actorMembershipId`;
+- `resourceType`;
+- `resourceId`;
+- `resourceVersion`;
+- `occurredAt`;
+- `eventFacts`;
+- `previousHash`;
+- `keyVersion`.
+
+Canonical serialization uses a deterministic JSON representation equivalent to
+RFC 8785 JSON Canonicalization Scheme (JCS). Normal JSON object insertion order
+is never relied on as the integrity contract.
+
+Normalization is part of the contract:
+
+- UUIDs are canonical lowercase UUID strings;
+- `occurredAt` is UTC RFC3339/ISO-8601 with deterministic millisecond
+  precision;
+- sequence, resource-version, and count values are integers only;
+- hashes use the documented lowercase hexadecimal encoding of a 32-byte value.
+
+For `publication.published`, the audience-target snapshot is deterministically
+ordered before canonicalization. It is ordered first by the approved audience
+dimension, then by target identity/value within that dimension. Equivalent
+target sets therefore cannot hash differently merely because a query or array
+returned them in a different order.
 
 ## 10. Integrity-key boundary
 
@@ -202,10 +238,32 @@ boundary. Events record only a non-secret key-version identifier.
 Old verification keys must remain available for the retention period of events
 signed with them. Tests use explicit synthetic test-only keys.
 
-A6 claims **tamper evidence**, not **tamper impossibility**. If an attacker
-simultaneously controls the database, application runtime, and active integrity
-secret, they may be capable of constructing a new internally valid chain. That
-residual risk is documented honestly.
+A verifier must reject an event or chain when it encounters an unknown
+integrity-format version, unknown event-contract version, missing verification
+key, non-consecutive sequence, previous-hash mismatch, HMAC mismatch, or
+malformed canonical event facts. It must never silently treat an unverifiable
+event as valid.
+
+Under the stated uncompromised-key threat model, PostgreSQL append-only
+enforcement plus the HMAC chain detects row modification, event
+insertion/reordering, interior deletion, previous-hash corruption, and payload
+mutation. Normal CampusHub database roles are additionally prevented from
+UPDATE and DELETE by PostgreSQL enforcement.
+
+A hash chain stored entirely in the same PostgreSQL trust domain cannot by
+itself detect a fully privileged database or storage operator deleting a suffix
+of otherwise valid events and leaving an older valid prefix. A6 does not claim
+truncation-proof integrity or absolute immutability. For the A6 Pilot
+architecture, that suffix-truncation case is an explicit residual risk requiring
+strict production database privilege separation, no application superuser
+credentials, database/provider audit logging where available, backup/restore
+evidence, and operational monitoring.
+
+An external trusted head-checkpoint or anchor may be added if independent
+security review or paid-launch threat modelling requires suffix-truncation
+detection outside the PostgreSQL trust domain. No external provider is selected
+or implemented by A6, and this is not an implemented dependency for the
+current Publication checkpoint.
 
 ## 11. Tenant sequence and locking
 
