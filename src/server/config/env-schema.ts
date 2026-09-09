@@ -25,6 +25,7 @@ export const serverEnvSchema = z.object({
     .trim()
     .regex(/^\d+$/, "AUDIT_INTEGRITY_KEY_VERSION must be a positive integer")
     .optional(),
+  AUDIT_INTEGRITY_KEYRING: z.string().trim().min(1).optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

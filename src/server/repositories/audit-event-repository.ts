@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
 
 import {
   AUDIT_EVENT_CONTRACT_VERSION,
@@ -20,7 +20,7 @@ import {
 import {
   auditEventToIntegrityEnvelope,
   computeAuditCurrentHash,
-  verifyAuditChain,
+  verifyAuditEvent,
 } from "@/domain/audit/audit-integrity";
 import type { AuditIntegrityKeyProvider } from "@/domain/audit/audit-integrity-key-provider";
 
@@ -51,6 +51,8 @@ function isPositiveInteger(value: unknown): value is number {
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
+
+const AUDIT_VERIFICATION_PAGE_SIZE = 500;
 
 function toAuditEvent(row: AuditEventRow): AuditEvent | null {
   if (
@@ -94,7 +96,11 @@ function toAuditEvent(row: AuditEventRow): AuditEvent | null {
     keyVersion: candidate.keyVersion,
   });
 
-  if (envelope === null || !isUuid(candidate.id)) {
+  if (
+    envelope === null ||
+    !isUuid(candidate.id) ||
+    !/^[0-9a-f]{64}$/.test(candidate.currentHash)
+  ) {
     return null;
   }
 
@@ -256,8 +262,50 @@ export class DrizzleAuditEventRepository {
     }
 
     try {
-      const events = await this.listAuditEventsForTenant(tenantId, 1000);
-      return verifyAuditChain(events, this.dependencies.keyProvider);
+      let afterSequence: number | undefined;
+      let expectedSequence = 1;
+      let previousHash = "0".repeat(64);
+
+      while (true) {
+        const scope =
+          afterSequence === undefined
+            ? eq(auditEvents.tenantId, tenantId)
+            : and(
+                eq(auditEvents.tenantId, tenantId),
+                gt(auditEvents.sequence, afterSequence),
+              );
+        const rows = await this.dependencies.database
+          .select()
+          .from(auditEvents)
+          .where(scope)
+          .orderBy(asc(auditEvents.sequence))
+          .limit(AUDIT_VERIFICATION_PAGE_SIZE);
+
+        if (rows.length === 0) {
+          return true;
+        }
+
+        for (const row of rows) {
+          if (row.tenantId !== tenantId) {
+            return false;
+          }
+
+          const event = toAuditEvent(row);
+          if (
+            event === null ||
+            event.tenantId !== tenantId ||
+            event.sequence !== expectedSequence ||
+            event.previousHash !== previousHash ||
+            !verifyAuditEvent(event, this.dependencies.keyProvider)
+          ) {
+            return false;
+          }
+
+          expectedSequence += 1;
+          previousHash = event.currentHash;
+          afterSequence = event.sequence;
+        }
+      }
     } catch {
       return false;
     }

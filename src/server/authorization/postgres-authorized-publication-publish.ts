@@ -1,5 +1,7 @@
 import "server-only";
 
+import { sql } from "drizzle-orm";
+
 import type {
   AtomicPublicationPublishResult,
   AuthorizedPublicationPublishGateway,
@@ -18,6 +20,10 @@ export type PostgresAuthorizedPublicationPublishDependencies = Readonly<{
   database: CampusHubDatabase;
   authorizer: PostgresCapabilityAuthorizer;
   auditEvents: PublicationPublishAuditWriter;
+  /** The production default verifies the actual PostgreSQL session principal. */
+  runtimeDatabaseAuthorityVerifier?: (
+    database: Pick<CampusHubDatabase, "execute">,
+  ) => Promise<boolean>;
   /** Test-only gate after the Publication lock and before fresh authority time. */
   beforePublish?: () => Promise<void>;
   /** Test-only failure point after the lifecycle mutation, before commit. */
@@ -26,6 +32,62 @@ export type PostgresAuthorizedPublicationPublishDependencies = Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+async function verifyAuditRuntimeDatabaseAuthority(
+  database: Pick<CampusHubDatabase, "execute">,
+): Promise<boolean> {
+  try {
+    const result = await database.execute(sql`
+      with recursive effective_roles(oid) as (
+        select role.oid
+        from pg_roles as role
+        where role.rolname = current_user
+        union
+        select membership.roleid
+        from pg_auth_members as membership
+        join effective_roles as child_role
+          on child_role.oid = membership.member
+      )
+      select (
+        runtime_role.rolsuper = false
+        and current_user = session_user
+        and audit_table.relowner <> runtime_role.oid
+        and not exists (
+          select 1
+          from effective_roles as owner_role
+          where owner_role.oid = audit_table.relowner
+        )
+        and has_table_privilege(current_user, 'public.audit_events', 'SELECT')
+        and has_table_privilege(current_user, 'public.audit_events', 'INSERT')
+        and not has_table_privilege(current_user, 'public.audit_events', 'UPDATE')
+        and not has_table_privilege(current_user, 'public.audit_events', 'DELETE')
+        and not has_table_privilege(current_user, 'public.audit_events', 'TRUNCATE')
+        and not has_table_privilege(current_user, 'public.audit_events', 'REFERENCES')
+        and not has_table_privilege(current_user, 'public.audit_events', 'TRIGGER')
+        and not exists (
+          select 1
+          from effective_roles as audit_owner_role
+          join pg_roles as named_role
+            on named_role.oid = audit_owner_role.oid
+          where named_role.rolname = 'campushub_audit_owner'
+        )
+        and not has_schema_privilege(current_user, 'public', 'CREATE')
+      ) as allowed
+      from pg_roles as runtime_role
+      join pg_namespace as audit_namespace
+        on audit_namespace.nspname = 'public'
+      join pg_class as audit_table
+        on audit_table.relnamespace = audit_namespace.oid
+       and audit_table.relname = 'audit_events'
+       and audit_table.relkind = 'r'
+      where runtime_role.rolname = current_user
+    `);
+    const row = result.rows[0] as { allowed?: unknown } | undefined;
+    return row?.allowed === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -85,6 +147,14 @@ export class PostgresAuthorizedPublicationPublishExecutor
           !(occurredAt instanceof Date) ||
           Number.isNaN(occurredAt.getTime())
         ) {
+          return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
+        }
+
+        const runtimeAuthorityIsSafe = await (
+          this.dependencies.runtimeDatabaseAuthorityVerifier ??
+          verifyAuditRuntimeDatabaseAuthority
+        )(transaction);
+        if (!runtimeAuthorityIsSafe) {
           return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
         }
 

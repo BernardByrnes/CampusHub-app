@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { loadEnvConfig } from "@next/env";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 import type * as schema from "@/server/db/schema";
 import type { CampusHubDatabase } from "@/server/db/client";
@@ -80,6 +81,121 @@ function getPool(): Pool {
     throw new Error("Pool was not initialized.");
   }
   return pool;
+}
+
+function getDatabaseConnectionString(): string {
+  const value = process.env.DATABASE_URL;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("DATABASE_URL was not loaded for integration tests.");
+  }
+  return value;
+}
+
+async function authorizerForDatabase(
+  targetDatabase: CampusHubDatabase,
+): Promise<PostgresCapabilityAuthorizer> {
+  const tenantRepositoryModule = await import(
+    "@/server/repositories/tenant-repository"
+  );
+  const membershipRepositoryModule = await import(
+    "@/server/repositories/membership-repository"
+  );
+  const guildTermRepositoryModule = await import(
+    "@/server/repositories/guild-term-repository"
+  );
+  const roleGrantRepositoryModule = await import(
+    "@/server/repositories/role-grant-repository"
+  );
+  const authorizerModule = await import(
+    "@/server/authorization/postgres-capability-authorizer"
+  );
+
+  return new authorizerModule.PostgresCapabilityAuthorizer({
+    tenants: new tenantRepositoryModule.DrizzleTenantRepository(targetDatabase),
+    memberships: new membershipRepositoryModule.DrizzleMembershipRepository(
+      targetDatabase,
+    ),
+    guildTerms: new guildTermRepositoryModule.DrizzleGuildTermRepository(
+      targetDatabase,
+    ),
+    roleGrants: new roleGrantRepositoryModule.DrizzleRoleGrantRepository(
+      targetDatabase,
+    ),
+    clock: { now: () => capabilityNow },
+  });
+}
+
+type RestrictedRuntimeDatabase = Readonly<{
+  database: CampusHubDatabase;
+  pool: Pool;
+  roleName: string;
+}>;
+
+async function createRestrictedRuntimeDatabase(
+  memberOfAuditOwner = false,
+): Promise<RestrictedRuntimeDatabase> {
+  const adminPool = getPool();
+  const roleName = `campushub_runtime_test_${randomUUID().replaceAll("-", "")}`;
+  const password = randomUUID().replaceAll("-", "");
+  const quotedRole = `"${roleName}"`;
+  const tableNames = [
+    "tenants",
+    "memberships",
+    "guild_terms",
+    "role_grants",
+    "publications",
+    "publication_audience_criteria",
+  ];
+
+  await adminPool.query(
+    `create role ${quotedRole} login password '${password}'`,
+  );
+  try {
+    await adminPool.query(`grant usage on schema public to ${quotedRole}`);
+    await adminPool.query(`revoke create on schema public from ${quotedRole}`);
+    await adminPool.query(
+      `grant select on ${tableNames.map((name) => `"${name}"`).join(", ")} to ${quotedRole}`,
+    );
+    await adminPool.query(
+      `grant "campushub_runtime" to ${quotedRole}`,
+    );
+    await adminPool.query(
+      `grant update on ${tableNames
+        .filter((name) => name !== "publication_audience_criteria")
+        .map((name) => `"${name}"`)
+        .join(", ")} to ${quotedRole}`,
+    );
+    await adminPool.query(`grant select, insert on "audit_events" to ${quotedRole}`);
+    if (memberOfAuditOwner) {
+      await adminPool.query(
+        `grant "campushub_audit_owner" to ${quotedRole}`,
+      );
+    }
+
+    const connectionUrl = new URL(getDatabaseConnectionString());
+    connectionUrl.username = roleName;
+    connectionUrl.password = password;
+    const restrictedPool = new Pool({
+      connectionString: connectionUrl.toString(),
+      max: 1,
+    });
+    await restrictedPool.query("select 1");
+    const restrictedDatabase = drizzle({
+      client: restrictedPool,
+      schema: tables,
+    }) as CampusHubDatabase;
+    return { database: restrictedDatabase, pool: restrictedPool, roleName };
+  } catch (error) {
+    await adminPool.query(`drop role ${quotedRole}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function destroyRestrictedRuntimeDatabase(
+  restricted: RestrictedRuntimeDatabase,
+): Promise<void> {
+  await restricted.pool.end();
+  await getPool().query(`drop role "${restricted.roleName}"`);
 }
 
 function nextSlug(label: string): string {
@@ -374,8 +490,28 @@ function publishExecutor(
     database: getDatabase(),
     authorizer: capabilityAuthorizer,
     auditEvents,
+    // Existing fixture tests use the CI admin connection. The restricted-login
+    // test below omits this seam and exercises the production verifier.
+    runtimeDatabaseAuthorityVerifier: async () => true,
     beforePublish,
     afterPublishMutation,
+  });
+}
+
+function strictPublishExecutorFor(
+  targetDatabase: CampusHubDatabase,
+  targetAuthorizer: PostgresCapabilityAuthorizer,
+): PostgresAuthorizedPublicationPublishExecutor {
+  return new AuthorizedPublicationPublishExecutor({
+    database: targetDatabase,
+    authorizer: targetAuthorizer,
+    auditEvents: new DrizzleAuditEventRepository({
+      database: targetDatabase,
+      keyProvider: new StaticAuditIntegrityKeyProvider(
+        1,
+        new Map([[1, integrationAuditKey]]),
+      ),
+    }),
   });
 }
 
@@ -1771,6 +1907,164 @@ describe("durable capability commit-time authorization", () => {
     await expect(
       auditRowsForPublication(fixture.tenant.id, publication.id),
     ).resolves.toHaveLength(1);
+  });
+
+  it("A6-AUDIT-04 rejects a structurally valid persisted row with a bad HMAC", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toMatchObject({ outcome: "PUBLISHED" });
+
+    const validRows = await auditRowsForPublication(
+      fixture.tenant.id,
+      publication.id,
+    );
+    const validRow = validRows[0];
+    if (validRow === undefined) {
+      throw new Error("Expected the valid audit row before bad-HMAC insertion.");
+    }
+
+    await getDatabase().insert(tables.auditEvents).values({
+      id: randomUUID(),
+      tenantId: fixture.tenant.id,
+      sequence: 2,
+      eventType: "publication.published",
+      actorMembershipId: fixture.membership.id,
+      resourceType: "publication",
+      resourceId: publication.id,
+      resourceVersion: 2,
+      occurredAt: new Date(NOW.getTime() + 1000),
+      eventFacts: validRow.eventFacts,
+      previousHash: validRow.currentHash,
+      currentHash: "f".repeat(64),
+      keyVersion: 1,
+      integrityFormatVersion: 1,
+      eventContractVersion: 1,
+    });
+
+    const auditRepository = new DrizzleAuditEventRepository({
+      database: getDatabase(),
+      keyProvider: new StaticAuditIntegrityKeyProvider(
+        1,
+        new Map([[1, integrationAuditKey]]),
+      ),
+    });
+    await expect(
+      auditRepository.verifyAuditChainForTenant(fixture.tenant.id),
+    ).resolves.toBe(false);
+  });
+
+  it("A6-AUDIT-05 accepts only a restricted runtime login and rejects privileged principals", async () => {
+    const fixture = await createFixture();
+    const restricted = await createRestrictedRuntimeDatabase();
+    let ownerMember: RestrictedRuntimeDatabase | undefined;
+    try {
+      const restrictedAuthorizer = await authorizerForDatabase(
+        restricted.database,
+      );
+      const restrictedExecutor = strictPublishExecutorFor(
+        restricted.database,
+        restrictedAuthorizer,
+      );
+      const restrictedPublication = await createDraftPublication(
+        fixture.tenant.id,
+        { audienceMode: "entire_tenant" },
+      );
+
+      await expect(
+        restrictedExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          restrictedPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, restrictedPublication.id),
+      ).resolves.toHaveLength(1);
+
+      const auditRow = (
+        await auditRowsForPublication(fixture.tenant.id, restrictedPublication.id)
+      )[0];
+      if (auditRow === undefined) {
+        throw new Error("Expected the restricted runtime audit row.");
+      }
+
+      await expect(
+        restricted.pool.query(
+          'update "audit_events" set "current_hash" = $1 where "id" = $2',
+          [auditRow.currentHash, auditRow.id],
+        ),
+      ).rejects.toBeTruthy();
+      await expect(
+        restricted.pool.query('delete from "audit_events" where "id" = $1', [
+          auditRow.id,
+        ]),
+      ).rejects.toBeTruthy();
+      await expect(
+        restricted.pool.query('truncate table "audit_events"'),
+      ).rejects.toBeTruthy();
+
+      const adminPublication = await createDraftPublication(fixture.tenant.id, {
+        audienceMode: "entire_tenant",
+      });
+      const adminExecutor = strictPublishExecutorFor(
+        getDatabase(),
+        capabilityAuthorizer,
+      );
+      await expect(
+        adminExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          adminPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(publicationRow(adminPublication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
+
+      ownerMember = await createRestrictedRuntimeDatabase(true);
+      const ownerAuthorizer = await authorizerForDatabase(ownerMember.database);
+      const ownerExecutor = strictPublishExecutorFor(
+        ownerMember.database,
+        ownerAuthorizer,
+      );
+      const ownerPublication = await createDraftPublication(fixture.tenant.id, {
+        audienceMode: "entire_tenant",
+      });
+      await expect(
+        ownerExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          ownerPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(publicationRow(ownerPublication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
+    } finally {
+      if (ownerMember !== undefined) {
+        await destroyRestrictedRuntimeDatabase(ownerMember);
+      }
+      await destroyRestrictedRuntimeDatabase(restricted);
+    }
   });
 
   it("AUTH-RACE-01 revocation wins and commits no Publication", async () => {
