@@ -125,14 +125,36 @@ async function authorizerForDatabase(
   });
 }
 
+type RestrictedAdminPathTerminal =
+  | "audit_owner"
+  | "audit_update"
+  | "schema_create"
+  | "createrole"
+  | "benign";
+
+type RestrictedAdminPath = Readonly<{
+  bridgeCount: number;
+  seed: "admin" | "set";
+  terminal: RestrictedAdminPathTerminal;
+}>;
+
+type RestrictedRoleMembershipEdge = Readonly<{
+  memberRoleName: string;
+  targetRoleName: string;
+}>;
+
 type RestrictedRuntimeDatabase = Readonly<{
+  adminPathRoleNames: readonly (readonly string[])[];
+  adminPathTargetNames: readonly string[];
   database: CampusHubDatabase;
+  membershipEdges: readonly RestrictedRoleMembershipEdge[];
   pool: Pool;
   roleName: string;
   auxiliaryRoleNames: readonly string[];
 }>;
 
 type RestrictedRuntimeOptions = Readonly<{
+  adminPaths?: readonly RestrictedAdminPath[];
   auditOwnerMembership?: "set" | "admin_only";
   dangerousPrivileges?: readonly ("audit_update" | "schema_create")[];
   dangerousMembership?: "set" | "admin_only";
@@ -146,11 +168,16 @@ async function createRestrictedRuntimeDatabase(
   const password = randomUUID().replaceAll("-", "");
   const quotedRole = `"${roleName}"`;
   const dangerousPrivileges = options.dangerousPrivileges ?? [];
+  const adminPaths = options.adminPaths ?? [];
   const auxiliaryRoleNames: string[] = [];
+  const membershipEdges: RestrictedRoleMembershipEdge[] = [];
+  const adminPathRoleNames: string[][] = [];
+  const adminPathTargetNames: string[] = [];
   const requiresNoInherit =
     options.auditOwnerMembership === "admin_only" ||
     options.dangerousMembership === "admin_only" ||
-    dangerousPrivileges.length > 0;
+    dangerousPrivileges.length > 0 ||
+    adminPaths.some((path) => path.seed === "admin");
   const inheritance = requiresNoInherit ? "NOINHERIT" : "INHERIT";
   const tableNames = [
     "tenants",
@@ -160,6 +187,43 @@ async function createRestrictedRuntimeDatabase(
     "publications",
     "publication_audience_criteria",
   ];
+
+  const createAuxiliaryRole = async (
+    label: string,
+    createrole = false,
+  ): Promise<string> => {
+    const auxiliaryRoleName = `campushub_${label}_${randomUUID().replaceAll(
+      "-",
+      "",
+    )}`;
+    const quotedAuxiliaryRole = `"${auxiliaryRoleName}"`;
+    await adminPool.query(
+      `create role ${quotedAuxiliaryRole} nologin${
+        createrole ? " createrole" : ""
+      }`,
+    );
+    auxiliaryRoleNames.push(auxiliaryRoleName);
+    return auxiliaryRoleName;
+  };
+
+  const grantMembership = async (
+    targetRoleName: string,
+    memberRoleName: string,
+    mode: "set" | "admin_only",
+  ): Promise<void> => {
+    const quotedTarget = `"${targetRoleName}"`;
+    const quotedMember = `"${memberRoleName}"`;
+    if (mode === "admin_only") {
+      await adminPool.query(
+        `grant ${quotedTarget} to ${quotedMember} with admin true, set false, inherit false`,
+      );
+    } else {
+      await adminPool.query(
+        `grant ${quotedTarget} to ${quotedMember} with set true, inherit true`,
+      );
+    }
+    membershipEdges.push({ memberRoleName, targetRoleName });
+  };
 
   await adminPool.query(
     `create role ${quotedRole} login ${inheritance} password '${password}'`,
@@ -181,20 +245,13 @@ async function createRestrictedRuntimeDatabase(
     );
     await adminPool.query(`grant select, insert on "audit_events" to ${quotedRole}`);
     if (options.auditOwnerMembership === "set") {
-      await adminPool.query(`grant "campushub_audit_owner" to ${quotedRole}`);
+      await grantMembership("campushub_audit_owner", roleName, "set");
     } else if (options.auditOwnerMembership === "admin_only") {
-      await adminPool.query(
-        `grant "campushub_audit_owner" to ${quotedRole} with admin true, set false, inherit false`,
-      );
+      await grantMembership("campushub_audit_owner", roleName, "admin_only");
     }
     for (const dangerousPrivilege of dangerousPrivileges) {
-      const dangerousRoleName = `campushub_dangerous_test_${randomUUID().replaceAll(
-        "-",
-        "",
-      )}`;
+      const dangerousRoleName = await createAuxiliaryRole("dangerous_test");
       const quotedDangerousRole = `"${dangerousRoleName}"`;
-      auxiliaryRoleNames.push(dangerousRoleName);
-      await adminPool.query(`create role ${quotedDangerousRole} nologin`);
       if (dangerousPrivilege === "audit_update") {
         await adminPool.query(
           `grant update on "audit_events" to ${quotedDangerousRole}`,
@@ -204,15 +261,58 @@ async function createRestrictedRuntimeDatabase(
           `grant create on schema public to ${quotedDangerousRole}`,
         );
       }
-      if (options.dangerousMembership === "admin_only") {
-        await adminPool.query(
-          `grant ${quotedDangerousRole} to ${quotedRole} with admin true, set false, inherit false`,
+      await grantMembership(
+        dangerousRoleName,
+        roleName,
+        options.dangerousMembership === "admin_only" ? "admin_only" : "set",
+      );
+    }
+
+    for (const path of adminPaths) {
+      const pathRoleNames: string[] = [];
+      let memberRoleName = roleName;
+      for (
+        let bridgeIndex = 0;
+        bridgeIndex < path.bridgeCount;
+        bridgeIndex += 1
+      ) {
+        const bridgeRoleName = await createAuxiliaryRole("admin_bridge");
+        pathRoleNames.push(bridgeRoleName);
+        await grantMembership(
+          bridgeRoleName,
+          memberRoleName,
+          bridgeIndex === 0 && path.seed === "set" ? "set" : "admin_only",
         );
-      } else {
-        await adminPool.query(
-          `grant ${quotedDangerousRole} to ${quotedRole} with set true`,
-        );
+        memberRoleName = bridgeRoleName;
       }
+
+      let targetRoleName: string;
+      if (path.terminal === "audit_owner") {
+        targetRoleName = "campushub_audit_owner";
+      } else {
+        targetRoleName = await createAuxiliaryRole(
+          `admin_${path.terminal}`,
+          path.terminal === "createrole",
+        );
+        const quotedTargetRole = `"${targetRoleName}"`;
+        if (path.terminal === "audit_update") {
+          await adminPool.query(
+            `grant update on "audit_events" to ${quotedTargetRole}`,
+          );
+        } else if (path.terminal === "schema_create") {
+          await adminPool.query(
+            `grant create on schema public to ${quotedTargetRole}`,
+          );
+        }
+        pathRoleNames.push(targetRoleName);
+      }
+      await grantMembership(
+        targetRoleName,
+        memberRoleName,
+        path.bridgeCount === 0 && path.seed === "set" ? "set" : "admin_only",
+      );
+      adminPathRoleNames.push(pathRoleNames);
+      adminPathTargetNames.push(targetRoleName);
     }
 
     const connectionUrl = new URL(getDatabaseConnectionString());
@@ -228,17 +328,23 @@ async function createRestrictedRuntimeDatabase(
       schema: tables,
     }) as CampusHubDatabase;
     return {
+      adminPathRoleNames,
+      adminPathTargetNames,
+      auxiliaryRoleNames,
       database: restrictedDatabase,
+      membershipEdges,
       pool: restrictedPool,
       roleName,
-      auxiliaryRoleNames,
     };
   } catch (error) {
-    for (const auxiliaryRoleName of auxiliaryRoleNames) {
+    for (const edge of [...membershipEdges].reverse()) {
       await adminPool
-        .query(`revoke "${auxiliaryRoleName}" from ${quotedRole}`)
+        .query(`revoke "${edge.targetRoleName}" from "${edge.memberRoleName}"`)
         .catch(() => undefined);
     }
+    await adminPool
+      .query(`revoke "campushub_runtime" from ${quotedRole}`)
+      .catch(() => undefined);
     await adminPool
       .query(`revoke all privileges on schema public from ${quotedRole}`)
       .catch(() => undefined);
@@ -267,11 +373,11 @@ async function destroyRestrictedRuntimeDatabase(
   const adminPool = getPool();
   const quotedRole = `"${restricted.roleName}"`;
   await adminPool
-    .query(`revoke "campushub_runtime", "campushub_audit_owner" from ${quotedRole}`)
+    .query(`revoke "campushub_runtime" from ${quotedRole}`)
     .catch(() => undefined);
-  for (const auxiliaryRoleName of restricted.auxiliaryRoleNames) {
+  for (const edge of [...restricted.membershipEdges].reverse()) {
     await adminPool
-      .query(`revoke "${auxiliaryRoleName}" from ${quotedRole}`)
+      .query(`revoke "${edge.targetRoleName}" from "${edge.memberRoleName}"`)
       .catch(() => undefined);
   }
   await adminPool
@@ -2057,12 +2163,103 @@ describe("durable capability commit-time authorization", () => {
     ).resolves.toBe(false);
   });
 
+  it("A6-AUDIT-04b records PostgreSQL role-cycle rejection for recursive closure", async () => {
+    const adminPool = getPool();
+    const firstRoleName = `campushub_cycle_test_${randomUUID().replaceAll(
+      "-",
+      "",
+    )}`;
+    const secondRoleName = `campushub_cycle_test_${randomUUID().replaceAll(
+      "-",
+      "",
+    )}`;
+    const quotedFirstRole = `"${firstRoleName}"`;
+    const quotedSecondRole = `"${secondRoleName}"`;
+    let firstMembershipCreated = false;
+    let cycleMembershipCreated = false;
+    await adminPool.query(`create role ${quotedFirstRole} nologin`);
+    await adminPool.query(`create role ${quotedSecondRole} nologin`);
+    try {
+      await adminPool.query(
+        `grant ${quotedSecondRole} to ${quotedFirstRole} with admin true`,
+      );
+      firstMembershipCreated = true;
+      try {
+        await adminPool.query(
+          `grant ${quotedFirstRole} to ${quotedSecondRole} with admin true`,
+        );
+        cycleMembershipCreated = true;
+      } catch {
+        cycleMembershipCreated = false;
+      }
+      expect(cycleMembershipCreated).toBe(false);
+    } finally {
+      if (cycleMembershipCreated) {
+        await adminPool
+          .query(`revoke ${quotedFirstRole} from ${quotedSecondRole}`)
+          .catch(() => undefined);
+      }
+      if (firstMembershipCreated) {
+        await adminPool
+          .query(`revoke ${quotedSecondRole} from ${quotedFirstRole}`)
+          .catch(() => undefined);
+      }
+      await adminPool.query(`drop role ${quotedFirstRole}`);
+      await adminPool.query(`drop role ${quotedSecondRole}`);
+    }
+  });
+
   it("A6-AUDIT-05 accepts only a restricted runtime login and rejects privileged principals", async () => {
     const fixture = await createFixture();
     const restricted = await createRestrictedRuntimeDatabase();
     let ownerMember: RestrictedRuntimeDatabase | undefined;
     let dangerousUpdateMember: RestrictedRuntimeDatabase | undefined;
     let dangerousSchemaMember: RestrictedRuntimeDatabase | undefined;
+    const transitiveMembers: RestrictedRuntimeDatabase[] = [];
+    const expectAdminPathDenied = async (
+      runtime: RestrictedRuntimeDatabase,
+      targetRoleName: string,
+    ): Promise<void> => {
+      const reachability = await runtime.pool.query<{
+        settable: boolean;
+        usable: boolean;
+      }>(
+        `
+          select
+            pg_has_role(session_user::name, $1::name, 'SET') as settable,
+            pg_has_role(session_user::name, $1::name, 'USAGE') as usable
+        `,
+        [targetRoleName],
+      );
+      expect(reachability.rows[0]).toEqual({
+        settable: false,
+        usable: false,
+      });
+      const authorizer = await authorizerForDatabase(runtime.database);
+      const publishExecutor = strictPublishExecutorFor(
+        runtime.database,
+        authorizer,
+      );
+      const publication = await createDraftPublication(fixture.tenant.id, {
+        audienceMode: "entire_tenant",
+      });
+      await expect(
+        publishExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          publication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(0);
+    };
     try {
       const restrictedAuthorizer = await authorizerForDatabase(
         restricted.database,
@@ -2302,7 +2499,109 @@ describe("durable capability commit-time authorization", () => {
         lifecycle: "draft",
         publishAt: null,
       });
+
+      const twoHopUpdateMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 1, seed: "admin", terminal: "audit_update" },
+        ],
+      });
+      transitiveMembers.push(twoHopUpdateMember);
+      const twoHopUpdateRole = twoHopUpdateMember.adminPathTargetNames[0];
+      if (twoHopUpdateRole === undefined) {
+        throw new Error("Expected the two-hop audit-update role.");
+      }
+      await expectAdminPathDenied(twoHopUpdateMember, twoHopUpdateRole);
+
+      const threeHopOwnerMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 2, seed: "admin", terminal: "audit_owner" },
+        ],
+      });
+      transitiveMembers.push(threeHopOwnerMember);
+      await expectAdminPathDenied(
+        threeHopOwnerMember,
+        "campushub_audit_owner",
+      );
+
+      const transitiveSchemaMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 1, seed: "admin", terminal: "schema_create" },
+        ],
+      });
+      transitiveMembers.push(transitiveSchemaMember);
+      const transitiveSchemaRole =
+        transitiveSchemaMember.adminPathTargetNames[0];
+      if (transitiveSchemaRole === undefined) {
+        throw new Error("Expected the transitive schema-create role.");
+      }
+      await expectAdminPathDenied(
+        transitiveSchemaMember,
+        transitiveSchemaRole,
+      );
+
+      const transitiveCreateRoleMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 2, seed: "admin", terminal: "createrole" },
+        ],
+      });
+      transitiveMembers.push(transitiveCreateRoleMember);
+      const transitiveCreateRole =
+        transitiveCreateRoleMember.adminPathTargetNames[0];
+      if (transitiveCreateRole === undefined) {
+        throw new Error("Expected the transitive CREATEROLE role.");
+      }
+      await expectAdminPathDenied(
+        transitiveCreateRoleMember,
+        transitiveCreateRole,
+      );
+
+      const mixedAuthorityMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 1, seed: "set", terminal: "audit_update" },
+        ],
+      });
+      transitiveMembers.push(mixedAuthorityMember);
+      const mixedAuthorityRole = mixedAuthorityMember.adminPathTargetNames[0];
+      if (mixedAuthorityRole === undefined) {
+        throw new Error("Expected the mixed-authority audit-update role.");
+      }
+      await expectAdminPathDenied(mixedAuthorityMember, mixedAuthorityRole);
+
+      const benignAdminMember = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          { bridgeCount: 2, seed: "admin", terminal: "benign" },
+        ],
+      });
+      transitiveMembers.push(benignAdminMember);
+      const benignAuthorizer = await authorizerForDatabase(
+        benignAdminMember.database,
+      );
+      const benignExecutor = strictPublishExecutorFor(
+        benignAdminMember.database,
+        benignAuthorizer,
+      );
+      const benignPublication = await createDraftPublication(
+        fixture.tenant.id,
+        { audienceMode: "entire_tenant" },
+      );
+      await expect(
+        benignExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          benignPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, benignPublication.id),
+      ).resolves.toHaveLength(1);
     } finally {
+      for (const transitiveMember of [...transitiveMembers].reverse()) {
+        await destroyRestrictedRuntimeDatabase(transitiveMember);
+      }
       if (dangerousSchemaMember !== undefined) {
         await destroyRestrictedRuntimeDatabase(dangerousSchemaMember);
       }

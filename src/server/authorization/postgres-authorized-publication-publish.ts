@@ -39,29 +39,24 @@ async function verifyAuditRuntimeDatabaseAuthority(
 ): Promise<boolean> {
   try {
     const result = await database.execute(sql`
-      with reachable_roles(oid) as (
+      with recursive authority_closure(oid) as (
         select role.oid
         from pg_roles as role
         where role.rolname = current_user
            or pg_has_role(session_user::name, role.oid, 'USAGE')
            or pg_has_role(session_user::name, role.oid, 'SET')
-      ),
-      settable_roles(oid) as (
-        select role.oid
-        from pg_roles as role
-        where role.rolname = current_user
-           or pg_has_role(session_user::name, role.oid, 'SET')
+        union
+        select membership.roleid
+        from pg_auth_members as membership
+        join authority_closure as controlled
+          on controlled.oid = membership.member
+        where membership.admin_option
       )
       select (
         runtime_role.rolsuper = false
         and runtime_role.rolcreaterole = false
         and current_user = session_user
         and audit_table.relowner <> runtime_role.oid
-        and not exists (
-          select 1
-          from settable_roles as owner_role
-          where owner_role.oid = audit_table.relowner
-        )
         and has_table_privilege(current_user, 'public.audit_events', 'SELECT')
         and has_table_privilege(current_user, 'public.audit_events', 'INSERT')
         and not has_table_privilege(current_user, 'public.audit_events', 'UPDATE')
@@ -71,68 +66,19 @@ async function verifyAuditRuntimeDatabaseAuthority(
         and not has_table_privilege(current_user, 'public.audit_events', 'TRIGGER')
         and not exists (
           select 1
-          from settable_roles as audit_owner_role
-          join pg_roles as named_role
-            on named_role.oid = audit_owner_role.oid
-          where named_role.rolname = 'campushub_audit_owner'
-        )
-        and not exists (
-          select 1
-          from settable_roles as dangerous_role
-          join pg_roles as exercisable_role
-            on exercisable_role.oid = dangerous_role.oid
-          where exercisable_role.rolsuper
-             or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'UPDATE')
-             or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'DELETE')
-             or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'TRUNCATE')
-             or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'TRIGGER')
-             or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'REFERENCES')
-             or has_schema_privilege(exercisable_role.rolname, 'public', 'CREATE')
-        )
-        and not exists (
-          select 1
-          from pg_auth_members as membership
-          join reachable_roles as member_role
-            on member_role.oid = membership.member
-          join pg_roles as grantable_role
-            on grantable_role.oid = membership.roleid
-          where membership.admin_option
-            and (
-              grantable_role.rolsuper
-              or grantable_role.rolcreaterole
-              or grantable_role.rolname = 'campushub_audit_owner'
-              or grantable_role.oid = audit_table.relowner
-              or has_table_privilege(
-                grantable_role.rolname,
-                'public.audit_events',
-                'UPDATE'
-              )
-              or has_table_privilege(
-                grantable_role.rolname,
-                'public.audit_events',
-                'DELETE'
-              )
-              or has_table_privilege(
-                grantable_role.rolname,
-                'public.audit_events',
-                'TRUNCATE'
-              )
-              or has_table_privilege(
-                grantable_role.rolname,
-                'public.audit_events',
-                'TRIGGER'
-              )
-              or has_table_privilege(
-                grantable_role.rolname,
-                'public.audit_events',
-                'REFERENCES'
-              )
-              or has_schema_privilege(
-                grantable_role.rolname,
-                'public',
-                'CREATE'
-              )
-            )
+          from authority_closure as authority
+          join pg_roles as authority_role
+            on authority_role.oid = authority.oid
+          where authority_role.rolsuper
+             or authority_role.rolcreaterole
+             or authority_role.rolname = 'campushub_audit_owner'
+             or authority_role.oid = audit_table.relowner
+             or has_table_privilege(authority_role.rolname, 'public.audit_events', 'UPDATE')
+             or has_table_privilege(authority_role.rolname, 'public.audit_events', 'DELETE')
+             or has_table_privilege(authority_role.rolname, 'public.audit_events', 'TRUNCATE')
+             or has_table_privilege(authority_role.rolname, 'public.audit_events', 'TRIGGER')
+             or has_table_privilege(authority_role.rolname, 'public.audit_events', 'REFERENCES')
+             or has_schema_privilege(authority_role.rolname, 'public', 'CREATE')
         )
         and not has_schema_privilege(current_user, 'public', 'CREATE')
       ) as allowed
