@@ -129,15 +129,24 @@ type RestrictedRuntimeDatabase = Readonly<{
   database: CampusHubDatabase;
   pool: Pool;
   roleName: string;
+  auxiliaryRoleNames: readonly string[];
+}>;
+
+type RestrictedRuntimeOptions = Readonly<{
+  memberOfAuditOwner?: boolean;
+  dangerousPrivileges?: readonly ("audit_update" | "schema_create")[];
 }>;
 
 async function createRestrictedRuntimeDatabase(
-  memberOfAuditOwner = false,
+  options: RestrictedRuntimeOptions = {},
 ): Promise<RestrictedRuntimeDatabase> {
   const adminPool = getPool();
   const roleName = `campushub_runtime_test_${randomUUID().replaceAll("-", "")}`;
   const password = randomUUID().replaceAll("-", "");
   const quotedRole = `"${roleName}"`;
+  const dangerousPrivileges = options.dangerousPrivileges ?? [];
+  const auxiliaryRoleNames: string[] = [];
+  const inheritance = dangerousPrivileges.length > 0 ? "NOINHERIT" : "INHERIT";
   const tableNames = [
     "tenants",
     "memberships",
@@ -148,7 +157,7 @@ async function createRestrictedRuntimeDatabase(
   ];
 
   await adminPool.query(
-    `create role ${quotedRole} login password '${password}'`,
+    `create role ${quotedRole} login ${inheritance} password '${password}'`,
   );
   try {
     await adminPool.query(`grant usage on schema public to ${quotedRole}`);
@@ -166,9 +175,30 @@ async function createRestrictedRuntimeDatabase(
         .join(", ")} to ${quotedRole}`,
     );
     await adminPool.query(`grant select, insert on "audit_events" to ${quotedRole}`);
-    if (memberOfAuditOwner) {
+    if (options.memberOfAuditOwner === true) {
       await adminPool.query(
         `grant "campushub_audit_owner" to ${quotedRole}`,
+      );
+    }
+    for (const dangerousPrivilege of dangerousPrivileges) {
+      const dangerousRoleName = `campushub_dangerous_test_${randomUUID().replaceAll(
+        "-",
+        "",
+      )}`;
+      const quotedDangerousRole = `"${dangerousRoleName}"`;
+      auxiliaryRoleNames.push(dangerousRoleName);
+      await adminPool.query(`create role ${quotedDangerousRole} nologin`);
+      if (dangerousPrivilege === "audit_update") {
+        await adminPool.query(
+          `grant update on "audit_events" to ${quotedDangerousRole}`,
+        );
+      } else {
+        await adminPool.query(
+          `grant create on schema public to ${quotedDangerousRole}`,
+        );
+      }
+      await adminPool.query(
+        `grant ${quotedDangerousRole} to ${quotedRole} with set true`,
       );
     }
 
@@ -184,9 +214,35 @@ async function createRestrictedRuntimeDatabase(
       client: restrictedPool,
       schema: tables,
     }) as CampusHubDatabase;
-    return { database: restrictedDatabase, pool: restrictedPool, roleName };
+    return {
+      database: restrictedDatabase,
+      pool: restrictedPool,
+      roleName,
+      auxiliaryRoleNames,
+    };
   } catch (error) {
+    for (const auxiliaryRoleName of auxiliaryRoleNames) {
+      await adminPool
+        .query(`revoke "${auxiliaryRoleName}" from ${quotedRole}`)
+        .catch(() => undefined);
+    }
+    await adminPool
+      .query(`revoke all privileges on schema public from ${quotedRole}`)
+      .catch(() => undefined);
+    await adminPool
+      .query(`revoke all privileges on all tables in schema public from ${quotedRole}`)
+      .catch(() => undefined);
     await adminPool.query(`drop role ${quotedRole}`).catch(() => undefined);
+    for (const auxiliaryRoleName of auxiliaryRoleNames) {
+      const quotedAuxiliaryRole = `"${auxiliaryRoleName}"`;
+      await adminPool
+        .query(`revoke all privileges on schema public from ${quotedAuxiliaryRole}`)
+        .catch(() => undefined);
+      await adminPool
+        .query(`revoke all privileges on all tables in schema public from ${quotedAuxiliaryRole}`)
+        .catch(() => undefined);
+      await adminPool.query(`drop role ${quotedAuxiliaryRole}`).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -200,6 +256,11 @@ async function destroyRestrictedRuntimeDatabase(
   await adminPool
     .query(`revoke "campushub_runtime", "campushub_audit_owner" from ${quotedRole}`)
     .catch(() => undefined);
+  for (const auxiliaryRoleName of restricted.auxiliaryRoleNames) {
+    await adminPool
+      .query(`revoke "${auxiliaryRoleName}" from ${quotedRole}`)
+      .catch(() => undefined);
+  }
   await adminPool
     .query(`revoke all privileges on schema public from ${quotedRole}`)
     .catch(() => undefined);
@@ -207,6 +268,16 @@ async function destroyRestrictedRuntimeDatabase(
     .query(`revoke all privileges on all tables in schema public from ${quotedRole}`)
     .catch(() => undefined);
   await adminPool.query(`drop role ${quotedRole}`);
+  for (const auxiliaryRoleName of restricted.auxiliaryRoleNames) {
+    const quotedAuxiliaryRole = `"${auxiliaryRoleName}"`;
+    await adminPool
+      .query(`revoke all privileges on schema public from ${quotedAuxiliaryRole}`)
+      .catch(() => undefined);
+    await adminPool
+      .query(`revoke all privileges on all tables in schema public from ${quotedAuxiliaryRole}`)
+      .catch(() => undefined);
+    await adminPool.query(`drop role ${quotedAuxiliaryRole}`);
+  }
 }
 
 function nextSlug(label: string): string {
@@ -1977,6 +2048,7 @@ describe("durable capability commit-time authorization", () => {
     const fixture = await createFixture();
     const restricted = await createRestrictedRuntimeDatabase();
     let ownerMember: RestrictedRuntimeDatabase | undefined;
+    let dangerousMember: RestrictedRuntimeDatabase | undefined;
     try {
       const restrictedAuthorizer = await authorizerForDatabase(
         restricted.database,
@@ -2048,7 +2120,9 @@ describe("durable capability commit-time authorization", () => {
         publishAt: null,
       });
 
-      ownerMember = await createRestrictedRuntimeDatabase(true);
+      ownerMember = await createRestrictedRuntimeDatabase({
+        memberOfAuditOwner: true,
+      });
       const ownerAuthorizer = await authorizerForDatabase(ownerMember.database);
       const ownerExecutor = strictPublishExecutorFor(
         ownerMember.database,
@@ -2070,7 +2144,40 @@ describe("durable capability commit-time authorization", () => {
         lifecycle: "draft",
         publishAt: null,
       });
+
+      dangerousMember = await createRestrictedRuntimeDatabase({
+        dangerousPrivileges: ["audit_update", "schema_create"],
+      });
+      const dangerousAuthorizer = await authorizerForDatabase(
+        dangerousMember.database,
+      );
+      const dangerousExecutor = strictPublishExecutorFor(
+        dangerousMember.database,
+        dangerousAuthorizer,
+      );
+      const dangerousPublication = await createDraftPublication(
+        fixture.tenant.id,
+        { audienceMode: "entire_tenant" },
+      );
+      await expect(
+        dangerousExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          dangerousPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(
+        publicationRow(dangerousPublication.id),
+      ).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
     } finally {
+      if (dangerousMember !== undefined) {
+        await destroyRestrictedRuntimeDatabase(dangerousMember);
+      }
       if (ownerMember !== undefined) {
         await destroyRestrictedRuntimeDatabase(ownerMember);
       }
