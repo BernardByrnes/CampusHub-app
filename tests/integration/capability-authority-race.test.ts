@@ -195,7 +195,18 @@ async function destroyRestrictedRuntimeDatabase(
   restricted: RestrictedRuntimeDatabase,
 ): Promise<void> {
   await restricted.pool.end();
-  await getPool().query(`drop role "${restricted.roleName}"`);
+  const adminPool = getPool();
+  const quotedRole = `"${restricted.roleName}"`;
+  await adminPool
+    .query(`revoke "campushub_runtime", "campushub_audit_owner" from ${quotedRole}`)
+    .catch(() => undefined);
+  await adminPool
+    .query(`revoke all privileges on schema public from ${quotedRole}`)
+    .catch(() => undefined);
+  await adminPool
+    .query(`revoke all privileges on all tables in schema public from ${quotedRole}`)
+    .catch(() => undefined);
+  await adminPool.query(`drop role ${quotedRole}`);
 }
 
 function nextSlug(label: string): string {
