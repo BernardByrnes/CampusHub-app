@@ -39,7 +39,7 @@ async function verifyAuditRuntimeDatabaseAuthority(
 ): Promise<boolean> {
   try {
     const result = await database.execute(sql`
-      with recursive authority_closure(oid) as (
+      with recursive effective_authority_closure(oid) as (
         select role.oid
         from pg_roles as role
         where role.rolname = current_user
@@ -48,9 +48,11 @@ async function verifyAuditRuntimeDatabaseAuthority(
         union
         select membership.roleid
         from pg_auth_members as membership
-        join authority_closure as controlled
+        join effective_authority_closure as controlled
           on controlled.oid = membership.member
         where membership.admin_option
+           or membership.set_option
+           or membership.inherit_option
       )
       select (
         runtime_role.rolsuper = false
@@ -66,7 +68,7 @@ async function verifyAuditRuntimeDatabaseAuthority(
         and not has_table_privilege(current_user, 'public.audit_events', 'TRIGGER')
         and not exists (
           select 1
-          from authority_closure as authority
+          from effective_authority_closure as authority
           join pg_roles as authority_role
             on authority_role.oid = authority.oid
           where authority_role.rolsuper

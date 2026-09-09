@@ -132,14 +132,24 @@ type RestrictedAdminPathTerminal =
   | "createrole"
   | "benign";
 
+type RestrictedMembershipMode =
+  | "admin_only"
+  | "set"
+  | "set_no_inherit"
+  | "inherit";
+
 type RestrictedAdminPath = Readonly<{
   bridgeCount: number;
+  edgeModes?: readonly RestrictedMembershipMode[];
   seed: "admin" | "set";
   terminal: RestrictedAdminPathTerminal;
 }>;
 
 type RestrictedRoleMembershipEdge = Readonly<{
+  adminOption: boolean;
+  inheritOption: boolean;
   memberRoleName: string;
+  setOption: boolean;
   targetRoleName: string;
 }>;
 
@@ -173,11 +183,28 @@ async function createRestrictedRuntimeDatabase(
   const membershipEdges: RestrictedRoleMembershipEdge[] = [];
   const adminPathRoleNames: string[][] = [];
   const adminPathTargetNames: string[] = [];
+  for (const path of adminPaths) {
+    const expectedEdgeCount = path.bridgeCount + 1;
+    if (
+      path.edgeModes !== undefined &&
+      path.edgeModes.length !== expectedEdgeCount
+    ) {
+      throw new Error(
+        `Expected ${expectedEdgeCount} edge modes for an admin path, received ${path.edgeModes.length}.`,
+      );
+    }
+  }
+  const pathMode = (
+    path: RestrictedAdminPath,
+    edgeIndex: number,
+  ): RestrictedMembershipMode =>
+    path.edgeModes?.[edgeIndex] ??
+    (edgeIndex === 0 && path.seed === "set" ? "set" : "admin_only");
   const requiresNoInherit =
     options.auditOwnerMembership === "admin_only" ||
     options.dangerousMembership === "admin_only" ||
     dangerousPrivileges.length > 0 ||
-    adminPaths.some((path) => path.seed === "admin");
+    adminPaths.some((path) => pathMode(path, 0) === "admin_only");
   const inheritance = requiresNoInherit ? "NOINHERIT" : "INHERIT";
   const tableNames = [
     "tenants",
@@ -209,20 +236,23 @@ async function createRestrictedRuntimeDatabase(
   const grantMembership = async (
     targetRoleName: string,
     memberRoleName: string,
-    mode: "set" | "admin_only",
+    mode: RestrictedMembershipMode,
   ): Promise<void> => {
     const quotedTarget = `"${targetRoleName}"`;
     const quotedMember = `"${memberRoleName}"`;
-    if (mode === "admin_only") {
-      await adminPool.query(
-        `grant ${quotedTarget} to ${quotedMember} with admin true, set false, inherit false`,
-      );
-    } else {
-      await adminPool.query(
-        `grant ${quotedTarget} to ${quotedMember} with set true, inherit true`,
-      );
-    }
-    membershipEdges.push({ memberRoleName, targetRoleName });
+    const membershipOptions = {
+      adminOption: mode === "admin_only",
+      setOption: mode === "set" || mode === "set_no_inherit",
+      inheritOption: mode === "set" || mode === "inherit",
+    };
+    await adminPool.query(
+      `grant ${quotedTarget} to ${quotedMember} with admin ${membershipOptions.adminOption}, set ${membershipOptions.setOption}, inherit ${membershipOptions.inheritOption}`,
+    );
+    membershipEdges.push({
+      ...membershipOptions,
+      memberRoleName,
+      targetRoleName,
+    });
   };
 
   await adminPool.query(
@@ -281,7 +311,7 @@ async function createRestrictedRuntimeDatabase(
         await grantMembership(
           bridgeRoleName,
           memberRoleName,
-          bridgeIndex === 0 && path.seed === "set" ? "set" : "admin_only",
+          pathMode(path, bridgeIndex),
         );
         memberRoleName = bridgeRoleName;
       }
@@ -309,7 +339,7 @@ async function createRestrictedRuntimeDatabase(
       await grantMembership(
         targetRoleName,
         memberRoleName,
-        path.bridgeCount === 0 && path.seed === "set" ? "set" : "admin_only",
+        pathMode(path, path.bridgeCount),
       );
       adminPathRoleNames.push(pathRoleNames);
       adminPathTargetNames.push(targetRoleName);
@@ -2612,6 +2642,261 @@ describe("durable capability commit-time authorization", () => {
         await destroyRestrictedRuntimeDatabase(ownerMember);
       }
       await destroyRestrictedRuntimeDatabase(restricted);
+    }
+  });
+
+  it("A6-AUDIT-05b rejects effective ADMIN-to-SET authority paths", async () => {
+    const fixture = await createFixture();
+    const runtimes: RestrictedRuntimeDatabase[] = [];
+    const expectDenied = async (
+      runtime: RestrictedRuntimeDatabase,
+      targetRoleName: string,
+    ): Promise<void> => {
+      const reachability = await runtime.pool.query<{
+        settable: boolean;
+        usable: boolean;
+      }>(
+        `
+          select
+            pg_has_role(current_user::name, $1::name, 'SET') as settable,
+            pg_has_role(current_user::name, $1::name, 'USAGE') as usable
+        `,
+        [targetRoleName],
+      );
+      expect(reachability.rows[0]).toEqual({
+        settable: false,
+        usable: false,
+      });
+
+      const authorizer = await authorizerForDatabase(runtime.database);
+      const publishExecutor = strictPublishExecutorFor(
+        runtime.database,
+        authorizer,
+      );
+      const publication = await createDraftPublication(fixture.tenant.id, {
+        audienceMode: "entire_tenant",
+      });
+      await expect(
+        publishExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          publication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(0);
+    };
+
+    const adminToSetEdges = [
+      "admin_only",
+      "set_no_inherit",
+    ] as const satisfies readonly RestrictedMembershipMode[];
+    const deepMixedEdges = [
+      "admin_only",
+      "set_no_inherit",
+      "admin_only",
+      "set_no_inherit",
+    ] as const satisfies readonly RestrictedMembershipMode[];
+    const inheritMixedEdges = [
+      "admin_only",
+      "inherit",
+      "admin_only",
+      "set_no_inherit",
+    ] as const satisfies readonly RestrictedMembershipMode[];
+
+    try {
+      const adminSetUpdate = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 1,
+            edgeModes: adminToSetEdges,
+            seed: "admin",
+            terminal: "audit_update",
+          },
+        ],
+      });
+      runtimes.push(adminSetUpdate);
+      const adminSetUpdatePath = adminSetUpdate.adminPathRoleNames[0];
+      const adminSetUpdateBridge = adminSetUpdatePath?.[0];
+      const adminSetUpdateTarget = adminSetUpdate.adminPathTargetNames[0];
+      if (adminSetUpdateBridge === undefined || adminSetUpdateTarget === undefined) {
+        throw new Error("Expected the ADMIN-to-SET audit-update path roles.");
+      }
+      const adminSetCatalogProof = await adminSetUpdate.pool.query<{
+        bridgeSetTargetWithoutInherit: boolean;
+        runtimeAdminOnlyBridge: boolean;
+        runtimeCanSetBridge: boolean;
+        runtimeCanSetTarget: boolean;
+      }>(
+        `
+          select
+            pg_has_role(current_user::name, $1::name, 'SET') as "runtimeCanSetBridge",
+            exists (
+              select 1
+              from pg_auth_members as membership
+              join pg_roles as member_role
+                on member_role.oid = membership.member
+              join pg_roles as target_role
+                on target_role.oid = membership.roleid
+              where member_role.rolname = current_user
+                and target_role.rolname = $1
+                and membership.admin_option
+                and not membership.set_option
+                and not membership.inherit_option
+            ) as "runtimeAdminOnlyBridge",
+            exists (
+              select 1
+              from pg_auth_members as membership
+              join pg_roles as member_role
+                on member_role.oid = membership.member
+              join pg_roles as target_role
+                on target_role.oid = membership.roleid
+              where member_role.rolname = $1
+                and target_role.rolname = $2
+                and membership.set_option
+                and not membership.inherit_option
+            ) as "bridgeSetTargetWithoutInherit",
+            pg_has_role(current_user::name, $2::name, 'SET') as "runtimeCanSetTarget"
+        `,
+        [adminSetUpdateBridge, adminSetUpdateTarget],
+      );
+      expect(adminSetCatalogProof.rows[0]).toEqual({
+        bridgeSetTargetWithoutInherit: true,
+        runtimeAdminOnlyBridge: true,
+        runtimeCanSetBridge: false,
+        runtimeCanSetTarget: false,
+      });
+      await expectDenied(adminSetUpdate, adminSetUpdateTarget);
+
+      const adminSetOwner = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 1,
+            edgeModes: adminToSetEdges,
+            seed: "admin",
+            terminal: "audit_owner",
+          },
+        ],
+      });
+      runtimes.push(adminSetOwner);
+      await expectDenied(adminSetOwner, "campushub_audit_owner");
+
+      const adminSetSchema = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 1,
+            edgeModes: adminToSetEdges,
+            seed: "admin",
+            terminal: "schema_create",
+          },
+        ],
+      });
+      runtimes.push(adminSetSchema);
+      const adminSetSchemaTarget = adminSetSchema.adminPathTargetNames[0];
+      if (adminSetSchemaTarget === undefined) {
+        throw new Error("Expected the ADMIN-to-SET schema-create role.");
+      }
+      await expectDenied(adminSetSchema, adminSetSchemaTarget);
+
+      const adminSetCreateRole = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 1,
+            edgeModes: adminToSetEdges,
+            seed: "admin",
+            terminal: "createrole",
+          },
+        ],
+      });
+      runtimes.push(adminSetCreateRole);
+      const adminSetCreateRoleTarget =
+        adminSetCreateRole.adminPathTargetNames[0];
+      if (adminSetCreateRoleTarget === undefined) {
+        throw new Error("Expected the ADMIN-to-SET CREATEROLE role.");
+      }
+      await expectDenied(adminSetCreateRole, adminSetCreateRoleTarget);
+
+      const deepMixed = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 3,
+            edgeModes: deepMixedEdges,
+            seed: "admin",
+            terminal: "audit_update",
+          },
+        ],
+      });
+      runtimes.push(deepMixed);
+      const deepMixedTarget = deepMixed.adminPathTargetNames[0];
+      if (deepMixedTarget === undefined) {
+        throw new Error("Expected the deep mixed audit-update role.");
+      }
+      await expectDenied(deepMixed, deepMixedTarget);
+
+      const inheritMixed = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 3,
+            edgeModes: inheritMixedEdges,
+            seed: "admin",
+            terminal: "audit_update",
+          },
+        ],
+      });
+      runtimes.push(inheritMixed);
+      const inheritMixedTarget = inheritMixed.adminPathTargetNames[0];
+      if (inheritMixedTarget === undefined) {
+        throw new Error("Expected the inherit mixed audit-update role.");
+      }
+      await expectDenied(inheritMixed, inheritMixedTarget);
+
+      const benignMixed = await createRestrictedRuntimeDatabase({
+        adminPaths: [
+          {
+            bridgeCount: 3,
+            edgeModes: deepMixedEdges,
+            seed: "admin",
+            terminal: "benign",
+          },
+        ],
+      });
+      runtimes.push(benignMixed);
+      const benignAuthorizer = await authorizerForDatabase(
+        benignMixed.database,
+      );
+      const benignExecutor = strictPublishExecutorFor(
+        benignMixed.database,
+        benignAuthorizer,
+      );
+      const benignPublication = await createDraftPublication(
+        fixture.tenant.id,
+        { audienceMode: "entire_tenant" },
+      );
+      await expect(
+        benignExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          benignPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, benignPublication.id),
+      ).resolves.toHaveLength(1);
+    } finally {
+      for (const runtime of [...runtimes].reverse()) {
+        await destroyRestrictedRuntimeDatabase(runtime);
+      }
     }
   });
 
