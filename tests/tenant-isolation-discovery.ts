@@ -29,6 +29,7 @@ export const GOVERNED_IMPLEMENTATION_ROOTS = [
   "src/server",
   "src/application",
   "src/app/api",
+  "src/app/(student)",
 ] as const;
 
 export const GOVERNED_SINGLE_FILE_PREFIXES = [

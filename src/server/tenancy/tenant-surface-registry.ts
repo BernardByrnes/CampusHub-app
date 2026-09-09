@@ -591,6 +591,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
   },
+  {
+    implementationPath: "src/application/content/campus-home.ts",
+    classIdentity: "CampusHomeService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["CampusHomeServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
 ] as const satisfies readonly ReviewedNonOperationalConstructorContract[];
 
 /**
@@ -1289,6 +1299,82 @@ export const tenantSurfaceRegistry = [
     operation: "ListPublicationsService.listPublications",
   },
   {
+    id: "home.service",
+    category: "application_service",
+    implementationPath: "src/application/content/campus-home.ts",
+    surface: "CampusHomeService.getFeed/getDetail",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The Home adapter forwards only the trusted RequestContext Tenant and Membership facts into the canonical ACTIVE collection and direct-read services, then maps only authorized Publication fields.",
+    requiredNegativeTestIds: ["home.collection"],
+  },
+  {
+    id: "home.service.feed",
+    category: "application_service",
+    implementationPath: "src/application/content/campus-home.ts",
+    surface: "CampusHomeService.getFeed",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Home collection requests are fixed to ACTIVE and the trusted Tenant; denial and malformed cursor results are reduced to an unavailable state without exposing hidden-row metadata.",
+    requiredNegativeTestIds: ["home.collection"],
+    operation: "CampusHomeService.getFeed",
+  },
+  {
+    id: "home.service.detail",
+    category: "application_service",
+    implementationPath: "src/application/content/campus-home.ts",
+    surface: "CampusHomeService.getDetail",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Every detail request reuses the trusted Tenant and viewer while the canonical direct-read service reauthorizes the exact Publication before mapping it.",
+    requiredNegativeTestIds: ["home.detail"],
+    operation: "CampusHomeService.getDetail",
+  },
+  {
+    id: "home.service.factory",
+    category: "application_service",
+    implementationPath: "src/server/home/create-campus-home-service.ts",
+    surface: "createCampusHomeService",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The server-only factory composes existing Tenant-bound repositories, exposure seam, and persisted audience resolvers; it performs no query until a trusted Home operation invokes the composed services.",
+    requiredNegativeTestIds: ["home.collection"],
+    operation: "createCampusHomeService",
+  },
+  {
+    id: "home.route",
+    category: "route",
+    implementationPath: "src/app/(student)/page.tsx",
+    surface: "GET /",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The Server Component accepts no browser authority, requires a server-produced trusted context, and delegates collection authorization to CampusHomeService.",
+    requiredNegativeTestIds: ["home.collection"],
+    operation: "default",
+  },
+  {
+    id: "home.detail.route",
+    category: "route",
+    implementationPath: "src/app/(student)/publications/[publicationId]/page.tsx",
+    surface: "GET /publications/:publicationId",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The Server Component accepts no browser authority and independently reauthorizes the exact Tenant-bound Publication; denied or missing resources render the safe not-found path.",
+    requiredNegativeTestIds: ["home.detail"],
+    operation: "default",
+  },
+  {
+    id: "home.loading.route",
+    category: "route",
+    implementationPath: "src/app/(student)/loading.tsx",
+    surface: "Home loading state",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The loading shell contains no resource data or authority and is attached only to the governed Tenant Home route segment.",
+    requiredNegativeTestIds: ["home.collection"],
+    operation: "default",
+  },
+  {
     id: "publication.create",
     category: "application_service",
     implementationPath: "src/application/content/create-publication.ts",
@@ -1426,6 +1512,7 @@ export const GOVERNED_SURFACE_ROOTS = [
   "src/server",
   "src/application",
   "src/app/api",
+  "src/app/(student)",
 ] as const;
 
 export const GOVERNED_SINGLE_FILE_PREFIXES = [

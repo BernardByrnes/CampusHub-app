@@ -15,6 +15,7 @@ import type { CreatePublicationDraftInput } from "@/domain/content/publication-d
 import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
 import type { PublishPublicationInput } from "@/domain/content/publication-publish";
 import { CreatePublicationService } from "@/application/content/create-publication";
+import { CampusHomeService } from "@/application/content/campus-home";
 import { EditPublicationDraftService } from "@/application/content/edit-publication-draft";
 import { PublishPublicationService } from "@/application/content/publish-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
@@ -1103,6 +1104,60 @@ async function publicationCollectionProbe(): Promise<void> {
   expect(observedTenantId).toBe(tenantAId);
 }
 
+async function homeCollectionProbe(): Promise<void> {
+  const foreign = {
+    ...publicationA,
+    id: foreignPublicationId,
+    tenantId: tenantBId,
+  };
+  let observedTenantId: string | undefined;
+  const list = new ListPublicationsService({
+    publications: {
+      listPublicationCandidatesForTenant: async (query) => {
+        observedTenantId = query.tenantId;
+        return { items: [foreign], hasMoreCandidateRows: false };
+      },
+    },
+    exposureResolver: {
+      resolveExposure: (candidates) =>
+        new Map(
+          candidates.map((candidate) => [candidate.id, "READABLE" as const]),
+        ),
+    },
+  });
+  const home = new CampusHomeService({
+    listPublications: list,
+    readPublication: {
+      getPublicationForRead: async () => ({ outcome: "NOT_FOUND" as const }),
+    },
+  });
+  const context: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+
+  await expect(
+    home.getFeed({
+      context,
+      tenantFacts: tenantFactsA,
+      tenantDisplayName: tenantA.displayName,
+      tenantTimezone: tenantA.timezone,
+      now,
+      limit: 1,
+    }),
+  ).resolves.toEqual({
+    outcome: "READY",
+    tenantDisplayName: tenantA.displayName,
+    items: [],
+    nextCursor: null,
+  });
+  expect(observedTenantId).toBe(tenantAId);
+}
+
 async function publicationCreateProbe(): Promise<void> {
   const calls: Array<{
     tenantId: string;
@@ -1503,6 +1558,8 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.direct": publicationDirectProbe,
   "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,
+  "home.collection": homeCollectionProbe,
+  "home.detail": homeCollectionProbe,
   "publication.create": publicationCreateProbe,
   "publication.edit": publicationEditProbe,
   "publication.publish": publicationPublishProbe,
