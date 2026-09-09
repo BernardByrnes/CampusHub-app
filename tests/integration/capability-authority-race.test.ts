@@ -133,8 +133,9 @@ type RestrictedRuntimeDatabase = Readonly<{
 }>;
 
 type RestrictedRuntimeOptions = Readonly<{
-  memberOfAuditOwner?: boolean;
+  auditOwnerMembership?: "set" | "admin_only";
   dangerousPrivileges?: readonly ("audit_update" | "schema_create")[];
+  dangerousMembership?: "set" | "admin_only";
 }>;
 
 async function createRestrictedRuntimeDatabase(
@@ -146,7 +147,11 @@ async function createRestrictedRuntimeDatabase(
   const quotedRole = `"${roleName}"`;
   const dangerousPrivileges = options.dangerousPrivileges ?? [];
   const auxiliaryRoleNames: string[] = [];
-  const inheritance = dangerousPrivileges.length > 0 ? "NOINHERIT" : "INHERIT";
+  const requiresNoInherit =
+    options.auditOwnerMembership === "admin_only" ||
+    options.dangerousMembership === "admin_only" ||
+    dangerousPrivileges.length > 0;
+  const inheritance = requiresNoInherit ? "NOINHERIT" : "INHERIT";
   const tableNames = [
     "tenants",
     "memberships",
@@ -175,9 +180,11 @@ async function createRestrictedRuntimeDatabase(
         .join(", ")} to ${quotedRole}`,
     );
     await adminPool.query(`grant select, insert on "audit_events" to ${quotedRole}`);
-    if (options.memberOfAuditOwner === true) {
+    if (options.auditOwnerMembership === "set") {
+      await adminPool.query(`grant "campushub_audit_owner" to ${quotedRole}`);
+    } else if (options.auditOwnerMembership === "admin_only") {
       await adminPool.query(
-        `grant "campushub_audit_owner" to ${quotedRole}`,
+        `grant "campushub_audit_owner" to ${quotedRole} with admin true, set false, inherit false`,
       );
     }
     for (const dangerousPrivilege of dangerousPrivileges) {
@@ -197,9 +204,15 @@ async function createRestrictedRuntimeDatabase(
           `grant create on schema public to ${quotedDangerousRole}`,
         );
       }
-      await adminPool.query(
-        `grant ${quotedDangerousRole} to ${quotedRole} with set true`,
-      );
+      if (options.dangerousMembership === "admin_only") {
+        await adminPool.query(
+          `grant ${quotedDangerousRole} to ${quotedRole} with admin true, set false, inherit false`,
+        );
+      } else {
+        await adminPool.query(
+          `grant ${quotedDangerousRole} to ${quotedRole} with set true`,
+        );
+      }
     }
 
     const connectionUrl = new URL(getDatabaseConnectionString());
@@ -2048,7 +2061,8 @@ describe("durable capability commit-time authorization", () => {
     const fixture = await createFixture();
     const restricted = await createRestrictedRuntimeDatabase();
     let ownerMember: RestrictedRuntimeDatabase | undefined;
-    let dangerousMember: RestrictedRuntimeDatabase | undefined;
+    let dangerousUpdateMember: RestrictedRuntimeDatabase | undefined;
+    let dangerousSchemaMember: RestrictedRuntimeDatabase | undefined;
     try {
       const restrictedAuthorizer = await authorizerForDatabase(
         restricted.database,
@@ -2121,7 +2135,31 @@ describe("durable capability commit-time authorization", () => {
       });
 
       ownerMember = await createRestrictedRuntimeDatabase({
-        memberOfAuditOwner: true,
+        auditOwnerMembership: "admin_only",
+      });
+      const ownerMembership = await ownerMember.pool.query<{
+        settable: boolean;
+        adminOption: boolean;
+      }>(
+        `
+          select
+            pg_has_role(current_user, 'campushub_audit_owner', 'SET') as settable,
+            exists (
+              select 1
+              from pg_auth_members as membership
+              join pg_roles as member_role
+                on member_role.oid = membership.member
+              join pg_roles as target_role
+                on target_role.oid = membership.roleid
+              where member_role.rolname = current_user
+                and target_role.rolname = 'campushub_audit_owner'
+                and membership.admin_option
+            ) as "adminOption"
+        `,
+      );
+      expect(ownerMembership.rows[0]).toEqual({
+        settable: false,
+        adminOption: true,
       });
       const ownerAuthorizer = await authorizerForDatabase(ownerMember.database);
       const ownerExecutor = strictPublishExecutorFor(
@@ -2145,38 +2183,131 @@ describe("durable capability commit-time authorization", () => {
         publishAt: null,
       });
 
-      dangerousMember = await createRestrictedRuntimeDatabase({
-        dangerousPrivileges: ["audit_update", "schema_create"],
+      dangerousUpdateMember = await createRestrictedRuntimeDatabase({
+        dangerousPrivileges: ["audit_update"],
+        dangerousMembership: "admin_only",
       });
-      const dangerousAuthorizer = await authorizerForDatabase(
-        dangerousMember.database,
+      const dangerousUpdateRole = dangerousUpdateMember.auxiliaryRoleNames[0];
+      if (dangerousUpdateRole === undefined) {
+        throw new Error("Expected the dangerous audit-update role.");
+      }
+      const dangerousUpdateMembership = await dangerousUpdateMember.pool.query<{
+        settable: boolean;
+        adminOption: boolean;
+      }>(
+        `
+          select
+            pg_has_role(current_user, $1::name, 'SET') as settable,
+            exists (
+              select 1
+              from pg_auth_members as membership
+              join pg_roles as member_role
+                on member_role.oid = membership.member
+              join pg_roles as target_role
+                on target_role.oid = membership.roleid
+              where member_role.rolname = current_user
+                and target_role.rolname = $1
+                and membership.admin_option
+            ) as "adminOption"
+        `,
+        [dangerousUpdateRole],
       );
-      const dangerousExecutor = strictPublishExecutorFor(
-        dangerousMember.database,
-        dangerousAuthorizer,
+      expect(dangerousUpdateMembership.rows[0]).toEqual({
+        settable: false,
+        adminOption: true,
+      });
+      const dangerousUpdateAuthorizer = await authorizerForDatabase(
+        dangerousUpdateMember.database,
       );
-      const dangerousPublication = await createDraftPublication(
+      const dangerousUpdateExecutor = strictPublishExecutorFor(
+        dangerousUpdateMember.database,
+        dangerousUpdateAuthorizer,
+      );
+      const dangerousUpdatePublication = await createDraftPublication(
         fixture.tenant.id,
         { audienceMode: "entire_tenant" },
       );
       await expect(
-        dangerousExecutor.publishAuthorizedPublication(
+        dangerousUpdateExecutor.publishAuthorizedPublication(
           requestFor(fixture, "publication.publish"),
           fixture.tenant.id,
-          dangerousPublication.id,
+          dangerousUpdatePublication.id,
           { expectedVersion: 1, confirmedRecipientCount: 1 },
         ),
       ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
       await expect(
-        publicationRow(dangerousPublication.id),
+        publicationRow(dangerousUpdatePublication.id),
+      ).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+      });
+
+      dangerousSchemaMember = await createRestrictedRuntimeDatabase({
+        dangerousPrivileges: ["schema_create"],
+        dangerousMembership: "admin_only",
+      });
+      const dangerousSchemaRole = dangerousSchemaMember.auxiliaryRoleNames[0];
+      if (dangerousSchemaRole === undefined) {
+        throw new Error("Expected the dangerous schema-create role.");
+      }
+      const dangerousSchemaMembership = await dangerousSchemaMember.pool.query<{
+        settable: boolean;
+        adminOption: boolean;
+      }>(
+        `
+          select
+            pg_has_role(current_user, $1::name, 'SET') as settable,
+            exists (
+              select 1
+              from pg_auth_members as membership
+              join pg_roles as member_role
+                on member_role.oid = membership.member
+              join pg_roles as target_role
+                on target_role.oid = membership.roleid
+              where member_role.rolname = current_user
+                and target_role.rolname = $1
+                and membership.admin_option
+            ) as "adminOption"
+        `,
+        [dangerousSchemaRole],
+      );
+      expect(dangerousSchemaMembership.rows[0]).toEqual({
+        settable: false,
+        adminOption: true,
+      });
+      const dangerousSchemaAuthorizer = await authorizerForDatabase(
+        dangerousSchemaMember.database,
+      );
+      const dangerousSchemaExecutor = strictPublishExecutorFor(
+        dangerousSchemaMember.database,
+        dangerousSchemaAuthorizer,
+      );
+      const dangerousSchemaPublication = await createDraftPublication(
+        fixture.tenant.id,
+        { audienceMode: "entire_tenant" },
+      );
+      await expect(
+        dangerousSchemaExecutor.publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          dangerousSchemaPublication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+      await expect(
+        publicationRow(dangerousSchemaPublication.id),
       ).resolves.toMatchObject({
         version: 1,
         lifecycle: "draft",
         publishAt: null,
       });
     } finally {
-      if (dangerousMember !== undefined) {
-        await destroyRestrictedRuntimeDatabase(dangerousMember);
+      if (dangerousSchemaMember !== undefined) {
+        await destroyRestrictedRuntimeDatabase(dangerousSchemaMember);
+      }
+      if (dangerousUpdateMember !== undefined) {
+        await destroyRestrictedRuntimeDatabase(dangerousUpdateMember);
       }
       if (ownerMember !== undefined) {
         await destroyRestrictedRuntimeDatabase(ownerMember);

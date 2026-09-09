@@ -39,7 +39,14 @@ async function verifyAuditRuntimeDatabaseAuthority(
 ): Promise<boolean> {
   try {
     const result = await database.execute(sql`
-      with settable_roles(oid) as (
+      with reachable_roles(oid) as (
+        select role.oid
+        from pg_roles as role
+        where role.rolname = current_user
+           or pg_has_role(session_user::name, role.oid, 'USAGE')
+           or pg_has_role(session_user::name, role.oid, 'SET')
+      ),
+      settable_roles(oid) as (
         select role.oid
         from pg_roles as role
         where role.rolname = current_user
@@ -47,6 +54,7 @@ async function verifyAuditRuntimeDatabaseAuthority(
       )
       select (
         runtime_role.rolsuper = false
+        and runtime_role.rolcreaterole = false
         and current_user = session_user
         and audit_table.relowner <> runtime_role.oid
         and not exists (
@@ -80,6 +88,51 @@ async function verifyAuditRuntimeDatabaseAuthority(
              or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'TRIGGER')
              or has_table_privilege(exercisable_role.rolname, 'public.audit_events', 'REFERENCES')
              or has_schema_privilege(exercisable_role.rolname, 'public', 'CREATE')
+        )
+        and not exists (
+          select 1
+          from pg_auth_members as membership
+          join reachable_roles as member_role
+            on member_role.oid = membership.member
+          join pg_roles as grantable_role
+            on grantable_role.oid = membership.roleid
+          where membership.admin_option
+            and (
+              grantable_role.rolsuper
+              or grantable_role.rolcreaterole
+              or grantable_role.rolname = 'campushub_audit_owner'
+              or grantable_role.oid = audit_table.relowner
+              or has_table_privilege(
+                grantable_role.rolname,
+                'public.audit_events',
+                'UPDATE'
+              )
+              or has_table_privilege(
+                grantable_role.rolname,
+                'public.audit_events',
+                'DELETE'
+              )
+              or has_table_privilege(
+                grantable_role.rolname,
+                'public.audit_events',
+                'TRUNCATE'
+              )
+              or has_table_privilege(
+                grantable_role.rolname,
+                'public.audit_events',
+                'TRIGGER'
+              )
+              or has_table_privilege(
+                grantable_role.rolname,
+                'public.audit_events',
+                'REFERENCES'
+              )
+              or has_schema_privilege(
+                grantable_role.rolname,
+                'public',
+                'CREATE'
+              )
+            )
         )
         and not has_schema_privilege(current_user, 'public', 'CREATE')
       ) as allowed
