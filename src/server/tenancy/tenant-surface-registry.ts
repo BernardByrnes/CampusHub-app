@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
+    implementationPath: "drizzle/0011_dark_boomerang.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -306,6 +306,11 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     expectedAstForm: "CallExpression",
   },
   {
+    implementationPath: "src/server/db/schema/audit.ts",
+    exportName: "auditEvents",
+    expectedAstForm: "CallExpression",
+  },
+  {
     implementationPath: "src/server/config/env-schema.ts",
     exportName: "serverEnvSchema",
     expectedAstForm: "CallExpression",
@@ -347,6 +352,11 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/index.ts",
     moduleSpecifier: "./membership",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./audit",
     exportForm: "ExportAllDeclaration",
   },
   {
@@ -568,6 +578,16 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterTypeTexts: [
       "PostgresAuthorizedPublicationPublishDependencies",
     ],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    classIdentity: "DrizzleAuditEventRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["AuditEventRepositoryDependencies"],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
   },
@@ -965,6 +985,18 @@ export const tenantSurfaceRegistry = [
       "PostgresAuthorizedPublicationPublishExecutor.publishAuthorizedPublication",
   },
   {
+    id: "audit.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/audit.ts",
+    surface: "audit_events",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Audit rows are Tenant-owned append-only records with same-Tenant actor Membership identity and database-enforced immutable chain fields.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    databaseObjectName: "audit_events",
+    operation: "table:audit_events",
+  },
+  {
     id: "publication.persistence",
     category: "model",
     implementationPath: "src/server/db/schema/publication.ts",
@@ -1056,6 +1088,52 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication.publish"],
     operation:
       "DrizzlePublicationRepository.publishPublicationInTransaction",
+  },
+  {
+    id: "audit.repository.append",
+    category: "repository",
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    surface:
+      "DrizzleAuditEventRepository.appendPublicationPublishedInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The closed publication.published event is appended through the caller's lock-ordered PostgreSQL transaction with a Tenant chain sequence, external key-provider signature, and no separate commit path.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    operation:
+      "DrizzleAuditEventRepository.appendPublicationPublishedInTransaction",
+  },
+  {
+    id: "audit.repository.direct",
+    category: "repository",
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    surface: "DrizzleAuditEventRepository.findAuditEventByIdForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Audit lookup binds both Tenant and event identifiers before hydration and never exposes a cross-Tenant row.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    operation: "DrizzleAuditEventRepository.findAuditEventByIdForTenant",
+  },
+  {
+    id: "audit.repository.collection",
+    category: "repository",
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    surface: "DrizzleAuditEventRepository.listAuditEventsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Audit collection reads are bounded, ordered by the Tenant-local sequence, and constrained by the explicit Tenant predicate.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    operation: "DrizzleAuditEventRepository.listAuditEventsForTenant",
+  },
+  {
+    id: "audit.repository.verify",
+    category: "repository",
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    surface: "DrizzleAuditEventRepository.verifyAuditChainForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Chain verification consumes only the bounded Tenant-scoped event stream and fails closed on malformed or unverifiable integrity state.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    operation: "DrizzleAuditEventRepository.verifyAuditChainForTenant",
   },
   {
     id: "publication.repository.direct",
@@ -1320,8 +1398,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0010_yielding_ghost_rider.sql",
-    surface: "Reviewed Drizzle migration history through 0010",
+    implementationPath: "drizzle/0011_dark_boomerang.sql",
+    surface: "Reviewed Drizzle migration history through 0011",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1338,8 +1416,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0008_loving_dagger.sql",
       "drizzle/0009_swift_salo.sql",
       "drizzle/0010_yielding_ghost_rider.sql",
+      "drizzle/0011_dark_boomerang.sql",
     ],
-    migrationHead: "drizzle/0010_yielding_ghost_rider.sql",
+    migrationHead: "drizzle/0011_dark_boomerang.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

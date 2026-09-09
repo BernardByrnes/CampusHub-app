@@ -225,6 +225,7 @@ describe("A4 User/Membership boundary", () => {
     const currentTableNames = currentTableConfigs.map((config) => config.name).sort();
     expect(currentTableNames).toEqual([
       "academic_divisions",
+      "audit_events",
       "campuses",
       "guild_terms",
       "memberships",
@@ -262,6 +263,7 @@ describe("A4 User/Membership boundary", () => {
 
     expect(tenantOwnedTables).toEqual([
       "academic_divisions",
+      "audit_events",
       "campuses",
       "guild_terms",
       "memberships",
@@ -285,6 +287,11 @@ describe("A4 User/Membership boundary", () => {
       "membership.residenceId",
       "publication.id",
       "publication.tenantId",
+      "auditEvent.id",
+      "auditEvent.tenantId",
+      "auditEvent.actorMembershipId",
+      "auditEvent.resourceId",
+      "auditEvent.sequence",
       "campus.id",
       "campus.tenantId",
       "academicDivision.id",
@@ -327,6 +334,8 @@ describe("A4 User/Membership boundary", () => {
       "role_grants.tenant_id -> tenants.id",
       "role_grants.(tenant_id,guild_term_id) -> guild_terms.(tenant_id,id)",
       "role_grants.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
+      "audit_events.tenant_id -> tenants.id",
+      "audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

@@ -23,6 +23,10 @@ import {
   parsePublicationAudienceProvenancePolicy,
 } from "@/domain/authorization/publication-audience";
 import {
+  normalizePublicationPublishedAuditEventFacts,
+  type PublicationPublishedAuditEventFacts,
+} from "@/domain/audit/audit-event";
+import {
   validatePublicationAudienceConfirmation,
   type PublicationAudienceConfirmationResult,
 } from "@/domain/authorization/publication-audience-confirmation";
@@ -56,6 +60,10 @@ import {
   type PublicationCollectionQuery,
 } from "@/domain/content/publication-collection";
 import { db, type CampusHubDatabase } from "@/server/db/client";
+import type {
+  AuditEventTransactionDatabase,
+  PublicationPublishedAuditAppendInput,
+} from "@/server/repositories/audit-event-repository";
 import {
   publicationAudienceCriteria,
   publications,
@@ -508,6 +516,12 @@ function mapAudienceCriteria(
 
 type SelectOnlyDatabase = Pick<CampusHubDatabase, "select">;
 
+type PublicationAudienceSnapshotForPublish =
+  PublicationAudienceReadinessSnapshot &
+    Readonly<{
+      criteriaRows: readonly PublicationAudienceCriteriaRow[];
+    }>;
+
 async function hasActiveCampuses(
   database: SelectOnlyDatabase,
   tenantId: string,
@@ -811,11 +825,11 @@ async function countAudienceMemberships(
   }
 }
 
-async function readPublicationAudienceReadinessSnapshot(
+async function readPublicationAudienceSnapshotForPublish(
   database: SelectOnlyDatabase,
   tenantId: string,
   publicationId: string,
-): Promise<PublicationAudienceReadinessSnapshot | null> {
+): Promise<PublicationAudienceSnapshotForPublish | null> {
   const lockedRows = await database
     .select()
     .from(publications)
@@ -864,6 +878,7 @@ async function readPublicationAudienceReadinessSnapshot(
       definition: null,
       targetsCurrentlyValid: false,
       estimatedRecipientCount: null,
+      criteriaRows,
     };
   }
 
@@ -882,6 +897,7 @@ async function readPublicationAudienceReadinessSnapshot(
       definition,
       targetsCurrentlyValid: false,
       estimatedRecipientCount: null,
+      criteriaRows,
     };
   }
 
@@ -893,6 +909,29 @@ async function readPublicationAudienceReadinessSnapshot(
       database,
       definition,
     ),
+    criteriaRows,
+  };
+}
+
+async function readPublicationAudienceReadinessSnapshot(
+  database: SelectOnlyDatabase,
+  tenantId: string,
+  publicationId: string,
+): Promise<PublicationAudienceReadinessSnapshot | null> {
+  const snapshot = await readPublicationAudienceSnapshotForPublish(
+    database,
+    tenantId,
+    publicationId,
+  );
+  if (snapshot === null) {
+    return null;
+  }
+
+  return {
+    publication: snapshot.publication,
+    definition: snapshot.definition,
+    targetsCurrentlyValid: snapshot.targetsCurrentlyValid,
+    estimatedRecipientCount: snapshot.estimatedRecipientCount,
   };
 }
 
@@ -900,8 +939,188 @@ type PublicationInsertDatabase = Pick<CampusHubDatabase, "insert">;
 type PublicationUpdateDatabase = Pick<CampusHubDatabase, "update">;
 type PublicationPublishDatabase = Pick<
   CampusHubDatabase,
-  "select" | "update"
+  "select" | "update" | "insert"
 >;
+
+export type PublicationPublishAuditWriter = Readonly<{
+  appendPublicationPublishedInTransaction(
+    transaction: AuditEventTransactionDatabase,
+    input: PublicationPublishedAuditAppendInput,
+  ): Promise<unknown>;
+}>;
+
+async function buildPublicationPublishedAuditFacts(
+  database: SelectOnlyDatabase,
+  definition: PublicationAudienceDefinition,
+  confirmedRecipientCount: number,
+): Promise<PublicationPublishedAuditEventFacts | null> {
+  const targets: PublicationPublishedAuditEventFacts["audienceSnapshot"]["targets"][number][] = [];
+
+  for (const group of definition.groups) {
+    switch (group.dimension) {
+      case "campus": {
+        const rows = await database
+          .select({ id: campuses.id, label: campuses.label })
+          .from(campuses)
+          .where(
+            and(
+              eq(campuses.tenantId, definition.tenantId),
+              inArray(campuses.id, [...group.campusIds]),
+            ),
+          );
+        const labels = new Map(
+          rows.map((row) => [row.id.toLowerCase(), row.label]),
+        );
+        if (labels.size !== group.campusIds.length) {
+          return null;
+        }
+        for (const id of group.campusIds) {
+          const label = labels.get(id.toLowerCase());
+          if (label === undefined || label.trim().length === 0) {
+            return null;
+          }
+          targets.push({
+            dimension: "campus",
+            targetId: id.toLowerCase(),
+            targetValue: null,
+            targetLabel: label,
+          });
+        }
+        break;
+      }
+      case "academic_division": {
+        const rows = await database
+          .select({ id: academicDivisions.id, label: academicDivisions.label })
+          .from(academicDivisions)
+          .where(
+            and(
+              eq(academicDivisions.tenantId, definition.tenantId),
+              inArray(academicDivisions.id, [...group.academicDivisionIds]),
+            ),
+          );
+        const labels = new Map(
+          rows.map((row) => [row.id.toLowerCase(), row.label]),
+        );
+        if (labels.size !== group.academicDivisionIds.length) {
+          return null;
+        }
+        for (const id of group.academicDivisionIds) {
+          const label = labels.get(id.toLowerCase());
+          if (label === undefined || label.trim().length === 0) {
+            return null;
+          }
+          targets.push({
+            dimension: "academic_division",
+            targetId: id.toLowerCase(),
+            targetValue: null,
+            targetLabel: label,
+          });
+        }
+        break;
+      }
+      case "programme": {
+        const rows = await database
+          .select({ id: programmes.id, label: programmes.label })
+          .from(programmes)
+          .where(
+            and(
+              eq(programmes.tenantId, definition.tenantId),
+              inArray(programmes.id, [...group.programmeIds]),
+            ),
+          );
+        const labels = new Map(
+          rows.map((row) => [row.id.toLowerCase(), row.label]),
+        );
+        if (labels.size !== group.programmeIds.length) {
+          return null;
+        }
+        for (const id of group.programmeIds) {
+          const label = labels.get(id.toLowerCase());
+          if (label === undefined || label.trim().length === 0) {
+            return null;
+          }
+          targets.push({
+            dimension: "programme",
+            targetId: id.toLowerCase(),
+            targetValue: null,
+            targetLabel: label,
+          });
+        }
+        break;
+      }
+      case "academic_year":
+        for (const academicYear of group.academicYears) {
+          targets.push({
+            dimension: "academic_year",
+            targetId: null,
+            targetValue: academicYear,
+            targetLabel: null,
+          });
+        }
+        break;
+      case "residence": {
+        const specificIds = group.residenceTargets
+          .filter(
+            (target): target is Extract<
+              PublicationResidenceTarget,
+              { kind: "specific_residence" }
+            > => target.kind === "specific_residence",
+          )
+          .map((target) => target.residenceId);
+        const rows =
+          specificIds.length === 0
+            ? []
+            : await database
+                .select({ id: residences.id, label: residences.label })
+                .from(residences)
+                .where(
+                  and(
+                    eq(residences.tenantId, definition.tenantId),
+                    inArray(residences.id, specificIds),
+                  ),
+                );
+        const labels = new Map(
+          rows.map((row) => [row.id.toLowerCase(), row.label]),
+        );
+        if (labels.size !== specificIds.length) {
+          return null;
+        }
+        for (const target of group.residenceTargets) {
+          if (target.kind === "specific_residence") {
+            const label = labels.get(target.residenceId.toLowerCase());
+            if (label === undefined || label.trim().length === 0) {
+              return null;
+            }
+            targets.push({
+              dimension: "residence",
+              targetId: target.residenceId.toLowerCase(),
+              targetValue: target.kind,
+              targetLabel: label,
+            });
+          } else {
+            targets.push({
+              dimension: "residence",
+              targetId: null,
+              targetValue: target.kind,
+              targetLabel: null,
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return normalizePublicationPublishedAuditEventFacts({
+    transition: { from: "draft", to: "published" },
+    audienceMode: definition.mode,
+    confirmedRecipientCount,
+    audienceSnapshot: {
+      mode: definition.mode,
+      targets,
+    },
+  });
+}
 
 async function createPublicationUsingDatabase(
   database: PublicationInsertDatabase,
@@ -1006,10 +1225,13 @@ export class DrizzlePublicationRepository {
     publicationId: string,
     input: PublishPublicationInput,
     occurredAt: Date,
+    actorMembershipId: string,
+    auditEvents: PublicationPublishAuditWriter,
   ): Promise<PublicationPublishMutationResult> {
     if (
       !isUuid(tenantId) ||
       !isUuid(publicationId) ||
+      !isUuid(actorMembershipId) ||
       !isPositivePublicationVersion(input.expectedVersion) ||
       !Number.isInteger(input.confirmedRecipientCount) ||
       input.confirmedRecipientCount < 0 ||
@@ -1019,7 +1241,7 @@ export class DrizzlePublicationRepository {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
 
-    const snapshot = await readPublicationAudienceReadinessSnapshot(
+    const snapshot = await readPublicationAudienceSnapshotForPublish(
       transaction,
       tenantId,
       publicationId,
@@ -1065,6 +1287,19 @@ export class DrizzlePublicationRepository {
       return { ok: false, error: "NOT_READY" };
     }
 
+    if (snapshot.estimatedRecipientCount === null) {
+      return { ok: false, error: "NOT_READY" };
+    }
+
+    const auditFacts = await buildPublicationPublishedAuditFacts(
+      transaction,
+      snapshot.definition,
+      input.confirmedRecipientCount,
+    );
+    if (auditFacts === null) {
+      return { ok: false, error: "NOT_READY" };
+    }
+
     const publishedRows = await transaction
       .update(publications)
       .set({
@@ -1098,6 +1333,15 @@ export class DrizzlePublicationRepository {
     ) {
       throw new Error("Publication publish returned an invalid persisted row.");
     }
+
+    await auditEvents.appendPublicationPublishedInTransaction(transaction, {
+      tenantId,
+      actorMembershipId,
+      publicationId,
+      publicationVersion: publication.version,
+      occurredAt,
+      eventFacts: auditFacts,
+    });
 
     return { ok: true, publication };
   }

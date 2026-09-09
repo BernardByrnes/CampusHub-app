@@ -19,9 +19,10 @@ inventory, Membership identity/ID/audience-facts reads, typed hierarchy and
 affiliation constraints, Publication create/direct/collection operations,
 persisted audience evaluation, audience persistence and replacement,
 readiness/count/confirmation, RequestContext binding, repository predicates,
-operation-level governance, migration history/head governance, and the future
-sensitive surfaces reserved for jobs, exports, search, cache, media,
-notifications, analytics, and backup/restore.
+the Tenant-owned append-only `audit_events` surface and closed
+`publication.published` audit append, operation-level governance, migration
+history/head governance, and the future sensitive surfaces reserved for jobs,
+exports, search, cache, media, notifications, analytics, and backup/restore.
 
 Statuses mean:
 
@@ -51,6 +52,7 @@ The structural model inventory is rooted at `tenants` and currently includes:
 | `tenant_academic_year_config` | `tenant_academic_year_config` | `TENANT_SCOPED`; Tenant-owned numeric academic-year range. |
 | `guild_terms` | `guild_terms` | `TENANT_SCOPED`; bounded upcoming/active/closed governance term with at most one active term per Tenant. |
 | `role_grants` | `role_grants` | `TENANT_SCOPED`; Membership-backed capability rows with same-Tenant Guild Term and Membership FKs, revocation, and expiry. |
+| `audit_events` | `audit_events` | `TENANT_SCOPED`; closed publication.published facts, Tenant-local sequence, same-Tenant actor Membership FK, and append-only integrity enforcement. |
 
 Legacy Membership rows may still have `campus_id = NULL` and
 `campus_provenance = NULL`. No Campus is fabricated. Such a Membership cannot
@@ -96,6 +98,13 @@ registry is metadata and does not grant authorization.
 - `getPublicationAudienceReadinessForTenant` and
   `validatePublicationAudienceConfirmationForTenant`.
 
+### Audit
+
+- `DrizzleAuditEventRepository.appendPublicationPublishedInTransaction`.
+- `DrizzleAuditEventRepository.findAuditEventByIdForTenant`.
+- `DrizzleAuditEventRepository.listAuditEventsForTenant`.
+- `DrizzleAuditEventRepository.verifyAuditChainForTenant`.
+
 The registry also declares the authorization-resolver composition path and all
 Tenant-owned hierarchy/configuration model surfaces. There is no undeclared
 Tenant-sensitive runtime surface in the governed roots.
@@ -137,11 +146,11 @@ behavior.
 
 ## Current registry and probe evidence
 
-The live registry contains 45 entries: 9 model declarations, 39
-operation-bearing declarations, 34 `TENANT_SCOPED` entries, 34 required probe
-obligations represented by 25 distinct probe IDs, and 8 reviewed
+The live registry contains 65 entries: 12 model declarations, 59
+operation-bearing declarations, 54 `TENANT_SCOPED` entries, 54 required probe
+obligations represented by 34 distinct probe IDs, and 8 reviewed
 `GLOBAL_NON_TENANT` exemptions. The migration entry declares the complete
-history through `drizzle/0008_loving_dagger.sql`.
+history through `drizzle/0011_dark_boomerang.sql`.
 
 Every current `TENANT_SCOPED` registry entry has a corresponding executable
 negative-probe ID in `tests/tenant-isolation-probes.ts`. The full meta-test also
@@ -192,14 +201,15 @@ Tenant context, registry metadata, and negative probes before production use:
 
 Before the first externally exposed Tenant-scoped Route Handler or Server
 Action, cross-Tenant attempts must emit redacted durable security events. This
-remains a future A6/NFR-9 obligation; no such runtime surface exists here.
+remains a future obligation for additional externally exposed security-event
+paths; the current `publication.published` audit contract is internal to the
+authorized publish transaction and does not create a route or audit UI.
 
 ## Migration and RLS boundary
 
-The current migration head is `drizzle/0008_loving_dagger.sql` and there is no
-`0009`. A2's no-RLS decision remains unchanged. B.2.4 migrations 0005–0008
-remain append-only after their creation commits and no new migration is part of
-this plan.
+The current migration head is `drizzle/0011_dark_boomerang.sql`. A2's no-RLS
+decision remains unchanged. Migrations 0000–0010 remain unchanged and the one
+current A6 implementation migration 0011 is append-only after its creation.
 
 ## Review boundary
 
@@ -207,5 +217,6 @@ A2 is independently approved with nonblocking obligations at its historical
 reviewed SHA. That approval is not a later B.2.4 approval. The B.2.4.1–.8
 implementation/evidence chain is now awaiting the separate independent
 B.2.4.9 review. Future jobs, exports, search, cache, media, notifications,
-analytics, backup/restore, security-event, and existing A4 obligations remain
-nonblocking/future obligations as recorded in ADRs 0004 and 0005.
+analytics, backup/restore, additional security-event families, and existing A4
+obligations remain nonblocking/future obligations as recorded in ADRs 0004 and
+0005.

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { loadEnvConfig } from "@next/env";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 
@@ -12,6 +12,9 @@ import type { PostgresAuthorizedPublicationDraftEditExecutor } from "@/server/au
 import type { PostgresAuthorizedPublicationPublishExecutor } from "@/server/authorization/postgres-authorized-publication-publish";
 import type { CanonicalPublicationDraftInput } from "@/domain/content/publication-draft";
 import type { UpdatePublicationDraftInput } from "@/domain/content/publication-draft-edit";
+import { DrizzleAuditEventRepository } from "@/server/repositories/audit-event-repository";
+import { StaticAuditIntegrityKeyProvider } from "@/domain/audit/audit-integrity-key-provider";
+import type { PublicationPublishAuditWriter } from "@/server/repositories/publication-repository";
 
 const NOW = new Date("2026-09-05T12:00:00.000Z");
 const TERM_START = new Date("2026-01-01T00:00:00.000Z");
@@ -61,6 +64,9 @@ let DrizzlePublicationRepository: typeof import("@/server/repositories/publicati
 let CreatePublicationService: typeof import("@/application/content/create-publication").CreatePublicationService;
 const syntheticTenantIds = new Set<string>();
 let sequence = 0;
+const integrationAuditKey = new Uint8Array(
+  Buffer.from("campushub-integration-audit-key-2026-09-09"),
+);
 
 function getDatabase(): CampusHubDatabase {
   if (database === undefined) {
@@ -317,6 +323,22 @@ async function publicationRow(
   return rows[0] ?? null;
 }
 
+async function auditRowsForPublication(
+  tenantId: string,
+  publicationId: string,
+): Promise<readonly schema.AuditEventRow[]> {
+  return getDatabase()
+    .select()
+    .from(tables.auditEvents)
+    .where(
+      and(
+        eq(tables.auditEvents.tenantId, tenantId),
+        eq(tables.auditEvents.resourceId, publicationId),
+      ),
+    )
+    .orderBy(tables.auditEvents.sequence);
+}
+
 type PostgresActivity = Readonly<{
   pid: number;
   blockingPids: readonly number[];
@@ -340,10 +362,18 @@ function isPublicationLockWaiter(activity: PostgresActivity): boolean {
 function publishExecutor(
   beforePublish?: () => Promise<void>,
   afterPublishMutation?: () => Promise<void>,
+  auditEvents: PublicationPublishAuditWriter = new DrizzleAuditEventRepository({
+    database: getDatabase(),
+    keyProvider: new StaticAuditIntegrityKeyProvider(
+      1,
+      new Map([[1, integrationAuditKey]]),
+    ),
+  }),
 ): PostgresAuthorizedPublicationPublishExecutor {
   return new AuthorizedPublicationPublishExecutor({
     database: getDatabase(),
     authorizer: capabilityAuthorizer,
+    auditEvents,
     beforePublish,
     afterPublishMutation,
   });
@@ -626,6 +656,32 @@ async function backendPid(client: PoolClient): Promise<number> {
   return pid;
 }
 
+async function cleanupAuditFixtures(): Promise<void> {
+  if (syntheticTenantIds.size === 0) {
+    return;
+  }
+
+  // This is an integration-harness cleanup path only. The production runtime
+  // has no audit delete/truncate operation; the disposable/shared test role
+  // must bypass the append-only trigger to remove synthetic fixtures before
+  // the Tenant rows are cleaned up.
+  const cleanupClient = await getPool().connect();
+  try {
+    await cleanupClient.query("BEGIN");
+    await cleanupClient.query("SET LOCAL session_replication_role = 'replica'");
+    await cleanupClient.query(
+      `delete from "audit_events" where "tenant_id" = any($1::uuid[])`,
+      [[...syntheticTenantIds]],
+    );
+    await cleanupClient.query("COMMIT");
+  } catch (error) {
+    await cleanupClient.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    cleanupClient.release();
+  }
+}
+
 beforeAll(async () => {
   const databaseModule = await import("@/server/db/client");
   const schemaModule = await import("@/server/db/schema");
@@ -694,6 +750,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (database !== undefined && syntheticTenantIds.size > 0) {
+    await cleanupAuditFixtures();
     await database
       .delete(tables.roleGrants)
       .where(inArray(tables.roleGrants.tenantId, [...syntheticTenantIds]));
@@ -711,6 +768,9 @@ afterAll(async () => {
     await database
       .delete(tables.publications)
       .where(inArray(tables.publications.tenantId, [...syntheticTenantIds]));
+    await database
+      .delete(tables.campuses)
+      .where(inArray(tables.campuses.tenantId, [...syntheticTenantIds]));
     await database
       .delete(tables.memberships)
       .where(inArray(tables.memberships.tenantId, [...syntheticTenantIds]));
@@ -755,6 +815,44 @@ describe("durable capability commit-time authorization", () => {
       lifecycle: "published",
       publishAt: NOW,
     });
+    const auditRows = await auditRowsForPublication(
+      fixture.tenant.id,
+      publication.id,
+    );
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      tenantId: fixture.tenant.id,
+      sequence: 1,
+      eventType: "publication.published",
+      actorMembershipId: fixture.membership.id,
+      resourceType: "publication",
+      resourceId: publication.id,
+      resourceVersion: 2,
+      occurredAt: NOW,
+      previousHash: "0".repeat(64),
+      keyVersion: 1,
+      integrityFormatVersion: 1,
+      eventContractVersion: 1,
+    });
+    expect(auditRows[0]?.eventFacts).toEqual({
+      transition: { from: "draft", to: "published" },
+      audienceMode: "entire_tenant",
+      confirmedRecipientCount: 1,
+      audienceSnapshot: { mode: "entire_tenant", targets: [] },
+    });
+    expect(JSON.stringify(auditRows[0]?.eventFacts)).not.toMatch(
+      /title|body|identitySubjectId|recipientMembership/i,
+    );
+    const auditRepository = new DrizzleAuditEventRepository({
+      database: getDatabase(),
+      keyProvider: new StaticAuditIntegrityKeyProvider(
+        1,
+        new Map([[1, integrationAuditKey]]),
+      ),
+    });
+    await expect(
+      auditRepository.verifyAuditChainForTenant(fixture.tenant.id),
+    ).resolves.toBe(true);
   });
 
   it("PUBLISH-02 fails closed for every Priority Publication even when both grants exist", async () => {
@@ -790,11 +888,99 @@ describe("durable capability commit-time authorization", () => {
     });
   });
 
-  it("PUBLISH-03 rejects an expiry at or before the authoritative publish time", async () => {
+  it("PUBLISH-AUDIT-01 records a targeted structural snapshot without recipient identities", async () => {
     const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id);
+    const campusRows = await getDatabase()
+      .insert(tables.campuses)
+      .values({
+        tenantId: fixture.tenant.id,
+        label: "Main Campus",
+        status: "active",
+      })
+      .returning();
+    const campus = campusRows[0];
+    if (campus === undefined) {
+      throw new Error("Campus fixture insert returned no row.");
+    }
+    await getDatabase().insert(tables.publicationAudienceCriteria).values({
+      tenantId: fixture.tenant.id,
+      publicationId: publication.id,
+      dimension: "campus",
+      provenancePolicy: "authoritative_only",
+      campusId: campus.id,
+    });
+
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 0 },
+      ),
+    ).resolves.toMatchObject({
+      outcome: "PUBLISHED",
+      publication: { version: 2, lifecycle: "published" },
+    });
+
+    const auditRows = await auditRowsForPublication(
+      fixture.tenant.id,
+      publication.id,
+    );
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.eventFacts).toEqual({
+      transition: { from: "draft", to: "published" },
+      audienceMode: "targeted",
+      confirmedRecipientCount: 0,
+      audienceSnapshot: {
+        mode: "targeted",
+        targets: [
+          {
+            dimension: "campus",
+            targetId: campus.id,
+            targetValue: null,
+            targetLabel: "Main Campus",
+          },
+        ],
+      },
+    });
+  });
+
+  it("PUBLISH-03 rejects an expiry at or before the authoritative publish time", async () => {
+    for (const expiresAt of [
+      new Date("2026-01-15T11:59:59.999Z"),
+      NOW,
+    ]) {
+      const fixture = await createFixture();
+      const publication = await createDraftPublication(fixture.tenant.id, {
+        audienceMode: "entire_tenant",
+        expiresAt,
+      });
+
+      await expect(
+        publishExecutor().publishAuthorizedPublication(
+          requestFor(fixture, "publication.publish"),
+          fixture.tenant.id,
+          publication.id,
+          { expectedVersion: 1, confirmedRecipientCount: 1 },
+        ),
+      ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_STATE" });
+
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+        publishAt: null,
+        expiresAt,
+      });
+    }
+  });
+
+  it("PUBLISH-03 accepts a future expiry without rewriting it", async () => {
+    const fixture = await createFixture();
+    const futureExpiry = new Date("2026-12-31T23:59:59.999Z");
     const publication = await createDraftPublication(fixture.tenant.id, {
       audienceMode: "entire_tenant",
-      expiresAt: NOW,
+      expiresAt: futureExpiry,
     });
 
     await expect(
@@ -804,13 +990,21 @@ describe("durable capability commit-time authorization", () => {
         publication.id,
         { expectedVersion: 1, confirmedRecipientCount: 1 },
       ),
-    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_STATE" });
+    ).resolves.toMatchObject({
+      outcome: "PUBLISHED",
+      publication: {
+        version: 2,
+        lifecycle: "published",
+        publishAt: NOW,
+        expiresAt: futureExpiry,
+      },
+    });
 
     await expect(publicationRow(publication.id)).resolves.toMatchObject({
-      version: 1,
-      lifecycle: "draft",
-      publishAt: null,
-      expiresAt: NOW,
+      version: 2,
+      lifecycle: "published",
+      publishAt: NOW,
+      expiresAt: futureExpiry,
     });
   });
 
@@ -936,6 +1130,285 @@ describe("durable capability commit-time authorization", () => {
     });
   });
 
+  it("PUBLISH-RACE-03 lets publish win before a stale governed draft edit", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    let releasePublish: () => void = () => undefined;
+    const publishMayCommit = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    let publishLocked: () => void = () => undefined;
+    const publishIsLocked = new Promise<void>((resolve) => {
+      publishLocked = resolve;
+    });
+    let publish: Promise<unknown> = Promise.resolve();
+    let edit: Promise<unknown> = Promise.resolve();
+
+    try {
+      publish = publishExecutor(async () => {
+        publishLocked();
+        await publishMayCommit;
+      }).publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await Promise.race([
+        publishIsLocked,
+        publish.then(() => {
+          throw new Error("Publication publish completed before its gate opened.");
+        }),
+      ]);
+      const publishBackendPid = (await waitForPublicationLockHolder()).pid;
+
+      edit = editExecutor().editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "stale-after-publish"),
+      );
+      const editWaiter = await waitForAuthorityLockWaiterBlockedByBackend(
+        publishBackendPid,
+      );
+      expect(editWaiter.pid).not.toBe(publishBackendPid);
+      releasePublish();
+
+      await expect(publish).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(edit).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        lifecycle: "published",
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(1);
+    } finally {
+      releasePublish();
+      await Promise.allSettled([publish, edit]);
+    }
+  });
+
+  it("PUBLISH-RACE-04 lets the governed draft edit win before a stale publish", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    let releaseEdit: () => void = () => undefined;
+    const editMayCommit = new Promise<void>((resolve) => {
+      releaseEdit = resolve;
+    });
+    let editLocked: () => void = () => undefined;
+    const editIsLocked = new Promise<void>((resolve) => {
+      editLocked = resolve;
+    });
+    let edit: Promise<unknown> = Promise.resolve();
+    let publish: Promise<unknown> = Promise.resolve();
+
+    try {
+      edit = editExecutor(async () => {
+        editLocked();
+        await editMayCommit;
+      }).editAuthorizedPublication(
+        requestFor(fixture, "publication.edit"),
+        fixture.tenant.id,
+        publication.id,
+        publicationEditInput(1, "edit-wins-before-publish"),
+      );
+      await Promise.race([
+        editIsLocked,
+        edit.then(() => {
+          throw new Error("Publication edit completed before its gate opened.");
+        }),
+      ]);
+      const editBackendPid = (await waitForPublicationLockHolder()).pid;
+
+      publish = publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      const publishWaiter = await waitForAuthorityLockWaiterBlockedByBackend(
+        editBackendPid,
+      );
+      expect(publishWaiter.pid).not.toBe(editBackendPid);
+      releaseEdit();
+
+      await expect(edit).resolves.toMatchObject({
+        outcome: "UPDATED",
+        publication: { version: 2, lifecycle: "draft" },
+      });
+      await expect(publish).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        lifecycle: "draft",
+        title: "Edited publication edit-wins-before-publish",
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(0);
+    } finally {
+      releaseEdit();
+      await Promise.allSettled([edit, publish]);
+    }
+  });
+
+  it("PUBLISH-RACE-05 lets publish win before a stale audience replacement", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    let releasePublish: () => void = () => undefined;
+    const publishMayCommit = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    let publishLocked: () => void = () => undefined;
+    const publishIsLocked = new Promise<void>((resolve) => {
+      publishLocked = resolve;
+    });
+    const replacement = {
+      tenantId: fixture.tenant.id,
+      publicationId: publication.id,
+      mode: "entire_tenant" as const,
+      groups: [],
+    };
+    let publish: Promise<unknown> = Promise.resolve();
+    let audience: Promise<unknown> = Promise.resolve();
+
+    try {
+      publish = publishExecutor(async () => {
+        publishLocked();
+        await publishMayCommit;
+      }).publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await Promise.race([
+        publishIsLocked,
+        publish.then(() => {
+          throw new Error("Publication publish completed before its gate opened.");
+        }),
+      ]);
+      const publishBackendPid = (await waitForPublicationLockHolder()).pid;
+
+      audience = new DrizzlePublicationRepository(
+        getDatabase(),
+      ).replaceDraftPublicationAudienceForTenant(
+        fixture.tenant.id,
+        publication.id,
+        1,
+        replacement,
+      );
+      const audienceWaiter = await waitForPublicationLockWaiterBlockedByBackend(
+        publishBackendPid,
+      );
+      expect(audienceWaiter.pid).not.toBe(publishBackendPid);
+      releasePublish();
+
+      await expect(publish).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(audience).resolves.toEqual({
+        ok: false,
+        error: "VERSION_CONFLICT",
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(1);
+    } finally {
+      releasePublish();
+      await Promise.allSettled([publish, audience]);
+    }
+  });
+
+  it("PUBLISH-RACE-06 lets audience replacement win before a stale publish", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "targeted",
+    });
+    const lockHolder = await beginClient();
+    let holderCommitted = false;
+    const replacement = {
+      tenantId: fixture.tenant.id,
+      publicationId: publication.id,
+      mode: "entire_tenant" as const,
+      groups: [],
+    };
+    let audience: Promise<unknown> = Promise.resolve();
+    let publish: Promise<unknown> = Promise.resolve();
+
+    try {
+      const lockHolderBackendPid = await backendPid(lockHolder);
+      await lockHolder.query(
+        "select id from publications where tenant_id = $1 and id = $2 for update",
+        [fixture.tenant.id, publication.id],
+      );
+      audience = new DrizzlePublicationRepository(
+        getDatabase(),
+      ).replaceDraftPublicationAudienceForTenant(
+        fixture.tenant.id,
+        publication.id,
+        1,
+        replacement,
+      );
+      const audienceWaiter = await waitForPublicationLockWaiterBlockedByBackend(
+        lockHolderBackendPid,
+      );
+
+      publish = publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await waitForPublicationLockQueue(
+        lockHolderBackendPid,
+        audienceWaiter.pid,
+      );
+      await lockHolder.query("commit");
+      holderCommitted = true;
+
+      await expect(audience).resolves.toEqual({
+        ok: true,
+        definition: replacement,
+        version: 2,
+      });
+      await expect(publish).resolves.toEqual({
+        outcome: "DENIED",
+        code: "VERSION_CONFLICT",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 2,
+        lifecycle: "draft",
+        audienceMode: "entire_tenant",
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(0);
+    } finally {
+      if (!holderCommitted) {
+        await lockHolder.query("rollback").catch(() => undefined);
+      }
+      lockHolder.release();
+      await Promise.allSettled([audience, publish]);
+    }
+  });
+
   it("PUBLISH-AUTH-01 denies when the publish grant expires after the authority lock", async () => {
     const fixture = await createFixture();
     const publication = await createDraftPublication(fixture.tenant.id, {
@@ -986,6 +1459,135 @@ describe("durable capability commit-time authorization", () => {
     });
   });
 
+  it("PUBLISH-AUTH-RACE-01 lets a committed revocation win before publish", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    const revocationClient = await beginClient();
+    let revocationCommitted = false;
+    let publish: Promise<unknown> = Promise.resolve();
+
+    try {
+      const revocationBackendPid = await backendPid(revocationClient);
+      await revocationClient.query(
+        "select id from tenants where id = $1 for update",
+        [fixture.tenant.id],
+      );
+      await revocationClient.query(
+        "select id from role_grants where id = $1 for update",
+        [fixture.publishGrant.id],
+      );
+      await revocationClient.query(
+        "update role_grants set revoked_at = $2 where id = $1",
+        [fixture.publishGrant.id, NOW],
+      );
+
+      publish = publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await waitForAuthorityLockWaiterBlockedByBackend(revocationBackendPid);
+      await revocationClient.query("commit");
+      revocationCommitted = true;
+
+      await expect(publish).resolves.toEqual({
+        outcome: "DENIED",
+        code: "PERMISSION_DENIED",
+      });
+      await expect(publicationRow(publication.id)).resolves.toMatchObject({
+        version: 1,
+        lifecycle: "draft",
+      });
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(0);
+    } finally {
+      if (!revocationCommitted) {
+        await revocationClient.query("rollback").catch(() => undefined);
+      }
+      revocationClient.release();
+      await Promise.allSettled([publish]);
+    }
+  });
+
+  it("PUBLISH-AUTH-RACE-02 lets publish win before a queued revocation", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    let releasePublish: () => void = () => undefined;
+    const publishMayCommit = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    let publishLocked: () => void = () => undefined;
+    const publishIsLocked = new Promise<void>((resolve) => {
+      publishLocked = resolve;
+    });
+    const revocationClient = await beginClient();
+    let revocationCommitted = false;
+    let publish: Promise<unknown> = Promise.resolve();
+    let revocation: Promise<unknown> = Promise.resolve();
+
+    try {
+      publish = publishExecutor(async () => {
+        publishLocked();
+        await publishMayCommit;
+      }).publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      );
+      await Promise.race([
+        publishIsLocked,
+        publish.then(() => {
+          throw new Error("Publication publish completed before its gate opened.");
+        }),
+      ]);
+      const publishBackendPid = (await waitForPublicationLockHolder()).pid;
+
+      revocation = (async () => {
+        await revocationClient.query(
+          "select id from tenants where id = $1 for update",
+          [fixture.tenant.id],
+        );
+        await revocationClient.query(
+          "update role_grants set revoked_at = $2 where id = $1",
+          [fixture.publishGrant.id, NOW],
+        );
+        await revocationClient.query("commit");
+        revocationCommitted = true;
+      })();
+      await waitForAuthorityLockWaiterBlockedByBackend(publishBackendPid);
+      releasePublish();
+
+      await expect(publish).resolves.toMatchObject({
+        outcome: "PUBLISHED",
+        publication: { version: 2, lifecycle: "published" },
+      });
+      await expect(revocation).resolves.toBeUndefined();
+      await expect(
+        auditRowsForPublication(fixture.tenant.id, publication.id),
+      ).resolves.toHaveLength(1);
+      await expect(
+        getDatabase()
+          .select({ revokedAt: tables.roleGrants.revokedAt })
+          .from(tables.roleGrants)
+          .where(eq(tables.roleGrants.id, fixture.publishGrant.id)),
+      ).resolves.toMatchObject([{ revokedAt: NOW }]);
+    } finally {
+      releasePublish();
+      if (!revocationCommitted) {
+        await revocationClient.query("rollback").catch(() => undefined);
+      }
+      revocationClient.release();
+      await Promise.allSettled([publish, revocation]);
+    }
+  });
+
   it("PUBLISH-TENANT-01 normalizes a foreign Publication to NOT_FOUND", async () => {
     const fixtureA = await createFixture();
     const fixtureB = await createFixture();
@@ -1033,6 +1635,142 @@ describe("durable capability commit-time authorization", () => {
       lifecycle: "draft",
       publishAt: null,
     });
+  });
+
+  it("PUBLISH-ROLLBACK-02 rolls back the Publication when audit append fails", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    const failingAuditWriter: PublicationPublishAuditWriter = {
+      appendPublicationPublishedInTransaction: async () => {
+        throw new Error("simulated audit append failure");
+      },
+    };
+
+    await expect(
+      publishExecutor(undefined, undefined, failingAuditWriter).publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "PERSISTENCE_FAILED" });
+    await expect(publicationRow(publication.id)).resolves.toMatchObject({
+      version: 1,
+      lifecycle: "draft",
+      publishAt: null,
+    });
+    await expect(auditRowsForPublication(fixture.tenant.id, publication.id)).resolves.toHaveLength(0);
+  });
+
+  it("A6-AUDIT-01 rejects UPDATE, DELETE, and TRUNCATE while retaining the event", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toMatchObject({ outcome: "PUBLISHED" });
+    const auditRows = await auditRowsForPublication(
+      fixture.tenant.id,
+      publication.id,
+    );
+    const auditRow = auditRows[0];
+    if (auditRow === undefined) {
+      throw new Error("Expected an audit row for append-only testing.");
+    }
+
+    const updateError = await getDatabase()
+      .update(tables.auditEvents)
+      .set({ currentHash: auditRow.currentHash })
+      .where(eq(tables.auditEvents.id, auditRow.id))
+      .then(() => null)
+      .catch((error: unknown) => error);
+    expect(postgresCode(updateError)).toBe("42501");
+
+    const deleteError = await getDatabase()
+      .delete(tables.auditEvents)
+      .where(eq(tables.auditEvents.id, auditRow.id))
+      .then(() => null)
+      .catch((error: unknown) => error);
+    expect(postgresCode(deleteError)).toBe("42501");
+
+    const truncateClient = await beginClient();
+    let truncateError: unknown = null;
+    try {
+      await truncateClient.query("TRUNCATE TABLE \"audit_events\"");
+    } catch (error) {
+      truncateError = error;
+    } finally {
+      await truncateClient.query("ROLLBACK").catch(() => undefined);
+      truncateClient.release();
+    }
+    expect(postgresCode(truncateError)).toBe("42501");
+    await expect(
+      auditRowsForPublication(fixture.tenant.id, publication.id),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("A6-AUDIT-02 keeps the runtime table privilege boundary separate from the owner", async () => {
+    const result = await getDatabase().execute(sql`
+      select
+        pg_get_userbyid(c.relowner) as owner,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'SELECT') as can_select,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'INSERT') as can_insert,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'UPDATE') as can_update,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'DELETE') as can_delete,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'TRUNCATE') as can_truncate,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'REFERENCES') as can_reference,
+        has_table_privilege('campushub_runtime', 'public.audit_events', 'TRIGGER') as can_trigger,
+        has_schema_privilege('campushub_runtime', 'public', 'CREATE') as can_create_schema
+      from pg_class as c
+      join pg_namespace as n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relname = 'audit_events'
+    `);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    expect(row).toMatchObject({
+      owner: "campushub_audit_owner",
+      can_select: true,
+      can_insert: true,
+      can_update: false,
+      can_delete: false,
+      can_truncate: false,
+      can_reference: false,
+      can_trigger: false,
+      can_create_schema: false,
+    });
+  });
+
+  it("A6-AUDIT-03 retains the audit event after Publication removal", async () => {
+    const fixture = await createFixture();
+    const publication = await createDraftPublication(fixture.tenant.id, {
+      audienceMode: "entire_tenant",
+    });
+    await expect(
+      publishExecutor().publishAuthorizedPublication(
+        requestFor(fixture, "publication.publish"),
+        fixture.tenant.id,
+        publication.id,
+        { expectedVersion: 1, confirmedRecipientCount: 1 },
+      ),
+    ).resolves.toMatchObject({ outcome: "PUBLISHED" });
+    await getDatabase()
+      .delete(tables.publications)
+      .where(
+        and(
+          eq(tables.publications.tenantId, fixture.tenant.id),
+          eq(tables.publications.id, publication.id),
+        ),
+      );
+    await expect(
+      auditRowsForPublication(fixture.tenant.id, publication.id),
+    ).resolves.toHaveLength(1);
   });
 
   it("AUTH-RACE-01 revocation wins and commits no Publication", async () => {

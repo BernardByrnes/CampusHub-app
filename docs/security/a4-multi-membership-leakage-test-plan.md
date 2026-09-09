@@ -24,7 +24,8 @@ navigation or a global identity subject.
 
 The current Tenant-owned ID-bearing model set is `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
-`residences`, `tenant_academic_year_config`, `guild_terms`, and `role_grants`,
+`residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`, and
+`audit_events`,
 with `tenants` as root. The
 audience affiliation fields and per-field provenance for Campus, Academic
 Division, Programme, Academic Year, and Residence live on Tenant Membership.
@@ -68,7 +69,7 @@ or target-status validation to authorize a reader.
 
 | Surface | Required future negative case | Status |
 | --- | --- | --- |
-| Logs/security events | No cross-Tenant behavioral joins, other Membership IDs, counts, or existence oracles in ordinary logs/errors; redacted durable events before the first externally exposed Tenant route/server action. | `FUTURE_OBLIGATION` |
+| Future logs/security events | No cross-Tenant behavioral joins, other Membership IDs, counts, or existence oracles in ordinary logs/errors; any later event family remains separately reviewed beyond the current `publication.published` audit contract. | `FUTURE_OBLIGATION` |
 | Exports | No global identity-based behavioral aggregation; artifacts and downloads require explicit Tenant scope and approval. | `FUTURE_OBLIGATION` |
 | Analytics | `identitySubjectId`/Global User ID never enters event stores, reports, or exports; use a Tenant-local pseudonym. | `FUTURE_OBLIGATION` |
 | Notifications | Product stream is grouped by Tenant; security/account messages remain neutral and do not reveal Tenant list/activity. | `FUTURE_OBLIGATION` |

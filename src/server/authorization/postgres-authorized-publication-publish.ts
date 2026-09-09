@@ -8,12 +8,16 @@ import type { CapabilityAuthorizationRequest } from "@/domain/authorization/capa
 import type { PublishPublicationInput } from "@/domain/content/publication-publish";
 import { isUuid } from "@/domain/identifiers/uuid";
 import type { CampusHubDatabase } from "@/server/db/client";
-import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
+import {
+  DrizzlePublicationRepository,
+  type PublicationPublishAuditWriter,
+} from "@/server/repositories/publication-repository";
 import { PostgresCapabilityAuthorizer } from "./postgres-capability-authorizer";
 
 export type PostgresAuthorizedPublicationPublishDependencies = Readonly<{
   database: CampusHubDatabase;
   authorizer: PostgresCapabilityAuthorizer;
+  auditEvents: PublicationPublishAuditWriter;
   /** Test-only gate after the Publication lock and before fresh authority time. */
   beforePublish?: () => Promise<void>;
   /** Test-only failure point after the lifecycle mutation, before commit. */
@@ -56,6 +60,10 @@ export class PostgresAuthorizedPublicationPublishExecutor
       }
 
       return await this.dependencies.database.transaction(async (transaction) => {
+        const actorMembershipId = request.actor.membershipId;
+        if (!isUuid(actorMembershipId)) {
+          return { outcome: "DENIED", code: "PERMISSION_DENIED" } as const;
+        }
         const authorizationTimestamp: { value?: Date } = {};
         const decision =
           await this.dependencies.authorizer.authorizePublicationPublishInTransaction(
@@ -81,12 +89,16 @@ export class PostgresAuthorizedPublicationPublishExecutor
         }
 
         const mutation =
-          await new DrizzlePublicationRepository().publishPublicationInTransaction(
+          await new DrizzlePublicationRepository(
+            this.dependencies.database,
+          ).publishPublicationInTransaction(
             transaction,
             tenantId,
             publicationId,
             input,
             occurredAt,
+            actorMembershipId,
+            this.dependencies.auditEvents,
           );
         if (mutation.ok) {
           await this.dependencies.afterPublishMutation?.();

@@ -18,6 +18,13 @@ const postgresConnectionString = z
 
 export const serverEnvSchema = z.object({
   DATABASE_URL: postgresConnectionString,
+  DATABASE_MIGRATION_URL: postgresConnectionString.optional(),
+  AUDIT_INTEGRITY_KEY: z.string().trim().min(1).optional(),
+  AUDIT_INTEGRITY_KEY_VERSION: z
+    .string()
+    .trim()
+    .regex(/^\d+$/, "AUDIT_INTEGRITY_KEY_VERSION must be a positive integer")
+    .optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

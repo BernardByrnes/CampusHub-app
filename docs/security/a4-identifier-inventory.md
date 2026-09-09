@@ -37,6 +37,11 @@ key, even if a future account model contains it.
 | `publicationAudienceCriteria.academicDivisionId` | Audience Academic Division target | Nullable PostgreSQL UUID populated only for the `academic_division` dimension and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
 | `publicationAudienceCriteria.programmeId` | Audience Programme target | Nullable PostgreSQL UUID populated only for the `programme` dimension and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
 | `publicationAudienceCriteria.residenceId` | Audience Residence target | Nullable PostgreSQL UUID populated only for a `specific_residence` target and paired with `tenantId` for a same-Tenant FK. | `CURRENT` |
+| `auditEvent.id` | Tenant audit event identity | PostgreSQL UUID primary key for one immutable audit event. | `CURRENT` |
+| `auditEvent.tenantId` | Audit event ownership | PostgreSQL UUID FK to `tenant.id`; every audit read and append is explicitly Tenant-scoped. | `CURRENT` |
+| `auditEvent.actorMembershipId` | Audit actor attribution | PostgreSQL UUID paired with `auditEvent.tenantId` for a same-Tenant Membership FK; no `identitySubjectId` is stored. | `CURRENT` |
+| `auditEvent.resourceId` | Historical resource reference | PostgreSQL UUID carried with closed `resourceType`; it is not a cascading business-resource FK. | `CURRENT` |
+| `auditEvent.sequence` | Tenant-local audit ordering | Positive integer unique with `auditEvent.tenantId`; begins independently for each Tenant chain. | `CURRENT` |
 | `campus.id` | Campus resource | PostgreSQL UUID primary key; stable across label changes and owned by one Tenant. | `CURRENT` |
 | `campus.tenantId` | Campus ownership | PostgreSQL UUID FK to `tenant.id`; downstream references use the Tenant-first composite identity. | `CURRENT` |
 | `academicDivision.id` | Academic Division resource | PostgreSQL UUID primary key; stable across label changes and non-destructive merges. | `CURRENT` |
@@ -82,11 +87,13 @@ key, even if a future account model contains it.
 | `role_grants.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `role_grants.(tenant_id,guild_term_id) -> guild_terms.(tenant_id,id)` | Same-Tenant Role Grant term FK | Composite governance constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `role_grants.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant Role Grant Membership FK | Composite principal constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `audit_events.tenant_id -> tenants.id` | Audit event ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; audit history is not deleted with a Tenant row. | `CURRENT` |
+| `audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant audit actor FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; actor attribution cannot cross Tenant boundaries. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
-`residences`, `tenant_academic_year_config`, `guild_terms`, and `role_grants`,
-with `tenants` as their Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
+`residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`, and
+`audit_events`, with `tenants` as their Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.
 
@@ -101,7 +108,6 @@ account, session, credential, OAuth, or MFA table.
 | Voice identity-access/audit identifiers | Separately granted, audited Tenant-local Voice identity access. | `FUTURE_REQUIRED` |
 | XP/Streak source identifiers | Tenant-local ledger/source and idempotency attribution. | `FUTURE_REQUIRED` |
 | Notification identifiers | Tenant-local notification, preference, delivery, and grouping records. | `FUTURE_REQUIRED` |
-| Audit-event identifiers | Scoped immutable audit/security-event records. | `FUTURE_REQUIRED` |
 
 No concrete format is prescribed for these future classes by A4.
 

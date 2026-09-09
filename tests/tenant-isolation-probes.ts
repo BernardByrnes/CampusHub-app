@@ -29,6 +29,7 @@ import type { TrustedRequestContext } from "@/domain/authorization/trusted-reque
 import type { CampusHubDatabase } from "@/server/db/client";
 import {
   academicDivisions,
+  auditEvents,
   campuses,
   guildTerms,
   memberships,
@@ -370,6 +371,59 @@ function publicationAudienceCriteriaPersistenceProbe(): void {
       "publication_audience_criteria_academic_year_unique",
       "publication_audience_criteria_specific_residence_unique",
       "publication_audience_criteria_residence_target_unique",
+    ]),
+  );
+}
+
+function auditPersistenceProbe(): void {
+  expectTenantOwnedTable(auditEvents);
+  expectForeignKey(auditEvents, ["tenant_id"], ["id"]);
+  expectForeignKey(
+    auditEvents,
+    ["tenant_id", "actor_membership_id"],
+    ["tenant_id", "id"],
+  );
+
+  const config = getTableConfig(auditEvents);
+  expect(Object.values(config.columns).map((column) => column.name)).toEqual(
+    expect.arrayContaining([
+      "id",
+      "tenant_id",
+      "sequence",
+      "event_type",
+      "actor_membership_id",
+      "resource_type",
+      "resource_id",
+      "resource_version",
+      "occurred_at",
+      "event_facts",
+      "previous_hash",
+      "current_hash",
+      "key_version",
+      "integrity_format_version",
+      "event_contract_version",
+    ]),
+  );
+  expect(config.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+    "audit_events_tenant_sequence_unique",
+  );
+  expect(config.indexes.map((index) => index.config.name)).toEqual(
+    expect.arrayContaining([
+      "audit_events_tenant_resource",
+      "audit_events_tenant_event_type",
+    ]),
+  );
+  expect(config.checks.map((constraint) => constraint.name)).toEqual(
+    expect.arrayContaining([
+      "audit_events_sequence_positive",
+      "audit_events_event_type_closed",
+      "audit_events_resource_type_closed",
+      "audit_events_resource_version_positive",
+      "audit_events_event_facts_object",
+      "audit_events_hash_shape",
+      "audit_events_key_version_positive",
+      "audit_events_integrity_format_supported",
+      "audit_events_event_contract_supported",
     ]),
   );
 }
@@ -1378,6 +1432,7 @@ export const tenantIsolationProbeRegistry: Readonly<
     expectTenantOwnedTable(publications);
     expectTenantCompositeIdentity(publications);
   },
+  "audit.persistence": auditPersistenceProbe,
   "publication-audience-criteria.persistence":
     publicationAudienceCriteriaPersistenceProbe,
   "campus.persistence": () => {
