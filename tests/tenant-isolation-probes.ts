@@ -1158,6 +1158,103 @@ async function homeCollectionProbe(): Promise<void> {
   expect(observedTenantId).toBe(tenantAId);
 }
 
+async function homeDetailProbe(): Promise<void> {
+  const foreign = {
+    ...publicationA,
+    id: foreignPublicationId,
+    tenantId: tenantBId,
+    title: "Tenant B publication",
+    body: "Tenant B body",
+  };
+  const candidates = [publicationA, foreign];
+  const observedLookups: Array<readonly [string, string]> = [];
+  const read = new ReadPublicationService({
+    publications: {
+      findPublicationByIdForTenant: async (tenantId, id) => {
+        observedLookups.push([tenantId, id]);
+        return (
+          candidates.find(
+            (candidate) =>
+              candidate.tenantId === tenantId && candidate.id === id,
+          ) ?? null
+        );
+      },
+    },
+    exposureResolver: {
+      resolveExposure: (items) =>
+        new Map(items.map((item) => [item.id, "READABLE" as const])),
+    },
+  });
+  const list = new ListPublicationsService({
+    publications: {
+      listPublicationCandidatesForTenant: async () => ({
+        items: [],
+        hasMoreCandidateRows: false,
+      }),
+    },
+    exposureResolver: {
+      resolveExposure: (items) =>
+        new Map(items.map((item) => [item.id, "READABLE" as const])),
+    },
+  });
+  const home = new CampusHomeService({
+    listPublications: list,
+    readPublication: read,
+  });
+  const context: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+  const detailInput = (id: string) => ({
+    context,
+    tenantFacts: tenantFactsA,
+    tenantDisplayName: tenantA.displayName,
+    tenantTimezone: tenantA.timezone,
+    publicationId: id,
+    now,
+  });
+
+  const found = await home.getDetail(detailInput(publicationId));
+  expect(found.outcome).toBe("FOUND");
+  if (found.outcome === "FOUND") {
+    expect(found.publication.id).toBe(publicationId);
+    expect(found.publication.title).toBe(publicationA.title);
+    expect(found.publication.body).toBe(publicationA.body);
+  }
+
+  const foreignResult = await home.getDetail(
+    detailInput(foreignPublicationId),
+  );
+  const nonexistentResult = await home.getDetail(
+    detailInput("00000000-0000-4000-8000-000000000023"),
+  );
+  expect(foreignResult).toEqual({ outcome: "NOT_FOUND" });
+  expect(nonexistentResult).toEqual({ outcome: "NOT_FOUND" });
+  expect(foreignResult).toEqual(nonexistentResult);
+  expect(observedLookups).toEqual([
+    [tenantAId, publicationId],
+    [tenantAId, foreignPublicationId],
+    [tenantAId, "00000000-0000-4000-8000-000000000023"],
+  ]);
+
+  const deniedHome = new CampusHomeService({
+    listPublications: list,
+    readPublication: {
+      getPublicationForRead: async () => ({
+        outcome: "DENIED" as const,
+        code: "MEMBERSHIP_REQUIRED" as const,
+      }),
+    },
+  });
+  await expect(
+    deniedHome.getDetail(detailInput(publicationId)),
+  ).resolves.toEqual({ outcome: "NOT_FOUND" });
+}
+
 async function publicationCreateProbe(): Promise<void> {
   const calls: Array<{
     tenantId: string;
@@ -1559,7 +1656,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,
   "home.collection": homeCollectionProbe,
-  "home.detail": homeCollectionProbe,
+  "home.detail": homeDetailProbe,
   "publication.create": publicationCreateProbe,
   "publication.edit": publicationEditProbe,
   "publication.publish": publicationPublishProbe,
