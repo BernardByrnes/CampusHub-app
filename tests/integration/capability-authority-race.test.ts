@@ -393,7 +393,7 @@ function isAuthorityLockWaiter(activity: PostgresActivity): boolean {
   return (
     activity.state === "active" &&
     activity.waitEventType === "Lock" &&
-    query.includes('from "tenants"') &&
+    (query.includes('from "tenants"') || query.includes("from tenants")) &&
     query.includes("for update")
   );
 }
