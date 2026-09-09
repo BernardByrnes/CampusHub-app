@@ -102,6 +102,7 @@ account, session, credential, OAuth, or MFA table.
 | Identifier class | Intended owner/use boundary | Classification |
 | --- | --- | --- |
 | Global User ID | Global account identity and security/account operations only. | `FUTURE_REQUIRED` |
+| Global contact-channel ID | Global account/security contact-channel identity. A Tenant Membership evidence record may reference only the exact channel ID that supplied that Tenant evidence; no current persistence is implemented. | `FUTURE_REQUIRED` |
 | Tenant-local analytics pseudonym | Tenant-local analytics events, reports, and approved exports. | `FUTURE_REQUIRED` |
 | Verification evidence identifiers | Tenant Membership assurance/evidence records. | `FUTURE_REQUIRED` |
 | Poll participation receipt identifiers | Tenant-local poll participation and privacy mechanism. | `FUTURE_REQUIRED` |
@@ -117,6 +118,7 @@ No concrete format is prescribed for these future classes by A4.
 | --- | --- | --- |
 | `identitySubjectId` as a behavioral key | Must not key global XP, Level, Streak, Poll, Voice, event, opportunity, notification, engagement, or behavioral analytics stores. | `FORBIDDEN_GLOBAL_BEHAVIORAL_LINK` |
 | Future Global User ID as a behavioral key | Must not join Tenant behavior across universities or enter Tenant behavioral reports/exports. | `FORBIDDEN_GLOBAL_BEHAVIORAL_LINK` |
+| Global contact-channel ID as a behavioral or cross-Tenant key | Must not become a Tenant profile key, cross-Tenant contact lookup key, behavioral aggregation key, or convenience field in ordinary analytics, event, or audit payloads. | `FORBIDDEN_GLOBAL_BEHAVIORAL_LINK` |
 | Global account/contact identifier as a Tenant profile key | Must not replace `tenantId + membershipId` or an approved Tenant-local pseudonym. | `FORBIDDEN_GLOBAL_BEHAVIORAL_LINK` |
 
 Tenant behavioral stores must anchor through `tenantId + membershipId` or an
@@ -129,6 +131,10 @@ Memberships and activity.
 - `tenant.id` is a root/ownership identifier, not a global behavioral key.
 - `membership.id` is a Tenant-local resource identifier and is never exposed
   as evidence that another Tenant Membership exists.
+- A future Global contact-channel ID belongs to account/security state. Tenant
+  evidence may reference the exact channel ID only to identify the verified
+  channel supporting that Tenant’s provenance; it is not a Tenant behavioral
+  or cross-Tenant lookup key.
 - `identitySubjectId` may locate one Membership only when paired with the
   active Tenant; its global scope does not authorize a Membership list.
 - A cursor contains position only. Its ID/timestamp cannot override the
