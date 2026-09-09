@@ -111,7 +111,7 @@ The following decisions are intentionally unresolved:
 | --- | --- | --- |
 | OD-01 | Ordinary post-provisioning capability grants, self-grant, renewal/re-grant, and any unsupplied rollover semantics. The frozen Initial Provisioning Grant is supplied authority, not an open whole-category question. | **PARTIALLY OPEN** — the supplied first-holder path remains available under its v1.2 safeguards; block only the unresolved ordinary-grant branches |
 | OD-02 | Privileged non-student Tenant authority for Custodian, University Official, staff Publisher, and moderator. | **BLOCK BEFORE PRIVILEGED USER PERSISTENCE/AUTHORIZATION** |
-| OD-03 | Contact-channel provenance boundary between Global User and Membership/evidence. | **BLOCK BEFORE AUTH / VERIFIED CHANNEL PERSISTENCE** |
+| OD-03 | Contact-channel provenance boundary between Global User and Membership/evidence. | **SUBSTANTIVE BOUNDARY APPROVED BY PRODUCT OWNER at `885dbb29c8b4ed92d9ba978714d357345f77ae30`; AUTH ENGINEERING UNBLOCKED FOR SYNTHETIC/CONTROLLED TEST IDENTITIES ONLY. BLOCK BEFORE AUTH IMPLEMENTATION PROMOTION pending independent security review; block before Pilot or processing real student contact data pending privacy/legal review.** |
 | OD-04 | Guild Term handover, delayed elections, grant activation, continuity, and rollover authority gap. | **BLOCK BEFORE GUILD TERM / GOVERNANCE FEATURE** and **BLOCK BEFORE PILOT** |
 | OD-05 | Full roster upload authority and university authorization. | **BLOCK BEFORE REAL ROSTER IMPORT / PILOT** |
 | OD-06 | Custodian emergency-revocation scope and safeguards. | **BLOCK BEFORE GOVERNANCE FEATURE / PILOT** |
@@ -129,6 +129,15 @@ OD-02 through OD-08 and OD-11 are blockers at their stated future boundaries.
 OD-09, OD-10, and OD-12 remain open numeric/product decisions, and OD-13 is a
 partial sponsorship blocker. This record does not turn a recommendation into a
 chosen value or silently delete a supplied product branch.
+
+OD-03 timing is subsequently governed by the Product Owner-controlled
+supersession in `docs/governance/od03-implementation-gate-supersession.md`:
+the approved substantive boundary permits synthetic/controlled Auth engineering,
+while independent security review remains a hard gate before promotion and
+privacy/legal review remains an open gate before a Pilot or processing real
+student contact data. This timing correction does not close OD-02, authorize
+privileged non-student authority, authorize real roster import, or claim that
+formal privacy/legal review has occurred.
 
 ## 6. Feature-gate and Pilot registers
 
@@ -342,6 +351,25 @@ The packaging preserves the complete R0/R1/R2 review history in Git:
 R0, R1, and R2 remain visible through Git history. The freeze approves the
 governing contract; it does not make every feature implementation-ready and it
 does not close OD-01 through OD-13.
+
+## 7D. Controlled OD-03 implementation-gate timing supersession
+
+The later Product Owner-controlled timing supersession is recorded in
+`docs/governance/od03-implementation-gate-supersession.md`. It is a narrow
+authority update to implementation timing, not a rewrite of the frozen Product
+Specification or a closure of unrelated open decisions. The substantive
+contact-channel boundary remains the one recorded in ADR 0007 and approved by
+the Product Owner at candidate SHA
+`885dbb29c8b4ed92d9ba978714d357345f77ae30`.
+
+The supersession changes the earlier sequencing gate: Auth engineering may use
+synthetic/controlled test identities before the real-data gates, but an
+independent identity/security review remains mandatory before any Auth
+implementation checkpoint is promoted. Formal privacy/legal review remains
+mandatory before a Pilot or processing real student contact data in a
+production environment. No formal privacy/legal approval is claimed here.
+OD-02, privileged non-student authority, real roster import, and Pilot launch
+remain separately blocked where stated in this register.
 
 ## 8. Preservation and validation record
 

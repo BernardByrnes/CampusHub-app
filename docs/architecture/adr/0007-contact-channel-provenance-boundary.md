@@ -1,13 +1,18 @@
 # ADR 0007: Contact-Channel Provenance Boundary
 
-- Status: **PROPOSED — OD-03 CLOSURE PENDING INDEPENDENT REVIEW**
+- Status: **APPROVED BY PRODUCT OWNER — AUTH IMPLEMENTATION UNBLOCKED; INDEPENDENT SECURITY REVIEW REQUIRED BEFORE PROMOTION; PRIVACY/LEGAL REVIEW REQUIRED BEFORE PILOT**
 - Date: 2026-09-09
 - Scope: OD-03 ownership of contact-channel provenance between Global User and Tenant Membership/evidence
 
-This ADR records the proposed boundary for contact-channel ownership and
-Tenant-specific verification evidence. It is documentation only. It does not
-create Auth persistence, verified-channel persistence, or a new assurance
-level. OD-03 remains open until this ADR is independently reviewed.
+This ADR records the Product Owner-approved boundary for contact-channel
+ownership and Tenant-specific verification evidence. It is documentation only.
+It does not create Auth persistence, verified-channel persistence, or a new
+assurance level. Under the controlled OD-03 implementation-gate timing
+supersession, Auth engineering may proceed with synthetic or controlled test
+identities only. This does not claim that identity/security or privacy/legal
+review is complete: independent security review remains a hard gate before an
+Auth implementation checkpoint is promoted, and privacy/legal review remains a
+gate before a Pilot or processing real student contact data.
 
 ## Context and Product authority
 
@@ -17,13 +22,17 @@ global account while its evidentiary meaning differs between Tenants. For
 example, a verified email may support current-enrolment evidence in one
 university while providing only contact or affiliation evidence in another.
 
-OD-03 is the open decision for ownership of that contact-channel provenance.
+OD-03 records the ownership boundary for that contact-channel provenance. The
+Product Owner approval and the controlled timing supersession are recorded in
+`docs/governance/od03-implementation-gate-supersession.md`.
 The frozen Product Specification remains authoritative for the existing
 applicant, roster, institutional-domain, assurance, and recovery semantics.
 The A4 identifier inventory records the identifier ownership and prohibited
-cross-Tenant uses. This ADR proposes the boundary needed before future Auth or
-verified-channel persistence is implemented; it does not silently close OD-02
-or any other open decision.
+cross-Tenant uses. This ADR defines the boundary for future Auth or
+verified-channel persistence; the timing supersession unblocks synthetic/test
+engineering while preserving independent security promotion review and the
+privacy/legal Pilot gate. It does not silently close OD-02 or any other open
+decision.
 
 ## Decision
 
@@ -143,8 +152,11 @@ Before future implementation:
 7. add the exact identifier and prohibited-use rules to the A4 inventory;
 8. keep privileged non-student authority governed by OD-02 and existing
    Membership-backed seams; and
-9. obtain the separate credential, session, delivery, MFA, and security
-   decisions required before implementing Auth.
+9. keep the separate credential, session, delivery, MFA, and security decisions
+   as explicit implementation and promotion gates; synthetic/controlled Auth
+   engineering may proceed under the timing supersession, but real student
+   contact data and Pilot/production processing remain blocked pending the
+   required privacy/legal review.
 
 No implementation obligation in this ADR authorizes a users table,
 contact-channels table, sessions, credentials, OTPs, Auth routes, Auth UI,
@@ -188,4 +200,9 @@ vendor, token TTLs, rate limits, privileged non-student authority, or any
 other OD-02 branch. Those require separate Product, architecture, security,
 legal, or implementation decisions where applicable.
 
-OD-03 will close only after independent review of this ADR.
+The substantive OD-03 boundary is approved by the Product Owner. The controlled
+timing supersession does not claim identity/security or privacy/legal approval:
+independent security review remains mandatory before promotion of an Auth
+implementation checkpoint, and privacy/legal review remains mandatory before a
+Pilot or processing real student contact data in production. OD-02 and its
+privileged non-student authority branches remain open.
