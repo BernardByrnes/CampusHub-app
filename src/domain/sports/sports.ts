@@ -137,7 +137,7 @@ export function parseAffiliationLabel(
     value.trim().length > 0 &&
     value.length <= SPORTS_AFFILIATION_MAX_LENGTH
     ? value.trim()
-    : null;
+    : undefined;
 }
 
 export function parseExpectedVersion(value: unknown): number | null {

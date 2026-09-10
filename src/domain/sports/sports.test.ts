@@ -34,9 +34,10 @@ describe("Sports domain contracts", () => {
     expect(parseAffiliationLabel("  School  ")).toBe("School");
     expect(parseAffiliationLabel(null)).toBeNull();
     expect(parseAffiliationLabel(undefined)).toBeUndefined();
+    expect(parseAffiliationLabel(" ")).toBeUndefined();
     expect(parseSportName(" ")).toBeNull();
     expect(parseSeasonLabel(" ".repeat(81))).toBeNull();
-    expect(parseAffiliationLabel("x".repeat(161))).toBeNull();
+    expect(parseAffiliationLabel("x".repeat(161))).toBeUndefined();
   });
 
   it("bounds versions and list requests", () => {

@@ -230,6 +230,33 @@ describe("SportsManagementService", () => {
     );
   });
 
+  it("rejects invalid affiliation labels instead of converting them to null", async () => {
+    const { service, gateway } = createService();
+
+    await expect(
+      service.createTeam(
+        command({
+          team: { sportId, name: "Campus United", affiliationLabel: " " },
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(
+      service.editTeam(
+        command({
+          teamId,
+          edit: {
+            expectedVersion: 1,
+            sportId,
+            name: "Campus United",
+            affiliationLabel: "x".repeat(161),
+          },
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    expect(gateway.createTeam).not.toHaveBeenCalled();
+    expect(gateway.updateTeam).not.toHaveBeenCalled();
+  });
+
   it("lists only through the explicitly Tenant-scoped repository seam", async () => {
     const { service } = createService();
 
