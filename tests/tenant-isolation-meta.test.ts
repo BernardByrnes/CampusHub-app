@@ -43,6 +43,9 @@ function implementationPathForDatabaseObject(
     publications: "src/server/db/schema/publication.ts",
     publication_audience_criteria: "src/server/db/schema/publication.ts",
     audit_events: "src/server/db/schema/audit.ts",
+    sports: "src/server/db/schema/sports.ts",
+    competitions: "src/server/db/schema/sports.ts",
+    teams: "src/server/db/schema/sports.ts",
   };
 
   return (

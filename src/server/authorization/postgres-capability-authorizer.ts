@@ -60,6 +60,10 @@ export type PublicationEditTransactionDecision =
         | "INVALID_STATE";
     }>;
 
+export type SportManageTransactionDecision =
+  | Readonly<{ allowed: true }>
+  | Readonly<{ allowed: false; code: "PERMISSION_DENIED" }>;
+
 type PublicationMutationTransactionOptions = Readonly<{
   publicationId?: string;
   expectedVersion?: number;
@@ -90,6 +94,15 @@ function isSupportedPublicationCapability(
     value === CAPABILITIES.PUBLICATION_CREATE ||
     value === CAPABILITIES.PUBLICATION_EDIT ||
     value === CAPABILITIES.PUBLICATION_PUBLISH
+  );
+}
+
+function isSupportedSportsResource(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === "sport" ||
+    value === "competition" ||
+    value === "team"
   );
 }
 
@@ -138,15 +151,22 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
       }
 
       const capability = request.capability;
+      const publicationRequest =
+        isSupportedPublicationCapability(capability) &&
+        request.scope.module === "publication" &&
+        (request.scope.resource === undefined ||
+          request.scope.resource === "publication");
+      const sportsRequest =
+        capability === CAPABILITIES.SPORT_MANAGE &&
+        request.scope.module === "sports" &&
+        isSupportedSportsResource(request.scope.resource);
       if (
-        !isSupportedPublicationCapability(capability) ||
-        request.scope.module !== "publication" ||
-        (request.scope.resource !== undefined &&
-          request.scope.resource !== "publication") ||
+        (!publicationRequest && !sportsRequest) ||
         request.actor.tenantId !== request.scope.tenantId
       ) {
         return { allowed: false };
       }
+      const moduleScope = sportsRequest ? "sports" : "publication";
 
       const membershipId = request.actor.membershipId;
       if (membershipId === undefined) {
@@ -208,7 +228,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
           guildTermId: term.id,
           membershipId: membership.id,
           capability,
-          moduleScope: "publication",
+          moduleScope,
           now,
           termEndsAt: term.endsAt,
         });
@@ -218,7 +238,7 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         grant.guildTermId !== term.id ||
         grant.membershipId !== membership.id ||
         grant.capability !== capability ||
-        grant.moduleScope !== "publication" ||
+        grant.moduleScope !== moduleScope ||
         grant.revokedAt !== null ||
         grant.expiresAt <= now ||
         grant.expiresAt > term.endsAt
@@ -498,5 +518,150 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         afterFinalCheck,
       },
     );
+  }
+
+  /**
+   * Authoritative commit-time check for Sports configuration. It deliberately
+   * accepts only the single sport.manage capability in the Sports module and
+   * reloads the same Tenant, Membership, Guild Term, and RoleGrant facts as
+   * the other privileged mutation gateways.
+   */
+  public async authorizeSportManageInTransaction(
+    database: CapabilityTransactionDatabase,
+    request: CapabilityAuthorizationRequest,
+    beforeFinalCheck?: () => Promise<void>,
+    afterFinalCheck?: (checkedAt: Date) => void,
+  ): Promise<SportManageTransactionDecision> {
+    try {
+      if (
+        !isAuthorizationRequest(request) ||
+        request.capability !== CAPABILITIES.SPORT_MANAGE ||
+        request.scope.module !== "sports" ||
+        !isSupportedSportsResource(request.scope.resource) ||
+        request.actor.tenantId !== request.scope.tenantId ||
+        request.actor.membershipId === undefined
+      ) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      const initialNow = this.dependencies.clock?.now() ?? new Date();
+      if (!isValidDate(initialNow)) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      const tenantRows = await database
+        .select()
+        .from(tenants)
+        .where(eq(tenants.id, request.scope.tenantId))
+        .for("update")
+        .limit(1);
+      const tenant = tenantRows[0];
+      if (
+        tenant === undefined ||
+        tenant.id !== request.scope.tenantId ||
+        !tenantHasFullFunctionality(tenant.status)
+      ) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      const membershipRows = await database
+        .select()
+        .from(memberships)
+        .where(
+          and(
+            eq(memberships.tenantId, tenant.id),
+            eq(memberships.id, request.actor.membershipId),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      const membership = membershipRows[0];
+      if (
+        membership === undefined ||
+        membership.tenantId !== tenant.id ||
+        membership.id !== request.actor.membershipId ||
+        membership.identitySubjectId !== request.actor.identitySubjectId ||
+        membership.lifecycle !== "verified"
+      ) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      const termRows = await database
+        .select()
+        .from(guildTerms)
+        .where(
+          and(
+            eq(guildTerms.tenantId, tenant.id),
+            eq(guildTerms.status, "active"),
+            lte(guildTerms.startsAt, initialNow),
+            gt(guildTerms.endsAt, initialNow),
+          ),
+        )
+        .orderBy(asc(guildTerms.id))
+        .for("update")
+        .limit(1);
+      const term = termRows[0];
+      if (
+        term === undefined ||
+        term.tenantId !== tenant.id ||
+        term.status !== "active" ||
+        initialNow < term.startsAt ||
+        initialNow >= term.endsAt
+      ) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      const grantRows = await database
+        .select()
+        .from(roleGrants)
+        .where(
+          and(
+            eq(roleGrants.tenantId, tenant.id),
+            eq(roleGrants.guildTermId, term.id),
+            eq(roleGrants.membershipId, membership.id),
+            eq(roleGrants.capability, CAPABILITIES.SPORT_MANAGE),
+            eq(roleGrants.moduleScope, "sports"),
+            isNull(roleGrants.revokedAt),
+            gt(roleGrants.expiresAt, initialNow),
+            lte(roleGrants.expiresAt, term.endsAt),
+          ),
+        )
+        .orderBy(asc(roleGrants.createdAt), asc(roleGrants.id))
+        .for("update");
+      const currentGrant = grantRows.find(
+        (grant) =>
+          grant.tenantId === tenant.id &&
+          grant.guildTermId === term.id &&
+          grant.membershipId === membership.id &&
+          grant.capability === CAPABILITIES.SPORT_MANAGE &&
+          grant.moduleScope === "sports" &&
+          grant.revokedAt === null &&
+          grant.expiresAt > initialNow &&
+          grant.expiresAt <= term.endsAt,
+      );
+      if (currentGrant === undefined) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      await beforeFinalCheck?.();
+
+      const finalNow = this.dependencies.clock?.now() ?? new Date();
+      if (
+        !isValidDate(finalNow) ||
+        term.status !== "active" ||
+        finalNow < term.startsAt ||
+        finalNow >= term.endsAt ||
+        currentGrant.revokedAt !== null ||
+        currentGrant.expiresAt <= finalNow ||
+        currentGrant.expiresAt > term.endsAt
+      ) {
+        return { allowed: false, code: "PERMISSION_DENIED" };
+      }
+
+      afterFinalCheck?.(finalNow);
+      return { allowed: true };
+    } catch {
+      return { allowed: false, code: "PERMISSION_DENIED" };
+    }
   }
 }

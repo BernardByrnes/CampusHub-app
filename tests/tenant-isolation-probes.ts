@@ -20,6 +20,7 @@ import { EditPublicationDraftService } from "@/application/content/edit-publicat
 import { PublishPublicationService } from "@/application/content/publish-publication";
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
+import { SportsManagementService } from "@/application/sports/manage-sports";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -39,6 +40,9 @@ import {
   publications,
   residences,
   roleGrants,
+  competitions,
+  sports,
+  teams,
   tenantAcademicYearConfig,
   tenants,
   type MembershipRow,
@@ -1567,6 +1571,144 @@ async function capabilityAuthorizationProbe(): Promise<void> {
   ).resolves.toEqual({ allowed: false });
 }
 
+async function sportsManagementProbe(): Promise<void> {
+  const trustedContext: TrustedRequestContext = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    tenantStatus: "active",
+    membershipId: membershipAId,
+    assuranceLevel: "L2",
+    membershipStatus: "verified",
+  };
+  const calls: string[] = [];
+  const service = new SportsManagementService({
+    capabilityAuthorizer: {
+      authorize: async () => {
+        calls.push("authorize");
+        return { allowed: true };
+      },
+    },
+    gateway: {
+      createSport: async () => {
+        calls.push("createSport");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      updateSport: async () => {
+        calls.push("updateSport");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      deactivateSport: async () => {
+        calls.push("deactivateSport");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      createCompetition: async () => {
+        calls.push("createCompetition");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      updateCompetition: async () => {
+        calls.push("updateCompetition");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      deactivateCompetition: async () => {
+        calls.push("deactivateCompetition");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      createTeam: async () => {
+        calls.push("createTeam");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      updateTeam: async () => {
+        calls.push("updateTeam");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+      deactivateTeam: async () => {
+        calls.push("deactivateTeam");
+        return { ok: false, error: "PERMISSION_DENIED" };
+      },
+    },
+    sports: { listSportsForTenant: async () => [] },
+    competitions: { listCompetitionsForTenant: async () => [] },
+    teams: { listTeamsForTenant: async () => [] },
+  });
+
+  await expect(
+    service.createSport({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      sport: { name: "Tenant B must not be reachable" },
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(calls).toEqual([]);
+}
+
+async function sportsAuthorizationProbe(): Promise<void> {
+  const authorizer = new PostgresCapabilityAuthorizer({
+    tenants: {
+      findTenantById: async () => tenantA,
+    },
+    memberships: {
+      findMembershipByIdForTenant: async () => membershipA,
+    },
+    guildTerms: {
+      findActiveGuildTermForTenant: async () => ({
+        id: termId,
+        tenantId: tenantAId,
+        label: "Term A",
+        startsAt: new Date("2026-01-01T00:00:00.000Z"),
+        endsAt: new Date("2026-12-31T23:59:59.000Z"),
+        status: "active" as const,
+        createdAt: tenantA.createdAt,
+        updatedAt: tenantA.updatedAt,
+      }),
+    },
+    roleGrants: {
+      findCapabilityGrantForTenant: async () => ({
+        id: "00000000-0000-4000-8000-000000000032",
+        tenantId: tenantAId,
+        guildTermId: termId,
+        membershipId: membershipAId,
+        role: "publisher" as const,
+        capability: "sport.manage" as const,
+        moduleScope: "sports" as const,
+        expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+        revokedAt: null,
+        createdAt: tenantA.createdAt,
+        updatedAt: tenantA.updatedAt,
+      }),
+    },
+    clock: { now: () => now },
+  });
+
+  const actor = {
+    identitySubjectId: "same-identity",
+    tenantId: tenantAId,
+    membershipId: membershipAId,
+  };
+  const context = {
+    tenantStatus: "active" as const,
+    membershipStatus: "verified" as const,
+    assuranceLevel: "L2" as const,
+  };
+
+  await expect(
+    authorizer.authorize({
+      actor,
+      context,
+      capability: "sport.manage",
+      scope: { tenantId: tenantAId, module: "sports", resource: "team" },
+    }),
+  ).resolves.toEqual({ allowed: true });
+
+  await expect(
+    authorizer.authorize({
+      actor,
+      context,
+      capability: "sport.manage",
+      scope: { tenantId: tenantAId, module: "publication", resource: "team" },
+    }),
+  ).resolves.toEqual({ allowed: false });
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -1652,6 +1794,7 @@ export const tenantIsolationProbeRegistry: Readonly<
   "guild-term.active": guildTermActiveProbe,
   "role-grant.capability": roleGrantCapabilityProbe,
   "capability.authorization": capabilityAuthorizationProbe,
+  "sports.authorization": sportsAuthorizationProbe,
   "publication.direct": publicationDirectProbe,
   "publication.audience-resolver": publicationAudienceResolverProbe,
   "publication.collection": publicationCollectionProbe,
@@ -1660,6 +1803,45 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.create": publicationCreateProbe,
   "publication.edit": publicationEditProbe,
   "publication.publish": publicationPublishProbe,
+  "sports.management": sportsManagementProbe,
+  "sports.persistence": () => {
+    expectTenantOwnedTable(sports);
+    expectTenantCompositeIdentity(sports);
+    expectTenantOwnedTable(competitions);
+    expectTenantCompositeIdentity(competitions);
+    expectForeignKey(
+      competitions,
+      ["tenant_id", "sport_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      competitions,
+      ["tenant_id", "campus_id"],
+      ["tenant_id", "id"],
+    );
+    expectTenantOwnedTable(teams);
+    expectTenantCompositeIdentity(teams);
+    expectForeignKey(teams, ["tenant_id", "sport_id"], ["tenant_id", "id"]);
+  },
+  "competition.persistence": () => {
+    expectTenantOwnedTable(competitions);
+    expectTenantCompositeIdentity(competitions);
+    expectForeignKey(
+      competitions,
+      ["tenant_id", "sport_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      competitions,
+      ["tenant_id", "campus_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "team.persistence": () => {
+    expectTenantOwnedTable(teams);
+    expectTenantCompositeIdentity(teams);
+    expectForeignKey(teams, ["tenant_id", "sport_id"], ["tenant_id", "id"]);
+  },
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":
     publicationAudienceDefinitionBatchProbe,

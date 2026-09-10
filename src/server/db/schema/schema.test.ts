@@ -117,6 +117,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "publication.publish",
       "publication.priority_publish",
       "publication.retract",
+      "sport.manage",
     ]);
     expect(roleGrantModuleScopeEnum.enumValues).toContain("publication");
   });

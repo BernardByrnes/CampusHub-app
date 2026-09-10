@@ -7,8 +7,40 @@ import {
   type PublicationAudienceMode,
 } from "@/domain/content/publication";
 
-export const AUDIT_EVENT_TYPES = ["publication.published"] as const;
+export const AUDIT_EVENT_TYPES = [
+  "publication.published",
+  "sport.created",
+  "sport.changed",
+  "sport.deactivated",
+  "competition.created",
+  "competition.changed",
+  "competition.deactivated",
+  "team.created",
+  "team.changed",
+  "team.deactivated",
+] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
+
+export const AUDIT_RESOURCE_TYPES = [
+  "publication",
+  "sport",
+  "competition",
+  "team",
+] as const;
+export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
+
+export const SPORTS_AUDIT_EVENT_TYPES = [
+  "sport.created",
+  "sport.changed",
+  "sport.deactivated",
+  "competition.created",
+  "competition.changed",
+  "competition.deactivated",
+  "team.created",
+  "team.changed",
+  "team.deactivated",
+] as const;
+export type SportsAuditEventType = (typeof SPORTS_AUDIT_EVENT_TYPES)[number];
 
 export const AUDIT_INTEGRITY_FORMAT_VERSION = 1 as const;
 export const AUDIT_EVENT_CONTRACT_VERSION = 1 as const;
@@ -33,17 +65,27 @@ export type PublicationPublishedAuditEventFacts = Readonly<{
   audienceSnapshot: PublicationPublishedAuditAudienceSnapshot;
 }>;
 
+export type SportsAuditEventFacts = Readonly<{
+  action: "created" | "changed" | "deactivated";
+  name: string;
+  status: "active" | "inactive";
+  version: number;
+  sportId: string | null;
+  campusId: string | null;
+  tableMode: "none" | "manual" | null;
+}>;
+
 export type AuditEvent = Readonly<{
   id: string;
   tenantId: string;
   sequence: number;
-  eventType: "publication.published";
+  eventType: AuditEventType;
   actorMembershipId: string;
-  resourceType: "publication";
+  resourceType: AuditResourceType;
   resourceId: string;
   resourceVersion: number;
   occurredAt: Date;
-  eventFacts: PublicationPublishedAuditEventFacts;
+  eventFacts: PublicationPublishedAuditEventFacts | SportsAuditEventFacts;
   previousHash: string;
   currentHash: string;
   keyVersion: number;
@@ -57,13 +99,13 @@ export type AuditIntegrityEnvelopeV1 = Readonly<{
   tenantId: string;
   sequence: number;
   eventId: string;
-  eventType: "publication.published";
+  eventType: AuditEventType;
   actorMembershipId: string;
-  resourceType: "publication";
+  resourceType: AuditResourceType;
   resourceId: string;
   resourceVersion: number;
   occurredAt: string;
-  eventFacts: PublicationPublishedAuditEventFacts;
+  eventFacts: PublicationPublishedAuditEventFacts | SportsAuditEventFacts;
   previousHash: string;
   keyVersion: number;
 }>;
@@ -253,6 +295,113 @@ export function isPublicationPublishedAuditEventFacts(
   return normalizePublicationPublishedAuditEventFacts(value) !== null;
 }
 
+function isSportsAuditEventType(
+  value: unknown,
+): value is SportsAuditEventType {
+  return (
+    typeof value === "string" &&
+    SPORTS_AUDIT_EVENT_TYPES.includes(value as SportsAuditEventType)
+  );
+}
+
+function isAuditResourceType(value: unknown): value is AuditResourceType {
+  return (
+    typeof value === "string" &&
+    AUDIT_RESOURCE_TYPES.includes(value as AuditResourceType)
+  );
+}
+
+function isAuditEventType(value: unknown): value is AuditEventType {
+  return (
+    typeof value === "string" &&
+    AUDIT_EVENT_TYPES.includes(value as AuditEventType)
+  );
+}
+
+export function normalizeSportsAuditEventFacts(
+  value: unknown,
+  eventType: SportsAuditEventType,
+  resourceType: Exclude<AuditResourceType, "publication">,
+): SportsAuditEventFacts | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "action",
+      "name",
+      "status",
+      "version",
+      "sportId",
+      "campusId",
+      "tableMode",
+    ]) ||
+    !isSportsAuditEventType(eventType) ||
+    !isAuditResourceType(resourceType)
+  ) {
+    return null;
+  }
+
+  const [expectedResource, expectedAction] = eventType.split(".");
+  if (
+    expectedResource !== resourceType ||
+    value.action !== expectedAction ||
+    (value.action !== "created" &&
+      value.action !== "changed" &&
+      value.action !== "deactivated") ||
+    typeof value.name !== "string" ||
+    value.name.trim().length === 0 ||
+    value.name.length > 120 ||
+    (value.status !== "active" && value.status !== "inactive") ||
+    !isPositiveInteger(value.version) ||
+    (value.action === "created" && value.status !== "active") ||
+    (value.action === "deactivated" && value.status !== "inactive") ||
+    (value.sportId !== null && !isUuid(value.sportId)) ||
+    (value.campusId !== null && !isUuid(value.campusId)) ||
+    (value.tableMode !== null &&
+      value.tableMode !== "none" &&
+      value.tableMode !== "manual")
+  ) {
+    return null;
+  }
+
+  if (resourceType === "sport") {
+    if (value.sportId !== null || value.campusId !== null || value.tableMode !== null) {
+      return null;
+    }
+  } else if (resourceType === "competition") {
+    if (
+      value.sportId === null ||
+      value.campusId === null ||
+      value.tableMode === null
+    ) {
+      return null;
+    }
+  } else if (
+    value.sportId === null ||
+    value.campusId !== null ||
+    value.tableMode !== null
+  ) {
+    return null;
+  }
+
+  return {
+    action: value.action,
+    name: value.name.trim(),
+    status: value.status,
+    version: value.version,
+    sportId: value.sportId === null ? null : value.sportId.toLowerCase(),
+    campusId: value.campusId === null ? null : value.campusId.toLowerCase(),
+    tableMode: value.tableMode,
+  };
+}
+
+export function isSportsAuditEventFacts(
+  value: unknown,
+  eventType: SportsAuditEventType,
+  resourceType: Exclude<AuditResourceType, "publication">,
+): value is SportsAuditEventFacts {
+  return normalizeSportsAuditEventFacts(value, eventType, resourceType) !== null;
+}
+
 export function normalizeAuditIntegrityEnvelope(
   value: unknown,
 ): AuditIntegrityEnvelopeV1 | null {
@@ -279,9 +428,9 @@ export function normalizeAuditIntegrityEnvelope(
     !isUuid(value.tenantId) ||
     !isPositiveInteger(value.sequence) ||
     !isUuid(value.eventId) ||
-    value.eventType !== "publication.published" ||
+    !isAuditEventType(value.eventType) ||
     !isUuid(value.actorMembershipId) ||
-    value.resourceType !== "publication" ||
+    !isAuditResourceType(value.resourceType) ||
     !isUuid(value.resourceId) ||
     !isPositiveInteger(value.resourceVersion) ||
     !isCanonicalOccurredAt(value.occurredAt) ||
@@ -291,9 +440,20 @@ export function normalizeAuditIntegrityEnvelope(
     return null;
   }
 
-  const eventFacts = normalizePublicationPublishedAuditEventFacts(
-    value.eventFacts,
-  );
+  const eventFacts =
+    value.eventType === "publication.published" &&
+    value.resourceType === "publication"
+      ? normalizePublicationPublishedAuditEventFacts(value.eventFacts)
+      : isSportsAuditEventType(value.eventType) &&
+          (value.resourceType === "sport" ||
+            value.resourceType === "competition" ||
+            value.resourceType === "team")
+        ? normalizeSportsAuditEventFacts(
+            value.eventFacts,
+            value.eventType,
+            value.resourceType,
+          )
+        : null;
   if (eventFacts === null) {
     return null;
   }
@@ -304,9 +464,9 @@ export function normalizeAuditIntegrityEnvelope(
     tenantId: value.tenantId.toLowerCase(),
     sequence: value.sequence,
     eventId: value.eventId.toLowerCase(),
-    eventType: "publication.published",
+    eventType: value.eventType,
     actorMembershipId: value.actorMembershipId.toLowerCase(),
-    resourceType: "publication",
+    resourceType: value.resourceType,
     resourceId: value.resourceId.toLowerCase(),
     resourceVersion: value.resourceVersion,
     occurredAt: value.occurredAt,

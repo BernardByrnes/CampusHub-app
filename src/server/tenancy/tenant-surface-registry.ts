@@ -116,7 +116,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0011_dark_boomerang.sql",
+    implementationPath: "drizzle/0012_tired_junta.sql",
   },
 } as const satisfies Readonly<
   Record<
@@ -311,6 +311,31 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     expectedAstForm: "CallExpression",
   },
   {
+    implementationPath: "src/server/db/schema/sports.ts",
+    exportName: "sportLifecycleEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/sports.ts",
+    exportName: "competitionTableModeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/sports.ts",
+    exportName: "sports",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/sports.ts",
+    exportName: "competitions",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/sports.ts",
+    exportName: "teams",
+    expectedAstForm: "CallExpression",
+  },
+  {
     implementationPath: "src/server/config/env-schema.ts",
     exportName: "serverEnvSchema",
     expectedAstForm: "CallExpression",
@@ -377,6 +402,11 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/index.ts",
     moduleSpecifier: "./governance",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./sports",
     exportForm: "ExportAllDeclaration",
   },
 ] as const;
@@ -600,6 +630,58 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterTypeTexts: ["CampusHomeServiceDependencies"],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath: "src/application/sports/manage-sports.ts",
+    classIdentity: "SportsManagementService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["SportsManagementServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath: "src/server/authorization/postgres-authorized-sports.ts",
+    classIdentity: "PostgresAuthorizedSportsManagementExecutor",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: [
+      "PostgresAuthorizedSportsManagementDependencies",
+    ],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
+  },
+  {
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    classIdentity: "DrizzleSportRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    classIdentity: "DrizzleCompetitionRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath: "src/server/repositories/team-repository.ts",
+    classIdentity: "DrizzleTeamRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["database"],
+    parameterTypeTexts: ["CampusHubDatabase"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db"],
   },
 ] as const satisfies readonly ReviewedNonOperationalConstructorContract[];
 
@@ -953,6 +1035,19 @@ export const tenantSurfaceRegistry = [
       "PostgresCapabilityAuthorizer.authorizePublicationPublishInTransaction",
   },
   {
+    id: "capability.authorization.atomic-sports-manage",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-capability-authorizer.ts",
+    surface: "PostgresCapabilityAuthorizer.authorizeSportManageInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Commit-time Sports authority locks the Tenant, Membership, active Guild Term, and current sport.manage RoleGrant before the same transaction mutates a Sports resource.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresCapabilityAuthorizer.authorizeSportManageInTransaction",
+  },
+  {
     id: "publication.atomic-authorized-create",
     category: "application_service",
     implementationPath:
@@ -1028,6 +1123,42 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["publication-audience-criteria.persistence"],
     databaseObjectName: "publication_audience_criteria",
     operation: "table:publication_audience_criteria",
+  },
+  {
+    id: "sports.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/sports.ts",
+    surface: "sports",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport rows are Tenant-owned, composite Tenant-identified, versioned, and deactivated rather than deleted.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    databaseObjectName: "sports",
+    operation: "table:sports",
+  },
+  {
+    id: "competition.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/sports.ts",
+    surface: "competitions",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition rows are Tenant-owned and bind their Sport and Campus through same-Tenant composite foreign keys.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    databaseObjectName: "competitions",
+    operation: "table:competitions",
+  },
+  {
+    id: "team.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/sports.ts",
+    surface: "teams",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team rows are Tenant-owned, bind one Sport through a same-Tenant composite foreign key, and do not encode a permanent Competition relationship.",
+    requiredNegativeTestIds: ["team.persistence"],
+    databaseObjectName: "teams",
+    operation: "table:teams",
   },
   {
     id: "publication.authorization.resolvers",
@@ -1111,6 +1242,190 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["audit.persistence"],
     operation:
       "DrizzleAuditEventRepository.appendPublicationPublishedInTransaction",
+  },
+  {
+    id: "audit.repository.sports-append",
+    category: "repository",
+    implementationPath: "src/server/repositories/audit-event-repository.ts",
+    surface:
+      "DrizzleAuditEventRepository.appendSportsMutationInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sports create/change/deactivate events use the caller's transaction, the Tenant-local immutable audit chain, and a closed event/resource vocabulary.",
+    requiredNegativeTestIds: ["audit.persistence"],
+    operation:
+      "DrizzleAuditEventRepository.appendSportsMutationInTransaction",
+  },
+  {
+    id: "sports.repository.sport-create",
+    category: "repository",
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    surface: "DrizzleSportRepository.createSportInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport creation accepts an explicit Tenant and caller transaction only.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    operation: "DrizzleSportRepository.createSportInTransaction",
+  },
+  {
+    id: "sports.repository.sport-direct",
+    category: "repository",
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    surface: "DrizzleSportRepository.findSportByIdForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport lookup requires both Tenant and Sport identifiers before SQL.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    operation: "DrizzleSportRepository.findSportByIdForTenant",
+  },
+  {
+    id: "sports.repository.sport-list",
+    category: "repository",
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    surface: "DrizzleSportRepository.listSportsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport collection reads are explicitly Tenant-bound, ordered, and bounded.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    operation: "DrizzleSportRepository.listSportsForTenant",
+  },
+  {
+    id: "sports.repository.sport-update",
+    category: "repository",
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    surface: "DrizzleSportRepository.updateSportInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport edits lock the exact Tenant-owned row and require the expected version.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    operation: "DrizzleSportRepository.updateSportInTransaction",
+  },
+  {
+    id: "sports.repository.sport-deactivate",
+    category: "repository",
+    implementationPath: "src/server/repositories/sport-repository.ts",
+    surface: "DrizzleSportRepository.deactivateSportInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport deactivation is the only terminal mutation and never deletes the row.",
+    requiredNegativeTestIds: ["sports.persistence"],
+    operation: "DrizzleSportRepository.deactivateSportInTransaction",
+  },
+  {
+    id: "sports.repository.competition-create",
+    category: "repository",
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    surface: "DrizzleCompetitionRepository.createCompetitionInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition creation locks active same-Tenant Sport and Campus rows before insert.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    operation:
+      "DrizzleCompetitionRepository.createCompetitionInTransaction",
+  },
+  {
+    id: "sports.repository.competition-direct",
+    category: "repository",
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    surface: "DrizzleCompetitionRepository.findCompetitionByIdForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition lookup requires both Tenant and Competition identifiers before SQL.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    operation:
+      "DrizzleCompetitionRepository.findCompetitionByIdForTenant",
+  },
+  {
+    id: "sports.repository.competition-list",
+    category: "repository",
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    surface: "DrizzleCompetitionRepository.listCompetitionsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition collection reads bind the Tenant and optional same-Tenant relation filters with a bounded order.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    operation:
+      "DrizzleCompetitionRepository.listCompetitionsForTenant",
+  },
+  {
+    id: "sports.repository.competition-update",
+    category: "repository",
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    surface: "DrizzleCompetitionRepository.updateCompetitionInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition edits lock the exact row and validate active same-Tenant Sport and Campus relations.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    operation:
+      "DrizzleCompetitionRepository.updateCompetitionInTransaction",
+  },
+  {
+    id: "sports.repository.competition-deactivate",
+    category: "repository",
+    implementationPath: "src/server/repositories/competition-repository.ts",
+    surface:
+      "DrizzleCompetitionRepository.deactivateCompetitionInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition deactivation is a versioned status transition without delete.",
+    requiredNegativeTestIds: ["competition.persistence"],
+    operation:
+      "DrizzleCompetitionRepository.deactivateCompetitionInTransaction",
+  },
+  {
+    id: "sports.repository.team-create",
+    category: "repository",
+    implementationPath: "src/server/repositories/team-repository.ts",
+    surface: "DrizzleTeamRepository.createTeamInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team creation locks an active same-Tenant Sport before insert.",
+    requiredNegativeTestIds: ["team.persistence"],
+    operation: "DrizzleTeamRepository.createTeamInTransaction",
+  },
+  {
+    id: "sports.repository.team-direct",
+    category: "repository",
+    implementationPath: "src/server/repositories/team-repository.ts",
+    surface: "DrizzleTeamRepository.findTeamByIdForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team lookup requires both Tenant and Team identifiers before SQL.",
+    requiredNegativeTestIds: ["team.persistence"],
+    operation: "DrizzleTeamRepository.findTeamByIdForTenant",
+  },
+  {
+    id: "sports.repository.team-list",
+    category: "repository",
+    implementationPath: "src/server/repositories/team-repository.ts",
+    surface: "DrizzleTeamRepository.listTeamsForTenant",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team collection reads bind the Tenant and optional Sport filter with a bounded order.",
+    requiredNegativeTestIds: ["team.persistence"],
+    operation: "DrizzleTeamRepository.listTeamsForTenant",
+  },
+  {
+    id: "sports.repository.team-update",
+    category: "repository",
+    implementationPath: "src/server/repositories/team-repository.ts",
+    surface: "DrizzleTeamRepository.updateTeamInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team edits lock the exact row, require expected version, and validate the active same-Tenant Sport.",
+    requiredNegativeTestIds: ["team.persistence"],
+    operation: "DrizzleTeamRepository.updateTeamInTransaction",
+  },
+  {
+    id: "sports.repository.team-deactivate",
+    category: "repository",
+    implementationPath: "src/server/repositories/team-repository.ts",
+    surface: "DrizzleTeamRepository.deactivateTeamInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team deactivation is a versioned status transition without delete.",
+    requiredNegativeTestIds: ["team.persistence"],
+    operation: "DrizzleTeamRepository.deactivateTeamInTransaction",
   },
   {
     id: "audit.repository.direct",
@@ -1407,6 +1722,287 @@ export const tenantSurfaceRegistry = [
     operation: "PublishPublicationService.publishPublication",
   },
   {
+    id: "sports.authorized-management",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Every Sports mutation rechecks sport.manage, the exact Tenant authority rows, and actual database audit privileges in the same transaction before appending one immutable audit event.",
+    requiredNegativeTestIds: ["sports.authorization"],
+  },
+  {
+    id: "sports.authorized-create-sport",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.createSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport creation is Tenant-bound, capability-gated, and audit-atomic.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.createSport",
+  },
+  {
+    id: "sports.authorized-update-sport",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.updateSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport edits use expected-version concurrency and append a same-transaction audit event.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.updateSport",
+  },
+  {
+    id: "sports.authorized-deactivate-sport",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.deactivateSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport deactivation is a versioned status transition; no hard-delete operation exists.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.deactivateSport",
+  },
+  {
+    id: "sports.authorized-create-competition",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.createCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition creation requires active same-Tenant Sport and Campus rows and an atomic audit append.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.createCompetition",
+  },
+  {
+    id: "sports.authorized-update-competition",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.updateCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition edits lock and validate same-Tenant Sport/Campus relationships under expected-version concurrency.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.updateCompetition",
+  },
+  {
+    id: "sports.authorized-deactivate-competition",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.deactivateCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition deactivation is a versioned status transition without hard deletion.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.deactivateCompetition",
+  },
+  {
+    id: "sports.authorized-create-team",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.createTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team creation requires an active same-Tenant Sport and appends its audit event in the mutation transaction.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.createTeam",
+  },
+  {
+    id: "sports.authorized-update-team",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.updateTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team edits are explicit-Tenant and expected-version guarded with same-Tenant Sport validation.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.updateTeam",
+  },
+  {
+    id: "sports.authorized-deactivate-team",
+    category: "application_service",
+    implementationPath:
+      "src/server/authorization/postgres-authorized-sports.ts",
+    surface: "PostgresAuthorizedSportsManagementExecutor.deactivateTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team deactivation is a versioned status transition without hard deletion.",
+    requiredNegativeTestIds: ["sports.authorization"],
+    operation:
+      "PostgresAuthorizedSportsManagementExecutor.deactivateTeam",
+  },
+  {
+    id: "sports.management",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Management commands accept only a server-produced trusted context, an equal requested Tenant, narrow validated fields, and the exact sport.manage capability.",
+    requiredNegativeTestIds: ["sports.management"],
+  },
+  {
+    id: "sports.management.create-sport",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.createSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport creation rejects malformed or cross-Tenant commands before authorization or repository access.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.createSport",
+  },
+  {
+    id: "sports.management.edit-sport",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.editSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport edits require exact Tenant scope and explicit expected-version input.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.editSport",
+  },
+  {
+    id: "sports.management.deactivate-sport",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.deactivateSport",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport deactivation requires exact Tenant scope and expected version.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.deactivateSport",
+  },
+  {
+    id: "sports.management.list-sports",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.listSports",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Sport lists are capability-gated, Tenant-bound, status-filtered, and bounded.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.listSports",
+  },
+  {
+    id: "sports.management.create-competition",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.createCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition creation requires explicit same-Tenant scope and closed table-mode input.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.createCompetition",
+  },
+  {
+    id: "sports.management.edit-competition",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.editCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition edits require exact Tenant scope, same-Tenant relation identifiers, and expected version.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.editCompetition",
+  },
+  {
+    id: "sports.management.deactivate-competition",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.deactivateCompetition",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition deactivation requires exact Tenant scope and expected version.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.deactivateCompetition",
+  },
+  {
+    id: "sports.management.list-competitions",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.listCompetitions",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Competition lists are capability-gated, explicitly Tenant-bound, optionally relation-filtered, and bounded.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.listCompetitions",
+  },
+  {
+    id: "sports.management.create-team",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.createTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team creation requires explicit same-Tenant scope and one Sport relation.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.createTeam",
+  },
+  {
+    id: "sports.management.edit-team",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.editTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team edits require exact Tenant scope, one same-Tenant Sport relation, and expected version.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.editTeam",
+  },
+  {
+    id: "sports.management.deactivate-team",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.deactivateTeam",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team deactivation requires exact Tenant scope and expected version.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.deactivateTeam",
+  },
+  {
+    id: "sports.management.list-teams",
+    category: "application_service",
+    implementationPath: "src/application/sports/manage-sports.ts",
+    surface: "SportsManagementService.listTeams",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Team lists are capability-gated, explicitly Tenant-bound, optionally Sport-filtered, and bounded.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "SportsManagementService.listTeams",
+  },
+  {
+    id: "sports.publisher-route",
+    category: "route",
+    implementationPath: "src/app/(publisher)/sports/page.tsx",
+    surface: "GET /sports",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The Publisher Server Component renders only the unavailable state until a future server-produced trusted context exists; it accepts no browser authority.",
+    requiredNegativeTestIds: ["sports.management"],
+    operation: "default",
+  },
+  {
     id: "global.health.route",
     category: "route",
     implementationPath: "src/app/api/health/route.ts",
@@ -1484,8 +2080,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0011_dark_boomerang.sql",
-    surface: "Reviewed Drizzle migration history through 0011",
+    implementationPath: "drizzle/0012_tired_junta.sql",
+    surface: "Reviewed Drizzle migration history through 0012",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -1503,8 +2099,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0009_swift_salo.sql",
       "drizzle/0010_yielding_ghost_rider.sql",
       "drizzle/0011_dark_boomerang.sql",
+      "drizzle/0012_tired_junta.sql",
     ],
-    migrationHead: "drizzle/0011_dark_boomerang.sql",
+    migrationHead: "drizzle/0012_tired_junta.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 
@@ -1513,6 +2110,7 @@ export const GOVERNED_SURFACE_ROOTS = [
   "src/application",
   "src/app/api",
   "src/app/(student)",
+  "src/app/(publisher)",
 ] as const;
 
 export const GOVERNED_SINGLE_FILE_PREFIXES = [

@@ -61,6 +61,15 @@ key, even if a future account model contains it.
 | `roleGrant.tenantId` | Role Grant ownership | PostgreSQL UUID FK to `tenant.id`; grant authority is never global. | `CURRENT` |
 | `roleGrant.guildTermId` | Role Grant term relation | PostgreSQL UUID paired with `roleGrant.tenantId` for a same-Tenant Guild Term FK. | `CURRENT` |
 | `roleGrant.membershipId` | Role Grant Membership relation | PostgreSQL UUID paired with `roleGrant.tenantId` for a same-Tenant Membership FK. | `CURRENT` |
+| `sport.id` | Sport resource | PostgreSQL UUID primary key; stable across label changes and owned by one Tenant. | `CURRENT` |
+| `sport.tenantId` | Sport ownership | PostgreSQL UUID FK to `tenant.id`; management is Tenant-scoped. | `CURRENT` |
+| `competition.id` | Competition resource | PostgreSQL UUID primary key; stable across label/status changes and owned by one Tenant. | `CURRENT` |
+| `competition.tenantId` | Competition ownership | PostgreSQL UUID FK to `tenant.id`; competition reads and mutations are Tenant-scoped. | `CURRENT` |
+| `competition.sportId` | Competition Sport relation | PostgreSQL UUID paired with `competition.tenantId` for a same-Tenant Sport FK. | `CURRENT` |
+| `competition.campusId` | Competition Campus relation | PostgreSQL UUID paired with `competition.tenantId` for a same-Tenant Campus FK. | `CURRENT` |
+| `team.id` | Team resource | PostgreSQL UUID primary key; stable across label/status changes and owned by one Tenant. | `CURRENT` |
+| `team.tenantId` | Team ownership | PostgreSQL UUID FK to `tenant.id`; team reads and mutations are Tenant-scoped. | `CURRENT` |
+| `team.sportId` | Team Sport relation | PostgreSQL UUID paired with `team.tenantId` for a same-Tenant Sport FK. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -87,13 +96,20 @@ key, even if a future account model contains it.
 | `role_grants.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `role_grants.(tenant_id,guild_term_id) -> guild_terms.(tenant_id,id)` | Same-Tenant Role Grant term FK | Composite governance constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `role_grants.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant Role Grant Membership FK | Composite principal constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `sports.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `competitions.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `competitions.(tenant_id,sport_id) -> sports.(tenant_id,id)` | Same-Tenant Competition Sport FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `competitions.(tenant_id,campus_id) -> campuses.(tenant_id,id)` | Same-Tenant Competition Campus FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `teams.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `teams.(tenant_id,sport_id) -> sports.(tenant_id,id)` | Same-Tenant Team Sport FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `audit_events.tenant_id -> tenants.id` | Audit event ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; audit history is not deleted with a Tenant row. | `CURRENT` |
 | `audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant audit actor FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; actor attribution cannot cross Tenant boundaries. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
-`residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`, and
-`audit_events`, with `tenants` as their Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
+`residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`,
+`sports`, `competitions`, `teams`, and `audit_events`, with `tenants` as their
+Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.
 

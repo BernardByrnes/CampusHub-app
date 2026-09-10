@@ -49,12 +49,12 @@ jobs:
       - name: Migrate PostgreSQL
         run: npm run db:migrate
 
-      - name: PostgreSQL capability authority race evidence
+      - name: PostgreSQL capability and Sports structure evidence
         env:
           CAMPUSHUB_DB_INTEGRATION: '1'
         run: |
           echo "capability-authority-race.test.ts PostgreSQL evidence: SHA=$(git rev-parse HEAD) CAMPUSHUB_DB_INTEGRATION=${CAMPUSHUB_DB_INTEGRATION}"
-          npm run test:integration -- tests/integration/capability-authority-race.test.ts
+          npm run test:integration -- tests/integration/capability-authority-race.test.ts tests/integration/sports-structure.test.ts
 
       - name: Unit and governance tests
         run: npm run test:unit

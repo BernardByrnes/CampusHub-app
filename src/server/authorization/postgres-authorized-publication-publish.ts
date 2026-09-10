@@ -160,10 +160,10 @@ export class PostgresAuthorizedPublicationPublishExecutor
           return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
         }
 
-        const runtimeAuthorityIsSafe = await (
-          this.dependencies.runtimeDatabaseAuthorityVerifier ??
-          verifyAuditRuntimeDatabaseAuthority
-        )(transaction);
+        const runtimeAuthorityIsSafe =
+          this.dependencies.runtimeDatabaseAuthorityVerifier !== undefined
+            ? await this.dependencies.runtimeDatabaseAuthorityVerifier(transaction)
+            : await verifyAuditRuntimeDatabaseAuthority(transaction);
         if (!runtimeAuthorityIsSafe) {
           return { outcome: "DENIED", code: "PERSISTENCE_FAILED" } as const;
         }
