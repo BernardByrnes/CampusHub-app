@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { loadEnvConfig } from "@next/env";
-import { inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
@@ -14,7 +14,6 @@ import { DrizzleCompetitionRepository } from "@/server/repositories/competition-
 import { DrizzleSportRepository } from "@/server/repositories/sport-repository";
 import { DrizzleTeamRepository } from "@/server/repositories/team-repository";
 import {
-  auditEvents,
   campuses,
   competitions,
   memberships,
@@ -47,7 +46,6 @@ const runPrefix =
 const auditKey = new Uint8Array(
   Buffer.from("campushub-sports-integration-audit-key"),
 );
-const syntheticTenantIds = new Set<string>();
 let sequence = 0;
 let database: ReturnType<typeof drizzle> | undefined;
 let pool: Pool | undefined;
@@ -103,7 +101,6 @@ async function createTenant(): Promise<{ id: string }> {
   if (tenant === undefined) {
     throw new Error("Sports Tenant insert returned no row.");
   }
-  syntheticTenantIds.add(tenant.id);
   return tenant;
 }
 
@@ -159,34 +156,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  try {
-    if (syntheticTenantIds.size > 0) {
-      const tenantIds = [...syntheticTenantIds];
-      await getDatabase()
-        .delete(auditEvents)
-        .where(inArray(auditEvents.tenantId, tenantIds));
-      await getDatabase()
-        .delete(teams)
-        .where(inArray(teams.tenantId, tenantIds));
-      await getDatabase()
-        .delete(competitions)
-        .where(inArray(competitions.tenantId, tenantIds));
-      await getDatabase()
-        .delete(sports)
-        .where(inArray(sports.tenantId, tenantIds));
-      await getDatabase()
-        .delete(memberships)
-        .where(inArray(memberships.tenantId, tenantIds));
-      await getDatabase()
-        .delete(campuses)
-        .where(inArray(campuses.tenantId, tenantIds));
-      await getDatabase()
-        .delete(tenants)
-        .where(inArray(tenants.id, tenantIds));
-    }
-  } finally {
-    await pool?.end();
-  }
+  // The integration database is an ephemeral CI service. Audit events are
+  // append-only and their Tenant/Membership foreign keys intentionally make
+  // post-audit fixture deletion impossible, so unique run-scoped fixtures are
+  // left for the database container to discard.
+  await pool?.end();
 });
 
 describe("real PostgreSQL Tenant-owned Sports structure", () => {
