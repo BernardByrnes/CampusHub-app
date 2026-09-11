@@ -12,7 +12,16 @@ import type {
   DeactivateSportInput,
   DeactivateTeamInput,
 } from "@/domain/sports/sports";
+import type {
+  CreateFixtureInput,
+  PostponeFixtureInput,
+  TransitionFixtureInput,
+  UpdateFixtureInput,
+} from "@/domain/sports/fixtures";
 import {
+  FIXTURE_AUDIT_EVENT_TYPES,
+  type FixtureAuditEventFacts,
+  type FixtureAuditEventType,
   SPORTS_AUDIT_EVENT_TYPES,
   type SportsAuditEventFacts,
   type SportsAuditEventType,
@@ -23,6 +32,11 @@ import type {
   AuditEventTransactionDatabase,
   DrizzleAuditEventRepository,
 } from "@/server/repositories/audit-event-repository";
+import {
+  DrizzleFixtureRepository,
+  type FixtureMutationResult,
+  type FixtureRepositoryTransactionDatabase,
+} from "@/server/repositories/fixture-repository";
 import {
   DrizzleCompetitionRepository,
   type CompetitionRepositoryTransactionDatabase,
@@ -44,12 +58,14 @@ type SportsTransactionDatabase =
   & SportRepositoryTransactionDatabase
   & CompetitionRepositoryTransactionDatabase
   & TeamRepositoryTransactionDatabase
+  & FixtureRepositoryTransactionDatabase
   & AuditEventTransactionDatabase;
 
 type SportsGatewayResult =
   | SportMutationResult
   | CompetitionMutationResult
-  | TeamMutationResult;
+  | TeamMutationResult
+  | FixtureMutationResult;
 
 export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   database: CampusHubDatabase;
@@ -57,7 +73,10 @@ export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   auditEvents: Pick<
     DrizzleAuditEventRepository,
     "appendSportsMutationInTransaction"
-  >;
+  > &
+    Partial<
+      Pick<DrizzleAuditEventRepository, "appendFixtureMutationInTransaction">
+    >;
   /** The production default verifies the actual PostgreSQL session principal. */
   runtimeDatabaseAuthorityVerifier?: (
     database: Pick<CampusHubDatabase, "execute">,
@@ -69,6 +88,7 @@ export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   sportsRepository?: DrizzleSportRepository;
   competitionRepository?: DrizzleCompetitionRepository;
   teamRepository?: DrizzleTeamRepository;
+  fixtureRepository?: DrizzleFixtureRepository;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -144,7 +164,7 @@ async function verifySportsAuditRuntimeDatabaseAuthority(
 function isAuthorizedGatewayRequest(
   request: CapabilityAuthorizationRequest,
   tenantId: string,
-  resource: "sport" | "competition" | "team",
+  resource: "sport" | "competition" | "team" | "fixture",
 ): boolean {
   return (
     isRecord(request) &&
@@ -228,6 +248,36 @@ function teamAuditFacts(
   };
 }
 
+function fixtureAuditEventType(
+  action: FixtureAuditEventFacts["action"],
+): FixtureAuditEventType {
+  const eventType = "fixture." + action;
+  return FIXTURE_AUDIT_EVENT_TYPES.includes(eventType as FixtureAuditEventType)
+    ? (eventType as FixtureAuditEventType)
+    : (() => {
+        throw new Error("Unsupported Fixture audit event.");
+      })();
+}
+
+function fixtureAuditFacts(
+  result: FixtureMutationResult & { ok: true },
+  action: FixtureAuditEventFacts["action"],
+): FixtureAuditEventFacts {
+  const fixture = result.fixture;
+  return {
+    action,
+    state: fixture.state,
+    version: fixture.version,
+    competitionId: fixture.competitionId,
+    homeTeamId: fixture.homeTeamId,
+    awayTeamId: fixture.awayTeamId,
+    campusId: fixture.campusId,
+    startsAt: fixture.startsAt.toISOString(),
+    venue: fixture.venue,
+    reason: fixture.reason,
+  };
+}
+
 export class PostgresAuthorizedSportsManagementExecutor
   implements AuthorizedSportsManagementGateway
 {
@@ -238,7 +288,7 @@ export class PostgresAuthorizedSportsManagementExecutor
   private async execute<T extends SportsGatewayResult>(
     request: CapabilityAuthorizationRequest,
     tenantId: string,
-    resource: "sport" | "competition" | "team",
+    resource: "sport" | "competition" | "team" | "fixture",
     mutation: (
       transaction: SportsTransactionDatabase,
       actorMembershipId: string,
@@ -361,6 +411,29 @@ export class PostgresAuthorizedSportsManagementExecutor
         eventFacts: teamAuditFacts(action, result),
       },
     );
+  }
+
+  private async appendFixtureAudit(
+    transaction: SportsTransactionDatabase,
+    actorMembershipId: string,
+    occurredAt: Date,
+    result: FixtureMutationResult & { ok: true },
+    action: FixtureAuditEventFacts["action"],
+  ): Promise<void> {
+    const append = this.dependencies.auditEvents.appendFixtureMutationInTransaction;
+    if (append === undefined) {
+      throw new Error("Fixture audit append is not configured.");
+    }
+    await append(transaction, {
+      tenantId: result.fixture.tenantId,
+      actorMembershipId,
+      resourceType: "fixture",
+      resourceId: result.fixture.id,
+      resourceVersion: result.fixture.version,
+      occurredAt,
+      eventType: fixtureAuditEventType(action),
+      eventFacts: fixtureAuditFacts(result, action),
+    });
   }
 
   public async createSport(
@@ -625,6 +698,131 @@ export class PostgresAuthorizedSportsManagementExecutor
           result,
           "deactivated",
         );
+      }
+      return result;
+    });
+  }
+
+  public async createFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    input: CreateFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).createFixtureInTransaction(transaction, tenantId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "created");
+      }
+      return result;
+    });
+  }
+
+  public async updateFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    fixtureId: string,
+    input: UpdateFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).updateFixtureInTransaction(transaction, tenantId, fixtureId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "changed");
+      }
+      return result;
+    });
+  }
+
+  public async postponeFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    fixtureId: string,
+    input: PostponeFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).postponeFixtureInTransaction(transaction, tenantId, fixtureId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "postponed");
+      }
+      return result;
+    });
+  }
+
+  public async cancelFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    fixtureId: string,
+    input: TransitionFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).cancelFixtureInTransaction(transaction, tenantId, fixtureId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "cancelled");
+      }
+      return result;
+    });
+  }
+
+  public async completeFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    fixtureId: string,
+    input: TransitionFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).completeFixtureInTransaction(transaction, tenantId, fixtureId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "completed");
+      }
+      return result;
+    });
+  }
+
+  public async abandonFixture(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    fixtureId: string,
+    input: TransitionFixtureInput,
+  ): Promise<FixtureMutationResult> {
+    return this.execute(request, tenantId, "fixture", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.fixtureRepository ?? new DrizzleFixtureRepository()
+      ).abandonFixtureInTransaction(transaction, tenantId, fixtureId, input);
+      if (result.ok) {
+        await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "abandoned");
       }
       return result;
     });

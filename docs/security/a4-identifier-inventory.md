@@ -70,6 +70,12 @@ key, even if a future account model contains it.
 | `team.id` | Team resource | PostgreSQL UUID primary key; stable across label/status changes and owned by one Tenant. | `CURRENT` |
 | `team.tenantId` | Team ownership | PostgreSQL UUID FK to `tenant.id`; team reads and mutations are Tenant-scoped. | `CURRENT` |
 | `team.sportId` | Team Sport relation | PostgreSQL UUID paired with `team.tenantId` for a same-Tenant Sport FK. | `CURRENT` |
+| `fixture.id` | Fixture resource | PostgreSQL UUID primary key; stable across lifecycle and scheduling changes and owned by one Tenant. | `CURRENT` |
+| `fixture.tenantId` | Fixture ownership | PostgreSQL UUID FK to `tenant.id`; fixture reads and mutations are Tenant-scoped. | `CURRENT` |
+| `fixture.competitionId` | Fixture Competition relation | PostgreSQL UUID paired with `fixture.tenantId` for a same-Tenant Competition FK. | `CURRENT` |
+| `fixture.homeTeamId` | Fixture home Team relation | PostgreSQL UUID paired with `fixture.tenantId` for a same-Tenant Team FK. | `CURRENT` |
+| `fixture.awayTeamId` | Fixture away Team relation | PostgreSQL UUID paired with `fixture.tenantId` for a same-Tenant Team FK. | `CURRENT` |
+| `fixture.campusId` | Fixture Campus relation | PostgreSQL UUID paired with `fixture.tenantId` for a same-Tenant Campus FK. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -102,13 +108,18 @@ key, even if a future account model contains it.
 | `competitions.(tenant_id,campus_id) -> campuses.(tenant_id,id)` | Same-Tenant Competition Campus FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `teams.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `teams.(tenant_id,sport_id) -> sports.(tenant_id,id)` | Same-Tenant Team Sport FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `fixtures.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `fixtures.(tenant_id,competition_id) -> competitions.(tenant_id,id)` | Same-Tenant Fixture Competition FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `fixtures.(tenant_id,home_team_id) -> teams.(tenant_id,id)` | Same-Tenant Fixture home Team FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `fixtures.(tenant_id,away_team_id) -> teams.(tenant_id,id)` | Same-Tenant Fixture away Team FK | Composite ownership constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `fixtures.(tenant_id,campus_id) -> campuses.(tenant_id,id)` | Same-Tenant Fixture Campus FK | Composite affiliation constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `audit_events.tenant_id -> tenants.id` | Audit event ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; audit history is not deleted with a Tenant row. | `CURRENT` |
 | `audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant audit actor FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; actor attribution cannot cross Tenant boundaries. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
 `residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`,
-`sports`, `competitions`, `teams`, and `audit_events`, with `tenants` as their
+`sports`, `competitions`, `teams`, `fixtures`, and `audit_events`, with `tenants` as their
 Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.

@@ -6,6 +6,12 @@ import {
   parsePublicationAudienceMode,
   type PublicationAudienceMode,
 } from "@/domain/content/publication";
+import {
+  parseFixtureReason,
+  parseFixtureState,
+  parseFixtureVenue,
+  type FixtureState,
+} from "@/domain/sports/fixtures";
 
 export const AUDIT_EVENT_TYPES = [
   "publication.published",
@@ -18,6 +24,12 @@ export const AUDIT_EVENT_TYPES = [
   "team.created",
   "team.changed",
   "team.deactivated",
+  "fixture.created",
+  "fixture.changed",
+  "fixture.postponed",
+  "fixture.cancelled",
+  "fixture.completed",
+  "fixture.abandoned",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -26,6 +38,7 @@ export const AUDIT_RESOURCE_TYPES = [
   "sport",
   "competition",
   "team",
+  "fixture",
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
 
@@ -41,6 +54,16 @@ export const SPORTS_AUDIT_EVENT_TYPES = [
   "team.deactivated",
 ] as const;
 export type SportsAuditEventType = (typeof SPORTS_AUDIT_EVENT_TYPES)[number];
+export const FIXTURE_AUDIT_EVENT_TYPES = [
+  "fixture.created",
+  "fixture.changed",
+  "fixture.postponed",
+  "fixture.cancelled",
+  "fixture.completed",
+  "fixture.abandoned",
+] as const;
+export type FixtureAuditEventType = (typeof FIXTURE_AUDIT_EVENT_TYPES)[number];
+export type SportsAuditResourceType = "sport" | "competition" | "team";
 
 export const AUDIT_INTEGRITY_FORMAT_VERSION = 1 as const;
 export const AUDIT_EVENT_CONTRACT_VERSION = 1 as const;
@@ -75,6 +98,19 @@ export type SportsAuditEventFacts = Readonly<{
   tableMode: "none" | "manual" | null;
 }>;
 
+export type FixtureAuditEventFacts = Readonly<{
+  action: "created" | "changed" | "postponed" | "cancelled" | "completed" | "abandoned";
+  state: FixtureState;
+  version: number;
+  competitionId: string;
+  homeTeamId: string;
+  awayTeamId: string;
+  campusId: string;
+  startsAt: string;
+  venue: string;
+  reason: string | null;
+}>;
+
 export type AuditEvent = Readonly<{
   id: string;
   tenantId: string;
@@ -85,7 +121,10 @@ export type AuditEvent = Readonly<{
   resourceId: string;
   resourceVersion: number;
   occurredAt: Date;
-  eventFacts: PublicationPublishedAuditEventFacts | SportsAuditEventFacts;
+  eventFacts:
+    | PublicationPublishedAuditEventFacts
+    | SportsAuditEventFacts
+    | FixtureAuditEventFacts;
   previousHash: string;
   currentHash: string;
   keyVersion: number;
@@ -105,7 +144,10 @@ export type AuditIntegrityEnvelopeV1 = Readonly<{
   resourceId: string;
   resourceVersion: number;
   occurredAt: string;
-  eventFacts: PublicationPublishedAuditEventFacts | SportsAuditEventFacts;
+  eventFacts:
+    | PublicationPublishedAuditEventFacts
+    | SportsAuditEventFacts
+    | FixtureAuditEventFacts;
   previousHash: string;
   keyVersion: number;
 }>;
@@ -321,7 +363,7 @@ function isAuditEventType(value: unknown): value is AuditEventType {
 export function normalizeSportsAuditEventFacts(
   value: unknown,
   eventType: SportsAuditEventType,
-  resourceType: Exclude<AuditResourceType, "publication">,
+  resourceType: SportsAuditResourceType,
 ): SportsAuditEventFacts | null {
   if (
     !isRecord(value) ||
@@ -397,9 +439,87 @@ export function normalizeSportsAuditEventFacts(
 export function isSportsAuditEventFacts(
   value: unknown,
   eventType: SportsAuditEventType,
-  resourceType: Exclude<AuditResourceType, "publication">,
+  resourceType: SportsAuditResourceType,
 ): value is SportsAuditEventFacts {
   return normalizeSportsAuditEventFacts(value, eventType, resourceType) !== null;
+}
+
+function isFixtureAuditEventType(
+  value: unknown,
+): value is FixtureAuditEventType {
+  return typeof value === "string" &&
+    FIXTURE_AUDIT_EVENT_TYPES.includes(value as FixtureAuditEventType);
+}
+
+export function normalizeFixtureAuditEventFacts(
+  value: unknown,
+  eventType: FixtureAuditEventType,
+): FixtureAuditEventFacts | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "action",
+      "state",
+      "version",
+      "competitionId",
+      "homeTeamId",
+      "awayTeamId",
+      "campusId",
+      "startsAt",
+      "venue",
+      "reason",
+    ]) ||
+    !isFixtureAuditEventType(eventType) ||
+    !isUuid(value.competitionId) ||
+    !isUuid(value.homeTeamId) ||
+    !isUuid(value.awayTeamId) ||
+    value.homeTeamId === value.awayTeamId ||
+    !isUuid(value.campusId) ||
+    parseFixtureState(value.state) === null ||
+    !isPositiveInteger(value.version) ||
+    !isCanonicalOccurredAt(value.startsAt) ||
+    parseFixtureVenue(value.venue) === null ||
+    (value.reason !== null && parseFixtureReason(value.reason) === null)
+  ) {
+    return null;
+  }
+
+  const [resource, expectedAction] = eventType.split(".");
+  if (resource !== "fixture" || value.action !== expectedAction) {
+    return null;
+  }
+  const state = value.state as FixtureState;
+  const action = value.action;
+  if (
+    (action === "created" && state !== "scheduled") ||
+    (action === "changed" && state !== "scheduled" && state !== "postponed") ||
+    (action === "postponed" && (state !== "postponed" || value.reason === null)) ||
+    (action === "cancelled" && (state !== "cancelled" || value.reason === null)) ||
+    (action === "completed" && state !== "completed") ||
+    (action === "abandoned" && (state !== "abandoned" || value.reason === null))
+  ) {
+    return null;
+  }
+
+  return {
+    action: action as FixtureAuditEventFacts["action"],
+    state,
+    version: value.version,
+    competitionId: value.competitionId.toLowerCase(),
+    homeTeamId: value.homeTeamId.toLowerCase(),
+    awayTeamId: value.awayTeamId.toLowerCase(),
+    campusId: value.campusId.toLowerCase(),
+    startsAt: value.startsAt,
+    venue: parseFixtureVenue(value.venue) as string,
+    reason: value.reason === null ? null : parseFixtureReason(value.reason),
+  };
+}
+
+export function isFixtureAuditEventFacts(
+  value: unknown,
+  eventType: FixtureAuditEventType,
+): value is FixtureAuditEventFacts {
+  return normalizeFixtureAuditEventFacts(value, eventType) !== null;
 }
 
 export function normalizeAuditIntegrityEnvelope(
@@ -451,8 +571,11 @@ export function normalizeAuditIntegrityEnvelope(
         ? normalizeSportsAuditEventFacts(
             value.eventFacts,
             value.eventType,
-            value.resourceType,
+          value.resourceType,
           )
+        : isFixtureAuditEventType(value.eventType) &&
+            value.resourceType === "fixture"
+          ? normalizeFixtureAuditEventFacts(value.eventFacts, value.eventType)
         : null;
   if (eventFacts === null) {
     return null;

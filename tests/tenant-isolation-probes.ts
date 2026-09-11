@@ -21,6 +21,8 @@ import { PublishPublicationService } from "@/application/content/publish-publica
 import { ListPublicationsService } from "@/application/content/list-publications";
 import { ReadPublicationService } from "@/application/content/read-publication";
 import { SportsManagementService } from "@/application/sports/manage-sports";
+import { FixtureManagementService } from "@/application/sports/manage-fixtures";
+import { ListFixturesService } from "@/application/sports/list-fixtures";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -41,6 +43,7 @@ import {
   residences,
   roleGrants,
   competitions,
+  fixtures,
   sports,
   teams,
   tenantAcademicYearConfig,
@@ -1707,6 +1710,80 @@ async function sportsAuthorizationProbe(): Promise<void> {
       scope: { tenantId: tenantAId, module: "publication", resource: "team" },
     }),
   ).resolves.toEqual({ allowed: false });
+
+  await expect(
+    authorizer.authorize({
+      actor,
+      context,
+      capability: "sport.manage",
+      scope: { tenantId: tenantAId, module: "sports", resource: "fixture" },
+    }),
+  ).resolves.toEqual({ allowed: true });
+}
+
+async function fixturesManagementProbe(): Promise<void> {
+  const calls: string[] = [];
+  const service = new FixtureManagementService({
+    capabilityAuthorizer: {
+      authorize: async () => {
+        calls.push("authorize");
+        return { allowed: true };
+      },
+    },
+    gateway: {
+      createFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+      updateFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+      postponeFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+      cancelFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+      completeFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+      abandonFixture: async () => ({ ok: false, error: "PERMISSION_DENIED" }),
+    },
+    fixtures: { listFixturesForTenant: async () => [] },
+  });
+  const trustedContext = {
+    identitySubjectId: "fixture-probe-identity",
+    tenantId: tenantAId,
+    membershipId: membershipAId,
+    tenantStatus: "active" as const,
+    membershipStatus: "verified" as const,
+    assuranceLevel: "L2" as const,
+  };
+  await expect(
+    service.createFixture({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      fixture: {},
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(calls).toEqual([]);
+}
+
+async function fixturesStudentReadProbe(): Promise<void> {
+  let repositoryCalled = false;
+  const service = new ListFixturesService({
+    fixtures: {
+      listFixturesForTenant: async () => {
+        repositoryCalled = true;
+        return [];
+      },
+    },
+  });
+  const trustedContext = {
+    identitySubjectId: "fixture-read-probe-identity",
+    tenantId: tenantAId,
+    membershipId: membershipAId,
+    tenantStatus: "active" as const,
+    membershipStatus: "verified" as const,
+    assuranceLevel: "L2" as const,
+  };
+  await expect(
+    service.listFixtures({
+      trustedContext,
+      requestedTenantId: tenantBId,
+      filters: {},
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(repositoryCalled).toBe(false);
 }
 
 export type TenantIsolationProbe = () => void | Promise<void>;
@@ -1804,6 +1881,9 @@ export const tenantIsolationProbeRegistry: Readonly<
   "publication.edit": publicationEditProbe,
   "publication.publish": publicationPublishProbe,
   "sports.management": sportsManagementProbe,
+  "fixtures.authorization": sportsAuthorizationProbe,
+  "fixtures.management": fixturesManagementProbe,
+  "fixtures.student-read": fixturesStudentReadProbe,
   "sports.persistence": () => {
     expectTenantOwnedTable(sports);
     expectTenantCompositeIdentity(sports);
@@ -1841,6 +1921,30 @@ export const tenantIsolationProbeRegistry: Readonly<
     expectTenantOwnedTable(teams);
     expectTenantCompositeIdentity(teams);
     expectForeignKey(teams, ["tenant_id", "sport_id"], ["tenant_id", "id"]);
+  },
+  "fixtures.persistence": () => {
+    expectTenantOwnedTable(fixtures);
+    expectTenantCompositeIdentity(fixtures);
+    expectForeignKey(
+      fixtures,
+      ["tenant_id", "competition_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      fixtures,
+      ["tenant_id", "home_team_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      fixtures,
+      ["tenant_id", "away_team_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      fixtures,
+      ["tenant_id", "campus_id"],
+      ["tenant_id", "id"],
+    );
   },
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":

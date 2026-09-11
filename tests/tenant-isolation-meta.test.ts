@@ -46,6 +46,7 @@ function implementationPathForDatabaseObject(
     sports: "src/server/db/schema/sports.ts",
     competitions: "src/server/db/schema/sports.ts",
     teams: "src/server/db/schema/sports.ts",
+    fixtures: "src/server/db/schema/sports.ts",
   };
 
   return (
