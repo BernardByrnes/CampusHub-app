@@ -103,7 +103,8 @@ function isSupportedSportsResource(value: unknown): boolean {
     value === "sport" ||
     value === "competition" ||
     value === "team" ||
-    value === "fixture"
+    value === "fixture" ||
+    value === "result"
   );
 }
 

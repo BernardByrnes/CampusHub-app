@@ -18,6 +18,12 @@ import type {
   TransitionFixtureInput,
   UpdateFixtureInput,
 } from "@/domain/sports/fixtures";
+import type {
+  CorrectResultInput,
+  CreateResultInput,
+  PublishResultInput,
+  UpdateResultDraftInput,
+} from "@/domain/sports/results";
 import {
   FIXTURE_AUDIT_EVENT_TYPES,
   type FixtureAuditEventFacts,
@@ -25,6 +31,9 @@ import {
   SPORTS_AUDIT_EVENT_TYPES,
   type SportsAuditEventFacts,
   type SportsAuditEventType,
+  RESULT_AUDIT_EVENT_TYPES,
+  type ResultAuditEventFacts,
+  type ResultAuditEventType,
 } from "@/domain/audit/audit-event";
 import { isUuid } from "@/domain/identifiers/uuid";
 import type { CampusHubDatabase } from "@/server/db/client";
@@ -52,6 +61,11 @@ import {
   type TeamMutationResult,
   type TeamRepositoryTransactionDatabase,
 } from "@/server/repositories/team-repository";
+import {
+  DrizzleResultRepository,
+  type ResultMutationResult,
+  type ResultRepositoryTransactionDatabase,
+} from "@/server/repositories/result-repository";
 import { PostgresCapabilityAuthorizer } from "./postgres-capability-authorizer";
 
 type SportsTransactionDatabase =
@@ -59,13 +73,15 @@ type SportsTransactionDatabase =
   & CompetitionRepositoryTransactionDatabase
   & TeamRepositoryTransactionDatabase
   & FixtureRepositoryTransactionDatabase
+  & ResultRepositoryTransactionDatabase
   & AuditEventTransactionDatabase;
 
 type SportsGatewayResult =
   | SportMutationResult
   | CompetitionMutationResult
   | TeamMutationResult
-  | FixtureMutationResult;
+  | FixtureMutationResult
+  | ResultMutationResult;
 
 export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   database: CampusHubDatabase;
@@ -76,6 +92,9 @@ export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   > &
     Partial<
       Pick<DrizzleAuditEventRepository, "appendFixtureMutationInTransaction">
+    > &
+    Partial<
+      Pick<DrizzleAuditEventRepository, "appendResultMutationInTransaction">
     >;
   /** The production default verifies the actual PostgreSQL session principal. */
   runtimeDatabaseAuthorityVerifier?: (
@@ -89,6 +108,7 @@ export type PostgresAuthorizedSportsManagementDependencies = Readonly<{
   competitionRepository?: DrizzleCompetitionRepository;
   teamRepository?: DrizzleTeamRepository;
   fixtureRepository?: DrizzleFixtureRepository;
+  resultRepository?: DrizzleResultRepository;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,7 +184,7 @@ async function verifySportsAuditRuntimeDatabaseAuthority(
 function isAuthorizedGatewayRequest(
   request: CapabilityAuthorizationRequest,
   tenantId: string,
-  resource: "sport" | "competition" | "team" | "fixture",
+  resource: "sport" | "competition" | "team" | "fixture" | "result",
 ): boolean {
   return (
     isRecord(request) &&
@@ -278,6 +298,40 @@ function fixtureAuditFacts(
   };
 }
 
+function resultAuditEventType(
+  action: ResultAuditEventFacts["action"],
+): ResultAuditEventType {
+  const eventType = "result." + action;
+  return RESULT_AUDIT_EVENT_TYPES.includes(eventType as ResultAuditEventType)
+    ? (eventType as ResultAuditEventType)
+    : (() => {
+        throw new Error("Unsupported Result audit event.");
+      })();
+}
+
+function resultAuditFacts(
+  result: ResultMutationResult & { ok: true },
+  action: ResultAuditEventFacts["action"],
+): ResultAuditEventFacts {
+  const aggregate = result.result;
+  const revision = result.revision;
+  const homeScore = revision?.homeScore ?? aggregate.draftHomeScore;
+  const awayScore = revision?.awayScore ?? aggregate.draftAwayScore;
+  if (homeScore === null || awayScore === null) {
+    throw new Error("Result audit facts require scores.");
+  }
+  return {
+    action,
+    lifecycle: aggregate.lifecycle,
+    version: aggregate.version,
+    fixtureId: aggregate.fixtureId,
+    revisionNumber: revision?.revisionNumber ?? null,
+    homeScore,
+    awayScore,
+    correctionReason: revision?.correctionReason ?? null,
+  };
+}
+
 export class PostgresAuthorizedSportsManagementExecutor
   implements AuthorizedSportsManagementGateway
 {
@@ -288,7 +342,7 @@ export class PostgresAuthorizedSportsManagementExecutor
   private async execute<T extends SportsGatewayResult>(
     request: CapabilityAuthorizationRequest,
     tenantId: string,
-    resource: "sport" | "competition" | "team" | "fixture",
+    resource: "sport" | "competition" | "team" | "fixture" | "result",
     mutation: (
       transaction: SportsTransactionDatabase,
       actorMembershipId: string,
@@ -434,6 +488,29 @@ export class PostgresAuthorizedSportsManagementExecutor
       occurredAt,
       eventType: fixtureAuditEventType(action),
       eventFacts: fixtureAuditFacts(result, action),
+    });
+  }
+
+  private async appendResultAudit(
+    transaction: SportsTransactionDatabase,
+    actorMembershipId: string,
+    occurredAt: Date,
+    result: ResultMutationResult & { ok: true },
+    action: ResultAuditEventFacts["action"],
+  ): Promise<void> {
+    const auditEvents = this.dependencies.auditEvents;
+    const append = auditEvents.appendResultMutationInTransaction;
+    if (append === undefined) {
+      throw new Error("Result audit append is not configured.");
+    }
+    await append.call(auditEvents, transaction, {
+      tenantId: result.result.tenantId,
+      actorMembershipId,
+      resourceId: result.result.id,
+      resourceVersion: result.result.version,
+      occurredAt,
+      eventType: resultAuditEventType(action),
+      eventFacts: resultAuditFacts(result, action),
     });
   }
 
@@ -824,6 +901,127 @@ export class PostgresAuthorizedSportsManagementExecutor
       ).abandonFixtureInTransaction(transaction, tenantId, fixtureId, input);
       if (result.ok) {
         await this.appendFixtureAudit(transaction, actorMembershipId, occurredAt, result, "abandoned");
+      }
+      return result;
+    });
+  }
+
+  public async createResult(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    input: CreateResultInput,
+  ): Promise<ResultMutationResult> {
+    return this.execute(request, tenantId, "result", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.resultRepository ?? new DrizzleResultRepository()
+      ).createResultInTransaction(transaction, tenantId, input);
+      if (result.ok) {
+        await this.appendResultAudit(
+          transaction,
+          actorMembershipId,
+          occurredAt,
+          result,
+          "draft_created",
+        );
+      }
+      return result;
+    });
+  }
+
+  public async updateResultDraft(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    resultId: string,
+    input: UpdateResultDraftInput,
+  ): Promise<ResultMutationResult> {
+    return this.execute(request, tenantId, "result", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.resultRepository ?? new DrizzleResultRepository()
+      ).updateDraftResultInTransaction(transaction, tenantId, resultId, input);
+      if (result.ok) {
+        await this.appendResultAudit(
+          transaction,
+          actorMembershipId,
+          occurredAt,
+          result,
+          "draft_changed",
+        );
+      }
+      return result;
+    });
+  }
+
+  public async publishResult(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    resultId: string,
+    input: PublishResultInput,
+  ): Promise<ResultMutationResult> {
+    return this.execute(request, tenantId, "result", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.resultRepository ?? new DrizzleResultRepository()
+      ).publishResultInTransaction(
+        transaction,
+        tenantId,
+        resultId,
+        input,
+        actorMembershipId,
+        occurredAt,
+      );
+      if (result.ok) {
+        await this.appendResultAudit(
+          transaction,
+          actorMembershipId,
+          occurredAt,
+          result,
+          "published",
+        );
+      }
+      return result;
+    });
+  }
+
+  public async correctResult(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    resultId: string,
+    input: CorrectResultInput,
+  ): Promise<ResultMutationResult> {
+    return this.execute(request, tenantId, "result", async (
+      transaction,
+      actorMembershipId,
+      occurredAt,
+    ) => {
+      const result = await (
+        this.dependencies.resultRepository ?? new DrizzleResultRepository()
+      ).correctResultInTransaction(
+        transaction,
+        tenantId,
+        resultId,
+        input,
+        actorMembershipId,
+        occurredAt,
+      );
+      if (result.ok) {
+        await this.appendResultAudit(
+          transaction,
+          actorMembershipId,
+          occurredAt,
+          result,
+          "corrected",
+        );
       }
       return result;
     });

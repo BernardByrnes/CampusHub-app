@@ -17,8 +17,10 @@ import {
   SPORT_LIFECYCLE_STATUSES,
 } from "@/domain/sports/sports";
 import { FIXTURE_STATES } from "@/domain/sports/fixtures";
+import { RESULT_LIFECYCLES } from "@/domain/sports/results";
 
 import { campuses } from "./organization";
+import { memberships } from "./membership";
 import { tenants } from "./tenant";
 
 export const sportLifecycleEnum = pgEnum(
@@ -32,6 +34,7 @@ export const competitionTableModeEnum = pgEnum(
 );
 
 export const fixtureStateEnum = pgEnum("fixture_state", FIXTURE_STATES);
+export const resultLifecycleEnum = pgEnum("result_lifecycle", RESULT_LIFECYCLES);
 
 export const sports = pgTable(
   "sports",
@@ -253,6 +256,134 @@ export const fixtures = pgTable(
   ],
 );
 
+export const results = pgTable(
+  "results",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    fixtureId: uuid("fixture_id").notNull(),
+    lifecycle: resultLifecycleEnum("lifecycle").notNull().default("draft"),
+    draftHomeScore: integer("draft_home_score"),
+    draftAwayScore: integer("draft_away_score"),
+    currentRevisionNumber: integer("current_revision_number"),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("results_tenant_id_id_unique").on(table.tenantId, table.id),
+    unique("results_one_per_fixture").on(table.tenantId, table.fixtureId),
+    index("results_tenant_lifecycle").on(table.tenantId, table.lifecycle),
+    index("results_tenant_fixture").on(table.tenantId, table.fixtureId),
+    foreignKey({
+      name: "results_fixture_same_tenant_fk",
+      columns: [table.tenantId, table.fixtureId],
+      foreignColumns: [fixtures.tenantId, fixtures.id],
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    check(
+      "results_draft_scores_shape",
+      sql`(
+        (${table.lifecycle} = 'draft'
+          AND ${table.draftHomeScore} IS NOT NULL
+          AND ${table.draftAwayScore} IS NOT NULL
+          AND ${table.currentRevisionNumber} IS NULL)
+        OR
+        (${table.lifecycle} = 'published'
+          AND ${table.draftHomeScore} IS NULL
+          AND ${table.draftAwayScore} IS NULL
+          AND ${table.currentRevisionNumber} >= 1)
+      )`,
+    ),
+    check(
+      "results_scores_nonnegative",
+      sql`${table.draftHomeScore} IS NULL OR (${table.draftHomeScore} >= 0 AND ${table.draftHomeScore} <= 1000)`,
+    ),
+    check(
+      "results_away_score_nonnegative",
+      sql`${table.draftAwayScore} IS NULL OR (${table.draftAwayScore} >= 0 AND ${table.draftAwayScore} <= 1000)`,
+    ),
+    check("results_version_positive", sql`${table.version} >= 1`),
+    check(
+      "results_current_revision_positive",
+      sql`${table.currentRevisionNumber} IS NULL OR ${table.currentRevisionNumber} >= 1`,
+    ),
+  ],
+);
+
+export const resultRevisions = pgTable(
+  "result_revisions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    resultId: uuid("result_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    homeScore: integer("home_score").notNull(),
+    awayScore: integer("away_score").notNull(),
+    actorMembershipId: uuid("actor_membership_id").notNull(),
+    correctionReason: text("correction_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("result_revisions_tenant_id_id_unique").on(table.tenantId, table.id),
+    unique("result_revisions_result_revision_unique").on(
+      table.tenantId,
+      table.resultId,
+      table.revisionNumber,
+    ),
+    index("result_revisions_tenant_result").on(
+      table.tenantId,
+      table.resultId,
+      table.revisionNumber,
+    ),
+    foreignKey({
+      name: "result_revisions_result_same_tenant_fk",
+      columns: [table.tenantId, table.resultId],
+      foreignColumns: [results.tenantId, results.id],
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    foreignKey({
+      name: "result_revisions_actor_same_tenant_fk",
+      columns: [table.tenantId, table.actorMembershipId],
+      foreignColumns: [memberships.tenantId, memberships.id],
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    check("result_revisions_revision_positive", sql`${table.revisionNumber} >= 1`),
+    check(
+      "result_revisions_home_score_nonnegative",
+      sql`${table.homeScore} >= 0 AND ${table.homeScore} <= 1000`,
+    ),
+    check(
+      "result_revisions_away_score_nonnegative",
+      sql`${table.awayScore} >= 0 AND ${table.awayScore} <= 1000`,
+    ),
+    check(
+      "result_revisions_reason_shape",
+      sql`(
+        (${table.revisionNumber} = 1 AND ${table.correctionReason} IS NULL)
+        OR
+        (${table.revisionNumber} > 1
+          AND ${table.correctionReason} IS NOT NULL
+          AND char_length(btrim(${table.correctionReason})) > 0
+          AND char_length(${table.correctionReason}) <= 500)
+      )`,
+    ),
+  ],
+);
+
 export type SportRow = typeof sports.$inferSelect;
 export type NewSportRow = typeof sports.$inferInsert;
 export type CompetitionRow = typeof competitions.$inferSelect;
@@ -261,3 +392,7 @@ export type TeamRow = typeof teams.$inferSelect;
 export type NewTeamRow = typeof teams.$inferInsert;
 export type FixtureRow = typeof fixtures.$inferSelect;
 export type NewFixtureRow = typeof fixtures.$inferInsert;
+export type ResultRow = typeof results.$inferSelect;
+export type NewResultRow = typeof results.$inferInsert;
+export type ResultRevisionRow = typeof resultRevisions.$inferSelect;
+export type NewResultRevisionRow = typeof resultRevisions.$inferInsert;

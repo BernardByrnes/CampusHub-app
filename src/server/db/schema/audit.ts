@@ -71,11 +71,11 @@ export const auditEvents = pgTable(
     ),
     check(
       "audit_events_event_type_closed",
-      sql`${table.eventType} IN ('publication.published', 'sport.created', 'sport.changed', 'sport.deactivated', 'competition.created', 'competition.changed', 'competition.deactivated', 'team.created', 'team.changed', 'team.deactivated', 'fixture.created', 'fixture.changed', 'fixture.postponed', 'fixture.cancelled', 'fixture.completed', 'fixture.abandoned')`,
+      sql`${table.eventType} IN ('publication.published', 'sport.created', 'sport.changed', 'sport.deactivated', 'competition.created', 'competition.changed', 'competition.deactivated', 'team.created', 'team.changed', 'team.deactivated', 'fixture.created', 'fixture.changed', 'fixture.postponed', 'fixture.cancelled', 'fixture.completed', 'fixture.abandoned', 'result.draft_created', 'result.draft_changed', 'result.published', 'result.corrected')`,
     ),
     check(
       "audit_events_resource_type_closed",
-      sql`${table.resourceType} IN ('publication', 'sport', 'competition', 'team', 'fixture')`,
+      sql`${table.resourceType} IN ('publication', 'sport', 'competition', 'team', 'fixture', 'result')`,
     ),
     check(
       "audit_events_resource_version_positive",

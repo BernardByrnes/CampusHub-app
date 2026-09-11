@@ -23,6 +23,8 @@ import { ReadPublicationService } from "@/application/content/read-publication";
 import { SportsManagementService } from "@/application/sports/manage-sports";
 import { FixtureManagementService } from "@/application/sports/manage-fixtures";
 import { ListFixturesService } from "@/application/sports/list-fixtures";
+import { ListResultsService } from "@/application/sports/list-results";
+import { ResultManagementService } from "@/application/sports/manage-results";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -44,6 +46,8 @@ import {
   roleGrants,
   competitions,
   fixtures,
+  resultRevisions,
+  results,
   sports,
   teams,
   tenantAcademicYearConfig,
@@ -55,6 +59,7 @@ import { DrizzlePublicationRepository } from "@/server/repositories/publication-
 import { DrizzleGuildTermRepository } from "@/server/repositories/guild-term-repository";
 import { DrizzleRoleGrantRepository } from "@/server/repositories/role-grant-repository";
 import { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
+import { PostgresAuthorizedSportsManagementExecutor } from "@/server/authorization/postgres-authorized-sports";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
 const tenantBId = "00000000-0000-4000-8000-000000000002";
@@ -1786,6 +1791,102 @@ async function fixturesStudentReadProbe(): Promise<void> {
   expect(repositoryCalled).toBe(false);
 }
 
+async function resultsAuthorizationProbe(): Promise<void> {
+  const executor = new PostgresAuthorizedSportsManagementExecutor({
+    database: {} as never,
+    authorizer: {} as never,
+    auditEvents: {} as never,
+  });
+  await expect(
+    executor.publishResult(
+      {
+        actor: {
+          identitySubjectId: "result-probe-identity",
+          tenantId: tenantAId,
+          membershipId: membershipAId,
+        },
+        context: {
+          tenantStatus: "active",
+          membershipStatus: "verified",
+          assuranceLevel: "L2",
+        },
+        capability: "publication.create" as never,
+        scope: { tenantId: tenantAId, module: "sports", resource: "result" },
+      },
+      tenantAId,
+      "00000000-0000-4000-8000-000000000099",
+      { expectedVersion: 1 },
+    ),
+  ).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+}
+
+async function resultsManagementProbe(): Promise<void> {
+  let gatewayCalled = false;
+  const service = new ResultManagementService({
+    capabilityAuthorizer: { authorize: vi.fn() } as never,
+    gateway: {
+      createResult: async () => {
+        gatewayCalled = true;
+        return { ok: false, error: "PERSISTENCE_FAILED" };
+      },
+      updateResultDraft: async () => ({ ok: false, error: "PERSISTENCE_FAILED" }),
+      publishResult: async () => ({ ok: false, error: "PERSISTENCE_FAILED" }),
+      correctResult: async () => ({ ok: false, error: "PERSISTENCE_FAILED" }),
+    },
+    results: {
+      listPublishedResultsForTenant: async () => [],
+      listResultRevisionsForTenant: async () => [],
+    },
+  });
+  await expect(
+    service.createDraftResult({
+      trustedContext: {
+        identitySubjectId: "result-management-probe",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      requestedTenantId: tenantBId,
+      result: {
+        fixtureId: publicationId,
+        homeScore: 1,
+        awayScore: 0,
+      },
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(gatewayCalled).toBe(false);
+}
+
+async function resultsStudentReadProbe(): Promise<void> {
+  let repositoryCalled = false;
+  const service = new ListResultsService({
+    results: {
+      listPublishedResultsForTenant: async () => {
+        repositoryCalled = true;
+        return [];
+      },
+      listResultRevisionsForTenant: async () => [],
+    },
+  });
+  await expect(
+    service.listResults({
+      trustedContext: {
+        identitySubjectId: "result-read-probe",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      requestedTenantId: tenantBId,
+      filters: {},
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(repositoryCalled).toBe(false);
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -1884,6 +1985,9 @@ export const tenantIsolationProbeRegistry: Readonly<
   "fixtures.authorization": sportsAuthorizationProbe,
   "fixtures.management": fixturesManagementProbe,
   "fixtures.student-read": fixturesStudentReadProbe,
+  "results.authorization": resultsAuthorizationProbe,
+  "results.management": resultsManagementProbe,
+  "results.student-read": resultsStudentReadProbe,
   "sports.persistence": () => {
     expectTenantOwnedTable(sports);
     expectTenantCompositeIdentity(sports);
@@ -1943,6 +2047,29 @@ export const tenantIsolationProbeRegistry: Readonly<
     expectForeignKey(
       fixtures,
       ["tenant_id", "campus_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "results.persistence": () => {
+    expectTenantOwnedTable(results);
+    expectTenantCompositeIdentity(results);
+    expectForeignKey(
+      results,
+      ["tenant_id", "fixture_id"],
+      ["tenant_id", "id"],
+    );
+  },
+  "result-revisions.persistence": () => {
+    expectTenantOwnedTable(resultRevisions);
+    expectTenantCompositeIdentity(resultRevisions);
+    expectForeignKey(
+      resultRevisions,
+      ["tenant_id", "result_id"],
+      ["tenant_id", "id"],
+    );
+    expectForeignKey(
+      resultRevisions,
+      ["tenant_id", "actor_membership_id"],
       ["tenant_id", "id"],
     );
   },

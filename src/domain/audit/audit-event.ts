@@ -30,6 +30,10 @@ export const AUDIT_EVENT_TYPES = [
   "fixture.cancelled",
   "fixture.completed",
   "fixture.abandoned",
+  "result.draft_created",
+  "result.draft_changed",
+  "result.published",
+  "result.corrected",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -39,6 +43,7 @@ export const AUDIT_RESOURCE_TYPES = [
   "competition",
   "team",
   "fixture",
+  "result",
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
 
@@ -63,6 +68,13 @@ export const FIXTURE_AUDIT_EVENT_TYPES = [
   "fixture.abandoned",
 ] as const;
 export type FixtureAuditEventType = (typeof FIXTURE_AUDIT_EVENT_TYPES)[number];
+export const RESULT_AUDIT_EVENT_TYPES = [
+  "result.draft_created",
+  "result.draft_changed",
+  "result.published",
+  "result.corrected",
+] as const;
+export type ResultAuditEventType = (typeof RESULT_AUDIT_EVENT_TYPES)[number];
 export type SportsAuditResourceType = "sport" | "competition" | "team";
 
 export const AUDIT_INTEGRITY_FORMAT_VERSION = 1 as const;
@@ -111,6 +123,17 @@ export type FixtureAuditEventFacts = Readonly<{
   reason: string | null;
 }>;
 
+export type ResultAuditEventFacts = Readonly<{
+  action: "draft_created" | "draft_changed" | "published" | "corrected";
+  lifecycle: "draft" | "published";
+  version: number;
+  fixtureId: string;
+  revisionNumber: number | null;
+  homeScore: number;
+  awayScore: number;
+  correctionReason: string | null;
+}>;
+
 export type AuditEvent = Readonly<{
   id: string;
   tenantId: string;
@@ -124,7 +147,8 @@ export type AuditEvent = Readonly<{
   eventFacts:
     | PublicationPublishedAuditEventFacts
     | SportsAuditEventFacts
-    | FixtureAuditEventFacts;
+    | FixtureAuditEventFacts
+    | ResultAuditEventFacts;
   previousHash: string;
   currentHash: string;
   keyVersion: number;
@@ -147,7 +171,8 @@ export type AuditIntegrityEnvelopeV1 = Readonly<{
   eventFacts:
     | PublicationPublishedAuditEventFacts
     | SportsAuditEventFacts
-    | FixtureAuditEventFacts;
+    | FixtureAuditEventFacts
+    | ResultAuditEventFacts;
   previousHash: string;
   keyVersion: number;
 }>;
@@ -167,6 +192,15 @@ function hasOnlyKeys(
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function isResultScore(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= 1000
+  );
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -522,6 +556,93 @@ export function isFixtureAuditEventFacts(
   return normalizeFixtureAuditEventFacts(value, eventType) !== null;
 }
 
+function isResultAuditEventType(
+  value: unknown,
+): value is ResultAuditEventType {
+  return typeof value === "string" &&
+    RESULT_AUDIT_EVENT_TYPES.includes(value as ResultAuditEventType);
+}
+
+export function normalizeResultAuditEventFacts(
+  value: unknown,
+  eventType: ResultAuditEventType,
+): ResultAuditEventFacts | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "action",
+      "lifecycle",
+      "version",
+      "fixtureId",
+      "revisionNumber",
+      "homeScore",
+      "awayScore",
+      "correctionReason",
+    ]) ||
+    !isResultAuditEventType(eventType) ||
+    !isUuid(value.fixtureId) ||
+    !isPositiveInteger(value.version) ||
+    (value.lifecycle !== "draft" && value.lifecycle !== "published") ||
+    !isResultScore(value.homeScore) ||
+    !isResultScore(value.awayScore) ||
+    (value.revisionNumber !== null &&
+      !isPositiveInteger(value.revisionNumber)) ||
+    (value.correctionReason !== null &&
+      (typeof value.correctionReason !== "string" ||
+        value.correctionReason.trim().length === 0 ||
+        value.correctionReason.length > 500))
+  ) {
+    return null;
+  }
+
+  const [resource, expectedAction] = eventType.split(".");
+  if (resource !== "result" || value.action !== expectedAction) {
+    return null;
+  }
+
+  const action = value.action as ResultAuditEventFacts["action"];
+  if (
+    (action === "draft_created" || action === "draft_changed") &&
+    (value.lifecycle !== "draft" || value.revisionNumber !== null || value.correctionReason !== null)
+  ) {
+    return null;
+  }
+  if (
+    action === "published" &&
+    (value.lifecycle !== "published" || value.revisionNumber !== 1 || value.correctionReason !== null)
+  ) {
+    return null;
+  }
+  if (
+    action === "corrected" &&
+    (value.lifecycle !== "published" ||
+      value.revisionNumber === null ||
+      value.revisionNumber < 2 ||
+      typeof value.correctionReason !== "string")
+  ) {
+    return null;
+  }
+
+  return {
+    action,
+    lifecycle: value.lifecycle,
+    version: value.version,
+    fixtureId: value.fixtureId.toLowerCase(),
+    revisionNumber: value.revisionNumber,
+    homeScore: value.homeScore,
+    awayScore: value.awayScore,
+    correctionReason:
+      value.correctionReason === null ? null : value.correctionReason.trim(),
+  };
+}
+
+export function isResultAuditEventFacts(
+  value: unknown,
+  eventType: ResultAuditEventType,
+): value is ResultAuditEventFacts {
+  return normalizeResultAuditEventFacts(value, eventType) !== null;
+}
+
 export function normalizeAuditIntegrityEnvelope(
   value: unknown,
 ): AuditIntegrityEnvelopeV1 | null {
@@ -575,7 +696,10 @@ export function normalizeAuditIntegrityEnvelope(
           )
         : isFixtureAuditEventType(value.eventType) &&
             value.resourceType === "fixture"
-          ? normalizeFixtureAuditEventFacts(value.eventFacts, value.eventType)
+        ? normalizeFixtureAuditEventFacts(value.eventFacts, value.eventType)
+          : isResultAuditEventType(value.eventType) &&
+              value.resourceType === "result"
+            ? normalizeResultAuditEventFacts(value.eventFacts, value.eventType)
         : null;
   if (eventFacts === null) {
     return null;
