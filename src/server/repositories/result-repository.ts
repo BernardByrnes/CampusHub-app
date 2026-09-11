@@ -1,7 +1,7 @@
 import "server-only";
 
 import { alias } from "drizzle-orm/pg-core";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 
 import {
   isResult,
@@ -61,6 +61,12 @@ export type ResultListItem = Readonly<{
   startsAt: Date;
   venue: string;
 }>;
+
+export type ManagedResultListItem = Readonly<
+  Omit<ResultListItem, "revision"> & {
+    revision: ResultRevision | null;
+  }
+>;
 
 function toResult(row: ResultRow): Result | null {
   const lifecycle = parseResultLifecycle(row.lifecycle);
@@ -187,6 +193,29 @@ export class DrizzleResultRepository {
     tenantId: string,
     options: ResultListOptions = {},
   ): Promise<readonly ResultListItem[]> {
+    const items = await this.listResultItemsForTenant(tenantId, options, false);
+    return items.flatMap((item) => {
+      if (item.revision === null) return [];
+      const publishedItem: ResultListItem = {
+        ...item,
+        revision: item.revision,
+      };
+      return [publishedItem];
+    });
+  }
+
+  public async listManagedResultsForTenant(
+    tenantId: string,
+    options: ResultListOptions = {},
+  ): Promise<readonly ManagedResultListItem[]> {
+    return this.listResultItemsForTenant(tenantId, options, true);
+  }
+
+  private async listResultItemsForTenant(
+    tenantId: string,
+    options: ResultListOptions,
+    includeDrafts: boolean,
+  ): Promise<readonly ManagedResultListItem[]> {
     if (
       !isUuid(tenantId) ||
       (options.fixtureId !== undefined && !isUuid(options.fixtureId))
@@ -196,10 +225,8 @@ export class DrizzleResultRepository {
 
     const homeTeams = alias(teams, "result_home_team");
     const awayTeams = alias(teams, "result_away_team");
-    const clauses = [
-      eq(results.tenantId, tenantId),
-      eq(results.lifecycle, "published"),
-    ];
+    const clauses = [eq(results.tenantId, tenantId)];
+    if (!includeDrafts) clauses.push(eq(results.lifecycle, "published"));
     if (options.fixtureId !== undefined) {
       clauses.push(eq(results.fixtureId, options.fixtureId));
     }
@@ -252,7 +279,7 @@ export class DrizzleResultRepository {
         campuses,
         and(eq(campuses.tenantId, fixtures.tenantId), eq(campuses.id, fixtures.campusId)),
       )
-      .innerJoin(
+      .leftJoin(
         resultRevisions,
         and(
           eq(resultRevisions.tenantId, results.tenantId),
@@ -266,20 +293,27 @@ export class DrizzleResultRepository {
 
     return rows.flatMap((row) => {
       const result = toResult(row.result);
-      const revision = toRevision(row.revision);
-      return result === null || revision === null
-        ? []
-        : [{
-            result,
-            revision,
-            sportName: row.sportName,
-            competitionName: row.competitionName,
-            homeTeamName: row.homeTeamName,
-            awayTeamName: row.awayTeamName,
-            campusLabel: row.campusLabel,
-            startsAt: row.startsAt,
-            venue: row.venue,
-          }];
+      const revision = row.revision === null ? null : toRevision(row.revision);
+      if (
+        result === null ||
+        (result.lifecycle === "published" && revision === null) ||
+        (result.lifecycle === "draft" && revision !== null)
+      ) {
+        return [];
+      }
+      return [
+        {
+          result,
+          revision,
+          sportName: row.sportName,
+          competitionName: row.competitionName,
+          homeTeamName: row.homeTeamName,
+          awayTeamName: row.awayTeamName,
+          campusLabel: row.campusLabel,
+          startsAt: row.startsAt,
+          venue: row.venue,
+        },
+      ];
     });
   }
 
@@ -305,12 +339,12 @@ export class DrizzleResultRepository {
       .where(
         and(eq(resultRevisions.tenantId, tenantId), eq(resultRevisions.resultId, resultId)),
       )
-      .orderBy(asc(resultRevisions.revisionNumber))
+      .orderBy(desc(resultRevisions.revisionNumber))
       .limit(normalizedLimit(limit));
     return rows.flatMap((row) => {
       const revision = toRevision(row);
       return revision === null ? [] : [revision];
-    });
+    }).reverse();
   }
 
   public async updateDraftResultInTransaction(

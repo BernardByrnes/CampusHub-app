@@ -18,7 +18,7 @@ import {
   type ResultRevision,
   type UpdateResultDraftInput,
 } from "@/domain/sports/results";
-import type { ResultListItem, ResultMutationResult, DrizzleResultRepository } from "@/server/repositories/result-repository";
+import type { ManagedResultListItem, ResultMutationResult, DrizzleResultRepository } from "@/server/repositories/result-repository";
 
 export const RESULT_MANAGEMENT_DENIAL_CODES = [
   "INVALID_INPUT",
@@ -41,7 +41,7 @@ export type ResultManagementResult =
   | Readonly<{ outcome: "UPDATED"; result: Result }>
   | Readonly<{ outcome: "PUBLISHED"; result: Result; revision: ResultRevision }>
   | Readonly<{ outcome: "CORRECTED"; result: Result; revision: ResultRevision }>
-  | Readonly<{ outcome: "LISTED"; items: readonly ResultListItem[] }>
+  | Readonly<{ outcome: "LISTED"; items: readonly ManagedResultListItem[] }>
   | Readonly<{ outcome: "HISTORY"; items: readonly ResultRevision[] }>
   | ResultManagementDenied;
 
@@ -111,7 +111,7 @@ export type ResultManagementServiceDependencies = Readonly<{
   gateway: AuthorizedResultManagementGateway;
   results: Pick<
     DrizzleResultRepository,
-    "listPublishedResultsForTenant" | "listResultRevisionsForTenant"
+    "listManagedResultsForTenant" | "listResultRevisionsForTenant"
   >;
 }>;
 
@@ -317,7 +317,7 @@ export class ResultManagementService {
     const filters = parseFilters(command.filters);
     if (filters === null) return denied("INVALID_INPUT");
     try {
-      return { outcome: "LISTED", items: await this.dependencies.results.listPublishedResultsForTenant(command.requestedTenantId as string, filters) };
+      return { outcome: "LISTED", items: await this.dependencies.results.listManagedResultsForTenant(command.requestedTenantId as string, filters) };
     } catch { return denied("PERSISTENCE_FAILED"); }
   }
 

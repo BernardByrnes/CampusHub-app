@@ -2346,6 +2346,7 @@ export const tenantSurfaceRegistry = [
     ["createResultInTransaction", "create"],
     ["findResultByIdForTenant", "direct"],
     ["listPublishedResultsForTenant", "list"],
+    ["listManagedResultsForTenant", "management-list"],
     ["listResultRevisionsForTenant", "history"],
     ["updateDraftResultInTransaction", "update"],
     ["publishResultInTransaction", "publish"],

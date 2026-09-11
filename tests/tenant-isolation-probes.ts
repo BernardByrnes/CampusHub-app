@@ -1834,7 +1834,7 @@ async function resultsManagementProbe(): Promise<void> {
       correctResult: async () => ({ ok: false, error: "PERSISTENCE_FAILED" }),
     },
     results: {
-      listPublishedResultsForTenant: async () => [],
+      listManagedResultsForTenant: async () => [],
       listResultRevisionsForTenant: async () => [],
     },
   });

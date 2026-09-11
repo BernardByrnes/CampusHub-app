@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { Result, ResultRevision } from "@/domain/sports/results";
+import type { ManagedResultListItem } from "@/server/repositories/result-repository";
 
 import {
   ResultManagementService,
@@ -53,17 +54,21 @@ function createService() {
     correctResult: vi.fn(async () => ({ ok: true as const, result: { ...draft, lifecycle: "published" as const, version: 3, currentRevisionNumber: 2 }, revision: { ...revision, revisionNumber: 2, correctionReason: "Official correction" } })),
   };
   const authorize = vi.fn(async () => ({ allowed: true as const }));
+  const listManagedResultsForTenant = vi.fn(
+    async (): Promise<readonly ManagedResultListItem[]> => [],
+  );
   return {
     service: new ResultManagementService({
       capabilityAuthorizer: { authorize },
       gateway,
       results: {
-        listPublishedResultsForTenant: vi.fn(async () => []),
+        listManagedResultsForTenant,
         listResultRevisionsForTenant: vi.fn(async () => []),
       },
     }),
     gateway,
     authorize,
+    listManagedResultsForTenant,
   };
 }
 
@@ -140,7 +145,7 @@ describe("ResultManagementService", () => {
   });
 
   it("rejects unreviewed management filters instead of silently widening reads", async () => {
-    const { service, authorize } = createService();
+    const { service, authorize, listManagedResultsForTenant } = createService();
     await expect(
       service.listResults({
         trustedContext: context,
@@ -149,5 +154,13 @@ describe("ResultManagementService", () => {
       }),
     ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     expect(authorize).toHaveBeenCalledTimes(1);
+
+    await expect(
+      service.listResults({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+      }),
+    ).resolves.toEqual({ outcome: "LISTED", items: [] });
+    expect(listManagedResultsForTenant).toHaveBeenCalledWith(tenantId, {});
   });
 });
