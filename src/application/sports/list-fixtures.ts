@@ -54,8 +54,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isValidName(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 120;
+function parseOptionalName(value: unknown): string | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized.length === 0
+    ? undefined
+    : normalized.length <= 120
+      ? normalized
+      : null;
 }
 
 function parseFilters(value: unknown): FixtureListOptions | null {
@@ -76,12 +87,20 @@ function parseFilters(value: unknown): FixtureListOptions | null {
   if (Object.keys(value).some((key) => !allowed.includes(key))) {
     return null;
   }
-  const state = value.state === undefined ? undefined : parseFixtureState(value.state);
-  const sportName = value.sportName === undefined ? undefined : isValidName(value.sportName) ? value.sportName.trim() : null;
-  const competitionName = value.competitionName === undefined ? undefined : isValidName(value.competitionName) ? value.competitionName.trim() : null;
-  const teamName = value.teamName === undefined ? undefined : isValidName(value.teamName) ? value.teamName.trim() : null;
+  const state = value.state === undefined ||
+    (typeof value.state === "string" && value.state.trim().length === 0)
+    ? undefined
+    : parseFixtureState(value.state);
+  const sportName = parseOptionalName(value.sportName);
+  const competitionName = parseOptionalName(value.competitionName);
+  const teamName = parseOptionalName(value.teamName);
   const limit = parseFixtureListLimit(value.limit);
-  const order = value.order === undefined ? undefined : value.order === "upcoming" || value.order === "recent" ? value.order : null;
+  const order = value.order === undefined ||
+    (typeof value.order === "string" && value.order.trim().length === 0)
+    ? undefined
+    : value.order === "upcoming" || value.order === "recent"
+      ? value.order
+      : null;
   if (state === null || sportName === null || competitionName === null || teamName === null || limit === null || order === null) {
     return null;
   }

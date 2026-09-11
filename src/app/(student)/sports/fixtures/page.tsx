@@ -18,7 +18,11 @@ function singleValue(
   key: string,
 ): string | undefined {
   const value = params?.[key];
-  return typeof value === "string" ? value : undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length === 0 ? undefined : normalized;
 }
 
 export default async function StudentFixturesRoute({ searchParams }: FixturePageProps) {

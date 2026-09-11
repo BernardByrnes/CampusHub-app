@@ -7,7 +7,9 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 
 import { DrizzleAuditEventRepository } from "@/server/repositories/audit-event-repository";
+import { DrizzleCompetitionRepository } from "@/server/repositories/competition-repository";
 import { DrizzleFixtureRepository } from "@/server/repositories/fixture-repository";
+import { DrizzleTeamRepository } from "@/server/repositories/team-repository";
 import { StaticAuditIntegrityKeyProvider } from "@/domain/audit/audit-integrity-key-provider";
 import type { FixtureAuditEventType } from "@/domain/audit/audit-event";
 import {
@@ -61,6 +63,14 @@ async function expectPostgresCode(operation: () => Promise<unknown>, expected: s
   try { await operation(); } catch (error) { caught = error; }
   expect(caught).toBeDefined();
   expect(postgresCode(caught)).toBe(expected);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 async function createTenant(): Promise<string> {
@@ -259,6 +269,152 @@ describe("real PostgreSQL Tenant-owned Fixture structure", () => {
     }))).resolves.toEqual({ ok: false, error: "NOT_READY" });
   });
 
+  it("protects referenced parent structure while preserving safe edits and deactivation", async () => {
+    const graph = await createFixtureGraph();
+    const replacementSportId = await createSport(graph.tenantId);
+    const replacementCampusId = await createCampus(graph.tenantId);
+    const fixtureRepository = new DrizzleFixtureRepository(getDatabase() as never);
+    const competitionRepository = new DrizzleCompetitionRepository(getDatabase() as never);
+    const teamRepository = new DrizzleTeamRepository(getDatabase() as never);
+    const created = await getDatabase().transaction((transaction) => fixtureRepository.createFixtureInTransaction(transaction, graph.tenantId, {
+      competitionId: graph.competitionId,
+      homeTeamId: graph.homeTeamId,
+      awayTeamId: graph.awayTeamId,
+      campusId: graph.campusId,
+      startsAt: new Date("2026-12-01T12:00:00.000Z"),
+      venue: "Main pitch",
+    }));
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await expect(getDatabase().transaction((transaction) => competitionRepository.updateCompetitionInTransaction(transaction, graph.tenantId, graph.competitionId, {
+      sportId: replacementSportId,
+      name: "Changed Sport",
+      seasonLabel: "2026",
+      campusId: graph.campusId,
+      tableMode: "none",
+      expectedVersion: 1,
+    }))).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
+    await expect(getDatabase().transaction((transaction) => competitionRepository.updateCompetitionInTransaction(transaction, graph.tenantId, graph.competitionId, {
+      sportId: graph.sportId,
+      name: "Changed Campus",
+      seasonLabel: "2026",
+      campusId: replacementCampusId,
+      tableMode: "none",
+      expectedVersion: 1,
+    }))).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
+    await expect(getDatabase().transaction((transaction) => teamRepository.updateTeamInTransaction(transaction, graph.tenantId, graph.homeTeamId, {
+      sportId: replacementSportId,
+      name: "Changed Sport Team",
+      affiliationLabel: null,
+      expectedVersion: 1,
+    }))).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
+
+    const renamedCompetition = await getDatabase().transaction((transaction) => competitionRepository.updateCompetitionInTransaction(transaction, graph.tenantId, graph.competitionId, {
+      sportId: graph.sportId,
+      name: "Renamed Competition",
+      seasonLabel: "2026",
+      campusId: graph.campusId,
+      tableMode: "none",
+      expectedVersion: 1,
+    }));
+    expect(renamedCompetition).toMatchObject({ ok: true, competition: { version: 2, name: "Renamed Competition" } });
+    const renamedTeam = await getDatabase().transaction((transaction) => teamRepository.updateTeamInTransaction(transaction, graph.tenantId, graph.homeTeamId, {
+      sportId: graph.sportId,
+      name: "Renamed Team",
+      affiliationLabel: "Updated affiliation",
+      expectedVersion: 1,
+    }));
+    expect(renamedTeam).toMatchObject({ ok: true, team: { version: 2, name: "Renamed Team", affiliationLabel: "Updated affiliation" } });
+    await expect(getDatabase().transaction((transaction) => competitionRepository.deactivateCompetitionInTransaction(transaction, graph.tenantId, graph.competitionId, 2))).resolves.toMatchObject({ ok: true, competition: { status: "inactive", version: 3 } });
+    await expect(getDatabase().transaction((transaction) => teamRepository.deactivateTeamInTransaction(transaction, graph.tenantId, graph.homeTeamId, 2))).resolves.toMatchObject({ ok: true, team: { status: "inactive", version: 3 } });
+
+    const unreferencedCompetitionId = await createCompetition(graph.tenantId, graph.sportId, graph.campusId);
+    await expect(getDatabase().transaction((transaction) => competitionRepository.updateCompetitionInTransaction(transaction, graph.tenantId, unreferencedCompetitionId, {
+      sportId: replacementSportId,
+      name: "Reassigned Competition",
+      seasonLabel: "2026",
+      campusId: replacementCampusId,
+      tableMode: "none",
+      expectedVersion: 1,
+    }))).resolves.toMatchObject({ ok: true, competition: { sportId: replacementSportId, campusId: replacementCampusId, version: 2 } });
+    const unreferencedTeamId = await createTeam(graph.tenantId, graph.sportId, "unreferenced");
+    await expect(getDatabase().transaction((transaction) => teamRepository.updateTeamInTransaction(transaction, graph.tenantId, unreferencedTeamId, {
+      sportId: replacementSportId,
+      name: "Reassigned Team",
+      affiliationLabel: null,
+      expectedVersion: 1,
+    }))).resolves.toMatchObject({ ok: true, team: { sportId: replacementSportId, version: 2 } });
+  });
+
+  it("serializes Fixture creation with a Competition structural edit in both orders", async () => {
+    const createFirstGraph = await createFixtureGraph();
+    const createFirstReplacementSportId = await createSport(createFirstGraph.tenantId);
+    const fixtureRepository = new DrizzleFixtureRepository(getDatabase() as never);
+    const competitionRepository = new DrizzleCompetitionRepository(getDatabase() as never);
+    const createLockHeld = deferred<void>();
+    const releaseCreate = deferred<void>();
+    const createFirst = getDatabase().transaction(async (transaction) => {
+      await transaction.select({ id: competitions.id }).from(competitions).where(and(eq(competitions.tenantId, createFirstGraph.tenantId), eq(competitions.id, createFirstGraph.competitionId))).for("update").limit(1);
+      createLockHeld.resolve();
+      await releaseCreate.promise;
+      return fixtureRepository.createFixtureInTransaction(transaction, createFirstGraph.tenantId, {
+        competitionId: createFirstGraph.competitionId,
+        homeTeamId: createFirstGraph.homeTeamId,
+        awayTeamId: createFirstGraph.awayTeamId,
+        campusId: createFirstGraph.campusId,
+        startsAt: new Date("2027-01-01T12:00:00.000Z"),
+        venue: "Main pitch",
+      });
+    });
+    await createLockHeld.promise;
+    const editAfterCreate = getDatabase().transaction((transaction) => competitionRepository.updateCompetitionInTransaction(transaction, createFirstGraph.tenantId, createFirstGraph.competitionId, {
+      sportId: createFirstReplacementSportId,
+      name: "Edit after Fixture",
+      seasonLabel: "2026",
+      campusId: createFirstGraph.campusId,
+      tableMode: "none",
+      expectedVersion: 1,
+    }));
+    releaseCreate.resolve();
+    const [createdFirst, editedAfter] = await Promise.all([createFirst, editAfterCreate]);
+    expect(createdFirst).toMatchObject({ ok: true, fixture: { version: 1 } });
+    expect(editedAfter).toEqual({ ok: false, error: "INVALID_STATE" });
+
+    const editFirstGraph = await createFixtureGraph();
+    const editFirstReplacementSportId = await createSport(editFirstGraph.tenantId);
+    const editLockHeld = deferred<void>();
+    const releaseEdit = deferred<void>();
+    const editFirst = getDatabase().transaction(async (transaction) => {
+      await transaction.select({ id: competitions.id }).from(competitions).where(and(eq(competitions.tenantId, editFirstGraph.tenantId), eq(competitions.id, editFirstGraph.competitionId))).for("update").limit(1);
+      editLockHeld.resolve();
+      await releaseEdit.promise;
+      return competitionRepository.updateCompetitionInTransaction(transaction, editFirstGraph.tenantId, editFirstGraph.competitionId, {
+        sportId: editFirstReplacementSportId,
+        name: "Edit before Fixture",
+        seasonLabel: "2026",
+        campusId: editFirstGraph.campusId,
+        tableMode: "none",
+        expectedVersion: 1,
+      });
+    });
+    await editLockHeld.promise;
+    const createAfterEdit = getDatabase().transaction((transaction) => fixtureRepository.createFixtureInTransaction(transaction, editFirstGraph.tenantId, {
+      competitionId: editFirstGraph.competitionId,
+      homeTeamId: editFirstGraph.homeTeamId,
+      awayTeamId: editFirstGraph.awayTeamId,
+      campusId: editFirstGraph.campusId,
+      startsAt: new Date("2027-01-02T12:00:00.000Z"),
+      venue: "Main pitch",
+    }));
+    releaseEdit.resolve();
+    const [editedFirst, createdAfter] = await Promise.all([editFirst, createAfterEdit]);
+    expect(editedFirst).toMatchObject({ ok: true, competition: { sportId: editFirstReplacementSportId, version: 2 } });
+    expect(createdAfter).toEqual({ ok: false, error: "NOT_READY" });
+    const committedFixtures = await getDatabase().select({ id: fixtures.id }).from(fixtures).where(and(eq(fixtures.tenantId, editFirstGraph.tenantId), eq(fixtures.competitionId, editFirstGraph.competitionId)));
+    expect(committedFixtures).toHaveLength(0);
+  });
+
   it("versions lifecycle transitions and allows exactly one stale-writer winner", async () => {
     const graph = await createFixtureGraph();
     const repository = new DrizzleFixtureRepository(getDatabase() as never);
@@ -284,7 +440,14 @@ describe("real PostgreSQL Tenant-owned Fixture structure", () => {
     const postponed = await getDatabase().transaction((transaction) => repository.postponeFixtureInTransaction(transaction, graph.tenantId, current.id, {
       expectedVersion: 2, startsAt: new Date("2026-11-08T12:00:00.000Z"), reason: "Weather",
     }));
-    expect(postponed).toMatchObject({ ok: true, fixture: { state: "postponed", version: 3, reason: "Weather" } });
+    expect(postponed).toMatchObject({ ok: true, fixture: { state: "postponed", version: 3, startsAt: new Date("2026-11-08T12:00:00.000Z"), reason: "Weather" } });
+    if (!postponed.ok) return;
+    await appendAudit(graph, postponed.fixture, "postponed");
+    const postponementAudit = await getDatabase().select({ eventFacts: auditEvents.eventFacts }).from(auditEvents).where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, current.id), eq(auditEvents.eventType, "fixture.postponed"))).limit(1);
+    expect(postponementAudit[0]?.eventFacts).toMatchObject({ startsAt: "2026-11-08T12:00:00.000Z", state: "postponed", version: 3 });
+    await expect(getDatabase().transaction((transaction) => repository.postponeFixtureInTransaction(transaction, graph.tenantId, current.id, {
+      expectedVersion: 2, startsAt: new Date("2026-11-15T12:00:00.000Z"), reason: "Stale weather",
+    }))).resolves.toEqual({ ok: false, error: "VERSION_CONFLICT" });
     const cancelled = postponed.ok ? await getDatabase().transaction((transaction) => repository.cancelFixtureInTransaction(transaction, graph.tenantId, current.id, { expectedVersion: 3, reason: "Venue unavailable" })) : null;
     expect(cancelled).toMatchObject({ ok: true, fixture: { state: "cancelled", version: 4 } });
     const reopened = await getDatabase().transaction((transaction) => repository.completeFixtureInTransaction(transaction, graph.tenantId, current.id, { expectedVersion: 4 }));

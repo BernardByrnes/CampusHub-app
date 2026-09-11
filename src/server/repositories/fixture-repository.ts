@@ -413,6 +413,7 @@ export class DrizzleFixtureRepository {
     fixtureId: string,
     targetState: Exclude<FixtureState, "scheduled">,
     input: TransitionFixtureInput,
+    replacementStartsAt?: Date,
   ): Promise<FixtureMutationResult> {
     const reason =
       targetState === "completed" ? null : parseFixtureReason(input.reason);
@@ -444,6 +445,7 @@ export class DrizzleFixtureRepository {
       const rows = await transaction
         .update(fixtures)
         .set({
+          startsAt: replacementStartsAt ?? existing.startsAt,
           state: targetState,
           reason,
           version: sql`${fixtures.version} + 1`,
@@ -472,7 +474,18 @@ export class DrizzleFixtureRepository {
     fixtureId: string,
     input: PostponeFixtureInput,
   ): Promise<FixtureMutationResult> {
-    return this.transitionFixtureInTransaction(transaction, tenantId, fixtureId, "postponed", input);
+    const startsAt = parseFixtureTimestamp(input.startsAt);
+    if (startsAt === null) {
+      return { ok: false, error: "PERSISTENCE_FAILED" };
+    }
+    return this.transitionFixtureInTransaction(
+      transaction,
+      tenantId,
+      fixtureId,
+      "postponed",
+      input,
+      startsAt,
+    );
   }
 
   public async cancelFixtureInTransaction(

@@ -15,7 +15,13 @@ import {
 } from "@/domain/sports/sports";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { db, type CampusHubDatabase } from "@/server/db/client";
-import { campuses, competitions, sports, type CompetitionRow } from "@/server/db/schema";
+import {
+  campuses,
+  competitions,
+  fixtures,
+  sports,
+  type CompetitionRow,
+} from "@/server/db/schema";
 import type {
   SportRepositoryTransactionDatabase,
   SportsMutationError,
@@ -243,6 +249,24 @@ export class DrizzleCompetitionRepository {
       }
       if (existing.version !== input.expectedVersion) {
         return { ok: false, error: "VERSION_CONFLICT" };
+      }
+      if (
+        existing.sportId !== input.sportId ||
+        existing.campusId !== input.campusId
+      ) {
+        const fixtureReferences = await transaction
+          .select({ id: fixtures.id })
+          .from(fixtures)
+          .where(
+            and(
+              eq(fixtures.tenantId, tenantId),
+              eq(fixtures.competitionId, competitionId),
+            ),
+          )
+          .limit(1);
+        if (fixtureReferences.length > 0) {
+          return { ok: false, error: "INVALID_STATE" };
+        }
       }
 
       const sportRows = await transaction

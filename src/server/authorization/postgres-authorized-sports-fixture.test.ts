@@ -3,9 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/server/db/client", () => ({ db: {}, pool: {} }));
 
 import { CAPABILITIES } from "@/domain/authorization/capability";
+import { StaticAuditIntegrityKeyProvider } from "@/domain/audit/audit-integrity-key-provider";
 import type { Fixture } from "@/domain/sports/fixtures";
 import type { CampusHubDatabase } from "@/server/db/client";
-import type { DrizzleAuditEventRepository } from "@/server/repositories/audit-event-repository";
+import {
+  DrizzleAuditEventRepository,
+  type AuditEventTransactionDatabase,
+} from "@/server/repositories/audit-event-repository";
+import type { AuditEventRow } from "@/server/db/schema/audit";
 import type { DrizzleFixtureRepository } from "@/server/repositories/fixture-repository";
 
 import {
@@ -32,6 +37,28 @@ const fixture: Fixture = {
   createdAt: date,
   updatedAt: date,
 };
+
+function createAuditTransaction() {
+  let inserted: AuditEventRow | undefined;
+  const transaction = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({ limit: async () => [] }),
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (row: AuditEventRow) => ({
+        returning: async () => {
+          inserted = row;
+          return [row];
+        },
+      }),
+    }),
+  } as unknown as AuditEventTransactionDatabase;
+  return { transaction, getInserted: () => inserted };
+}
 
 describe("Postgres authorized Fixture mutations", () => {
   it("uses the same transaction for authority, Fixture mutation, and audit", async () => {
@@ -76,5 +103,65 @@ describe("Postgres authorized Fixture mutations", () => {
     ).resolves.toEqual({ ok: true, fixture });
     expect(createFixtureInTransaction).toHaveBeenCalledWith(transaction, tenantId, expect.anything());
     expect(appendFixtureMutationInTransaction).toHaveBeenCalledWith(transaction, expect.objectContaining({ eventType: "fixture.created" }));
+  });
+
+  it("preserves the receiver of a real audit repository during Fixture mutation", async () => {
+    const { transaction, getInserted } = createAuditTransaction();
+    const database = {
+      transaction: vi.fn(async (callback: (value: typeof transaction) => Promise<unknown>) => callback(transaction)),
+    } as unknown as CampusHubDatabase;
+    const authorizer = {
+      authorizeSportManageInTransaction: vi.fn(async (
+        _transaction: unknown,
+        _request: unknown,
+        _before: unknown,
+        after: (checkedAt: Date) => void,
+      ) => {
+        after(date);
+        return { allowed: true as const };
+      }),
+    } as never;
+    const auditRepository = new DrizzleAuditEventRepository({
+      database: {} as never,
+      keyProvider: new StaticAuditIntegrityKeyProvider(
+        1,
+        new Map([[1, new Uint8Array(Buffer.from("fixture-audit-key"))]]),
+      ),
+      eventIdFactory: () => "00000000-0000-4000-8000-000000000008",
+    });
+    const executor = new PostgresAuthorizedSportsManagementExecutor({
+      database,
+      authorizer,
+      auditEvents: auditRepository,
+      runtimeDatabaseAuthorityVerifier: vi.fn(async () => true),
+      fixtureRepository: {
+        createFixtureInTransaction: vi.fn(async () => ({ ok: true as const, fixture })),
+      } as unknown as DrizzleFixtureRepository,
+    });
+
+    await expect(
+      executor.createFixture(
+        {
+          actor: { identitySubjectId: "identity-a", tenantId, membershipId },
+          context: { tenantStatus: "active", membershipStatus: "verified", assuranceLevel: "L2" },
+          capability: CAPABILITIES.SPORT_MANAGE,
+          scope: { tenantId, module: "sports", resource: "fixture" },
+        },
+        tenantId,
+        {
+          competitionId: fixture.competitionId,
+          homeTeamId: fixture.homeTeamId,
+          awayTeamId: fixture.awayTeamId,
+          campusId: fixture.campusId,
+          startsAt: date,
+          venue: fixture.venue,
+        },
+      ),
+    ).resolves.toEqual({ ok: true, fixture });
+    expect(getInserted()).toMatchObject({
+      eventType: "fixture.created",
+      resourceType: "fixture",
+      resourceId: fixture.id,
+    });
   });
 });

@@ -420,11 +420,12 @@ export class PostgresAuthorizedSportsManagementExecutor
     result: FixtureMutationResult & { ok: true },
     action: FixtureAuditEventFacts["action"],
   ): Promise<void> {
-    const append = this.dependencies.auditEvents.appendFixtureMutationInTransaction;
+    const auditEvents = this.dependencies.auditEvents;
+    const append = auditEvents.appendFixtureMutationInTransaction;
     if (append === undefined) {
       throw new Error("Fixture audit append is not configured.");
     }
-    await append(transaction, {
+    await append.call(auditEvents, transaction, {
       tenantId: result.fixture.tenantId,
       actorMembershipId,
       resourceType: "fixture",

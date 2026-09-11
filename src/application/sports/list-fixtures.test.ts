@@ -45,6 +45,47 @@ describe("ListFixturesService", () => {
     });
   });
 
+  it("treats blank optional filters as unset without weakening non-empty validation", async () => {
+    const listFixturesForTenant = vi.fn(async () => []);
+    const service = new ListFixturesService({ fixtures: { listFixturesForTenant } });
+    await expect(
+      service.listFixtures({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+        filters: {
+          sportName: "",
+          competitionName: "  \t",
+          teamName: "  ",
+          state: "",
+          order: "",
+        },
+      }),
+    ).resolves.toEqual({ outcome: "READY", items: [] });
+    expect(listFixturesForTenant).toHaveBeenCalledWith(tenantId, {
+      sportName: undefined,
+      competitionName: undefined,
+      teamName: undefined,
+      state: undefined,
+      order: undefined,
+      limit: 50,
+    });
+
+    await expect(
+      service.listFixtures({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+        filters: { sportName: "   Football  " },
+      }),
+    ).resolves.toEqual({ outcome: "READY", items: [] });
+    await expect(
+      service.listFixtures({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+        filters: { sportName: "x".repeat(121) },
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  });
+
   it("denies suspended members and unavailable Tenants", async () => {
     const service = new ListFixturesService({
       fixtures: { listFixturesForTenant: vi.fn(async () => []) },

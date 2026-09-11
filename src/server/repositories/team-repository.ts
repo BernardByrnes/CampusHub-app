@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, or, sql } from "drizzle-orm";
 
 import {
   isTeam,
@@ -14,7 +14,7 @@ import {
 } from "@/domain/sports/sports";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { db, type CampusHubDatabase } from "@/server/db/client";
-import { sports, teams, type TeamRow } from "@/server/db/schema";
+import { fixtures, sports, teams, type TeamRow } from "@/server/db/schema";
 import type {
   SportRepositoryTransactionDatabase,
   SportsMutationError,
@@ -195,6 +195,24 @@ export class DrizzleTeamRepository {
       }
       if (existing.version !== input.expectedVersion) {
         return { ok: false, error: "VERSION_CONFLICT" };
+      }
+      if (existing.sportId !== input.sportId) {
+        const fixtureReferences = await transaction
+          .select({ id: fixtures.id })
+          .from(fixtures)
+          .where(
+            and(
+              eq(fixtures.tenantId, tenantId),
+              or(
+                eq(fixtures.homeTeamId, teamId),
+                eq(fixtures.awayTeamId, teamId),
+              ),
+            ),
+          )
+          .limit(1);
+        if (fixtureReferences.length > 0) {
+          return { ok: false, error: "INVALID_STATE" };
+        }
       }
 
       const sportRows = await transaction
