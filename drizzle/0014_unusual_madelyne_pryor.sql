@@ -76,6 +76,15 @@ BEGIN
     FROM "fixtures" AS fixture
     WHERE fixture.tenant_id = NEW.tenant_id
       AND fixture.id = NEW.fixture_id
+  ) THEN
+    RAISE EXCEPTION 'Result requires a same-Tenant Fixture'
+      USING ERRCODE = '23503';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM "fixtures" AS fixture
+    WHERE fixture.tenant_id = NEW.tenant_id
+      AND fixture.id = NEW.fixture_id
       AND fixture.state = 'completed'
   ) THEN
     RAISE EXCEPTION 'Result requires a completed Fixture'
