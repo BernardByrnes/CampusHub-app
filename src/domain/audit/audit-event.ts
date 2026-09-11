@@ -1,4 +1,5 @@
 import { isUuid } from "@/domain/identifiers/uuid";
+import { RESULT_SCORE_MAX } from "@/domain/sports/results";
 import type {
   PublicationAudienceDimension,
 } from "@/domain/authorization/publication-audience";
@@ -199,7 +200,7 @@ function isResultScore(value: unknown): value is number {
     typeof value === "number" &&
     Number.isSafeInteger(value) &&
     value >= 0 &&
-    value <= 1000
+    value <= RESULT_SCORE_MAX
   );
 }
 

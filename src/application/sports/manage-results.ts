@@ -327,7 +327,10 @@ export class ResultManagementService {
     if (limit === null) return denied("INVALID_INPUT");
     if (!(await this.authorize(command.trustedContext as TrustedRequestContext, command.requestedTenantId as string))) return denied("PERMISSION_DENIED");
     try {
-      return { outcome: "HISTORY", items: await this.dependencies.results.listResultRevisionsForTenant(command.requestedTenantId as string, command.resultId as string, limit) };
+      const history = await this.dependencies.results.listResultRevisionsForTenant(command.requestedTenantId as string, command.resultId as string, limit);
+      return history.ok
+        ? { outcome: "HISTORY", items: history.items }
+        : denied(history.error);
     } catch { return denied("PERSISTENCE_FAILED"); }
   }
 }

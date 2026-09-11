@@ -1835,7 +1835,7 @@ async function resultsManagementProbe(): Promise<void> {
     },
     results: {
       listManagedResultsForTenant: async () => [],
-      listResultRevisionsForTenant: async () => [],
+      listResultRevisionsForTenant: async () => ({ ok: true as const, items: [] }),
     },
   });
   await expect(
@@ -1867,7 +1867,7 @@ async function resultsStudentReadProbe(): Promise<void> {
         repositoryCalled = true;
         return [];
       },
-      listResultRevisionsForTenant: async () => [],
+      listResultRevisionsForTenant: async () => ({ ok: true as const, items: [] }),
     },
   });
   await expect(

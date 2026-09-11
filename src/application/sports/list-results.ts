@@ -165,8 +165,10 @@ export class ListResultsService {
     const limit = parseResultHistoryLimit(input.limit);
     if (limit === null) return denied("INVALID_INPUT");
     try {
-      const items = await this.dependencies.results.listResultRevisionsForTenant(input.requestedTenantId, input.resultId, limit);
-      return { outcome: "HISTORY", items: items.map(toHistoryItem) };
+      const history = await this.dependencies.results.listResultRevisionsForTenant(input.requestedTenantId, input.resultId, limit);
+      return history.ok
+        ? { outcome: "HISTORY", items: history.items.map(toHistoryItem) }
+        : denied(history.error);
     } catch { return denied("PERSISTENCE_FAILED"); }
   }
 }

@@ -3,7 +3,9 @@ import { isUuid } from "@/domain/identifiers/uuid";
 export const RESULT_LIFECYCLES = ["draft", "published"] as const;
 export type ResultLifecycle = (typeof RESULT_LIFECYCLES)[number];
 
-export const RESULT_SCORE_MAX = 1000;
+// Results remain non-negative integers; this is the storage-appropriate
+// PostgreSQL integer ceiling, not a product-level score policy.
+export const RESULT_SCORE_MAX = 2_147_483_647;
 export const RESULT_CORRECTION_REASON_MAX_LENGTH = 500;
 export const RESULT_HISTORY_MAX_LIMIT = 100;
 

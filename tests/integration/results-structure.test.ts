@@ -291,7 +291,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     const created = await getDatabase().transaction((transaction) =>
       repository.createResultInTransaction(transaction, graph.tenantId, {
         fixtureId: graph.fixtureId,
-        homeScore: 2,
+        homeScore: 1001,
         awayScore: 1,
       }),
     );
@@ -300,7 +300,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
       result: {
         fixtureId: graph.fixtureId,
         lifecycle: "draft",
-        draftHomeScore: 2,
+        draftHomeScore: 1001,
         draftAwayScore: 1,
         currentRevisionNumber: null,
         version: 1,
@@ -333,7 +333,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
           tenantId: invalidScoreGraph.tenantId,
           fixtureId: invalidScoreGraph.fixtureId,
           lifecycle: "draft",
-          draftHomeScore: 1001,
+          draftHomeScore: -1,
           draftAwayScore: 0,
           version: 1,
         }),
@@ -401,9 +401,10 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
       startsAt: new Date("2026-10-01T12:00:00.000Z"),
       venue: "Result integration pitch",
     });
-    await expect(repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 10)).resolves.toMatchObject([
-      { revisionNumber: 1, homeScore: 2, awayScore: 2, correctionReason: null },
-    ]);
+    await expect(repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 10)).resolves.toMatchObject({
+      ok: true,
+      items: [{ revisionNumber: 1, homeScore: 2, awayScore: 2, correctionReason: null }],
+    });
     const auditRows = await getDatabase()
       .select({ eventType: auditEvents.eventType, resourceType: auditEvents.resourceType })
       .from(auditEvents)
@@ -440,6 +441,26 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     );
     expect(published.ok).toBe(true);
     if (!published.ok) return;
+
+    await expectPostgresCode(
+      () =>
+        getDatabase().transaction(async (transaction) => {
+          await transaction.insert(resultRevisions).values({
+            tenantId: graph.tenantId,
+            resultId: created.result.id,
+            revisionNumber: 3,
+            homeScore: 2,
+            awayScore: 0,
+            actorMembershipId: graph.membershipId,
+            correctionReason: "Skipped revision",
+          });
+          await transaction
+            .update(results)
+            .set({ currentRevisionNumber: 3, version: 3 })
+            .where(and(eq(results.tenantId, graph.tenantId), eq(results.id, created.result.id)));
+        }),
+      "42501",
+    );
 
     await expect(
       getDatabase().transaction((transaction) =>
@@ -492,17 +513,24 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     ).resolves.toMatchObject({ ok: true, result: { version: 5, currentRevisionNumber: 4 } });
 
     const history = await repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 10);
-    expect(history).toMatchObject([
-      { revisionNumber: 1, homeScore: 1, awayScore: 0, correctionReason: null },
-      { revisionNumber: 2, homeScore: 1, awayScore: 1, correctionReason: "Official correction" },
-      { revisionNumber: 3, homeScore: 2, awayScore: 1, correctionReason: "Second correction" },
-      { revisionNumber: 4, homeScore: 3, awayScore: 1, correctionReason: "Third correction" },
-    ]);
-    await expect(repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 2)).resolves.toMatchObject([
-      { revisionNumber: 3, correctionReason: "Second correction" },
-      { revisionNumber: 4, correctionReason: "Third correction" },
-    ]);
-    const revisionId = history[0]?.id;
+    expect(history).toMatchObject({
+      ok: true,
+      items: [
+        { revisionNumber: 1, homeScore: 1, awayScore: 0, correctionReason: null },
+        { revisionNumber: 2, homeScore: 1, awayScore: 1, correctionReason: "Official correction" },
+        { revisionNumber: 3, homeScore: 2, awayScore: 1, correctionReason: "Second correction" },
+        { revisionNumber: 4, homeScore: 3, awayScore: 1, correctionReason: "Third correction" },
+      ],
+    });
+    await expect(repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 2)).resolves.toMatchObject({
+      ok: true,
+      items: [
+        { revisionNumber: 3, correctionReason: "Second correction" },
+        { revisionNumber: 4, correctionReason: "Third correction" },
+      ],
+    });
+    if (!history.ok) return;
+    const revisionId = history.items[0]?.id;
     if (revisionId === undefined) throw new Error("Expected revision id.");
     await expectPostgresCode(
       () =>
@@ -615,7 +643,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
       repository.publishResultInTransaction(transaction, foreign.tenantId, second.result.id, { expectedVersion: 1 }, foreign.membershipId, new Date("2026-10-01T12:30:00.000Z")),
     )).resolves.toMatchObject({ ok: true });
     await expect(repository.findResultByIdForTenant(graph.tenantId, second.result.id)).resolves.toBeNull();
-    await expect(repository.listResultRevisionsForTenant(graph.tenantId, second.result.id, 10)).resolves.toEqual([]);
+    await expect(repository.listResultRevisionsForTenant(graph.tenantId, second.result.id, 10)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
     await expect(repository.listPublishedResultsForTenant(graph.tenantId, { limit: 10 })).resolves.toMatchObject([
       { result: { id: first.result.id } },
     ]);
@@ -739,7 +767,10 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     const outcomes = await Promise.all([first, second]);
     expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
     expect(outcomes.filter((outcome) => !outcome.ok && outcome.error === "VERSION_CONFLICT")).toHaveLength(1);
-    await expect(repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 10)).resolves.toHaveLength(2);
+    const history = await repository.listResultRevisionsForTenant(graph.tenantId, created.result.id, 10);
+    expect(history).toMatchObject({ ok: true });
+    if (!history.ok) return;
+    expect(history.items).toHaveLength(2);
     await expect(repository.findResultByIdForTenant(graph.tenantId, created.result.id)).resolves.toMatchObject({ lifecycle: "published", version: 3, currentRevisionNumber: 2 });
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { RESULT_SCORE_MAX } from "@/domain/sports/results";
 import {
   RESULT_AUDIT_EVENT_TYPES,
   normalizeAuditIntegrityEnvelope,
@@ -21,7 +22,7 @@ const facts = {
 describe("Result audit event contract", () => {
   it("closes each Result lifecycle event with its matching facts", () => {
     expect(normalizeResultAuditEventFacts(facts, "result.published")).toEqual(facts);
-    expect(normalizeResultAuditEventFacts({ ...facts, homeScore: 1001 }, "result.published")).toBeNull();
+    expect(normalizeResultAuditEventFacts({ ...facts, homeScore: RESULT_SCORE_MAX + 1 }, "result.published")).toBeNull();
     expect(normalizeResultAuditEventFacts({ ...facts, revisionNumber: 2 }, "result.published")).toBeNull();
     expect(normalizeResultAuditEventFacts({ ...facts, action: "corrected", lifecycle: "published", revisionNumber: 2, correctionReason: "Official correction", version: 3 }, "result.corrected")).not.toBeNull();
   });

@@ -304,11 +304,11 @@ export const results = pgTable(
     ),
     check(
       "results_scores_nonnegative",
-      sql`${table.draftHomeScore} IS NULL OR (${table.draftHomeScore} >= 0 AND ${table.draftHomeScore} <= 1000)`,
+      sql`${table.draftHomeScore} IS NULL OR (${table.draftHomeScore} >= 0 AND ${table.draftHomeScore} <= 2147483647)`,
     ),
     check(
       "results_away_score_nonnegative",
-      sql`${table.draftAwayScore} IS NULL OR (${table.draftAwayScore} >= 0 AND ${table.draftAwayScore} <= 1000)`,
+      sql`${table.draftAwayScore} IS NULL OR (${table.draftAwayScore} >= 0 AND ${table.draftAwayScore} <= 2147483647)`,
     ),
     check("results_version_positive", sql`${table.version} >= 1`),
     check(
@@ -364,11 +364,11 @@ export const resultRevisions = pgTable(
     check("result_revisions_revision_positive", sql`${table.revisionNumber} >= 1`),
     check(
       "result_revisions_home_score_nonnegative",
-      sql`${table.homeScore} >= 0 AND ${table.homeScore} <= 1000`,
+      sql`${table.homeScore} >= 0 AND ${table.homeScore} <= 2147483647`,
     ),
     check(
       "result_revisions_away_score_nonnegative",
-      sql`${table.awayScore} >= 0 AND ${table.awayScore} <= 1000`,
+      sql`${table.awayScore} >= 0 AND ${table.awayScore} <= 2147483647`,
     ),
     check(
       "result_revisions_reason_shape",

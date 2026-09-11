@@ -39,6 +39,10 @@ export type ResultMutationResult =
   | Readonly<{ ok: true; result: Result; revision?: ResultRevision }>
   | Readonly<{ ok: false; error: SportsMutationError }>;
 
+export type ResultHistoryReadResult =
+  | Readonly<{ ok: true; items: readonly ResultRevision[] }>
+  | Readonly<{ ok: false; error: "NOT_FOUND" }>;
+
 export type ResultRepositoryTransactionDatabase =
   SportRepositoryTransactionDatabase;
 
@@ -321,9 +325,9 @@ export class DrizzleResultRepository {
     tenantId: string,
     resultId: string,
     limit = 50,
-  ): Promise<readonly ResultRevision[]> {
+  ): Promise<ResultHistoryReadResult> {
     if (!isUuid(tenantId) || !isUuid(resultId)) {
-      return [];
+      return { ok: false, error: "NOT_FOUND" };
     }
     const resultRows = await this.database
       .select({ lifecycle: results.lifecycle })
@@ -331,7 +335,7 @@ export class DrizzleResultRepository {
       .where(and(eq(results.tenantId, tenantId), eq(results.id, resultId)))
       .limit(1);
     if (resultRows[0]?.lifecycle !== "published") {
-      return [];
+      return { ok: false, error: "NOT_FOUND" };
     }
     const rows = await this.database
       .select()
@@ -341,10 +345,11 @@ export class DrizzleResultRepository {
       )
       .orderBy(desc(resultRevisions.revisionNumber))
       .limit(normalizedLimit(limit));
-    return rows.flatMap((row) => {
+    const items = rows.flatMap((row) => {
       const revision = toRevision(row);
       return revision === null ? [] : [revision];
     }).reverse();
+    return { ok: true, items };
   }
 
   public async updateDraftResultInTransaction(

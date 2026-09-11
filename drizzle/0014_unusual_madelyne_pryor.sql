@@ -12,8 +12,8 @@ CREATE TABLE "result_revisions" (
 	CONSTRAINT "result_revisions_tenant_id_id_unique" UNIQUE("tenant_id","id"),
 	CONSTRAINT "result_revisions_result_revision_unique" UNIQUE("tenant_id","result_id","revision_number"),
 	CONSTRAINT "result_revisions_revision_positive" CHECK ("result_revisions"."revision_number" >= 1),
-	CONSTRAINT "result_revisions_home_score_nonnegative" CHECK ("result_revisions"."home_score" >= 0 AND "result_revisions"."home_score" <= 1000),
-	CONSTRAINT "result_revisions_away_score_nonnegative" CHECK ("result_revisions"."away_score" >= 0 AND "result_revisions"."away_score" <= 1000),
+	CONSTRAINT "result_revisions_home_score_nonnegative" CHECK ("result_revisions"."home_score" >= 0 AND "result_revisions"."home_score" <= 2147483647),
+	CONSTRAINT "result_revisions_away_score_nonnegative" CHECK ("result_revisions"."away_score" >= 0 AND "result_revisions"."away_score" <= 2147483647),
 	CONSTRAINT "result_revisions_reason_shape" CHECK ((
         ("result_revisions"."revision_number" = 1 AND "result_revisions"."correction_reason" IS NULL)
         OR
@@ -48,8 +48,8 @@ CREATE TABLE "results" (
           AND "results"."draft_away_score" IS NULL
           AND "results"."current_revision_number" >= 1)
       )),
-	CONSTRAINT "results_scores_nonnegative" CHECK ("results"."draft_home_score" IS NULL OR ("results"."draft_home_score" >= 0 AND "results"."draft_home_score" <= 1000)),
-	CONSTRAINT "results_away_score_nonnegative" CHECK ("results"."draft_away_score" IS NULL OR ("results"."draft_away_score" >= 0 AND "results"."draft_away_score" <= 1000)),
+	CONSTRAINT "results_scores_nonnegative" CHECK ("results"."draft_home_score" IS NULL OR ("results"."draft_home_score" >= 0 AND "results"."draft_home_score" <= 2147483647)),
+	CONSTRAINT "results_away_score_nonnegative" CHECK ("results"."draft_away_score" IS NULL OR ("results"."draft_away_score" >= 0 AND "results"."draft_away_score" <= 2147483647)),
 	CONSTRAINT "results_version_positive" CHECK ("results"."version" >= 1),
 	CONSTRAINT "results_current_revision_positive" CHECK ("results"."current_revision_number" IS NULL OR "results"."current_revision_number" >= 1)
 );
@@ -113,7 +113,7 @@ BEGIN
     OR NEW.draft_home_score IS NOT NULL
     OR NEW.draft_away_score IS NOT NULL
     OR NEW.current_revision_number IS NULL
-    OR NEW.current_revision_number < OLD.current_revision_number
+    OR NEW.current_revision_number IS DISTINCT FROM OLD.current_revision_number + 1
     OR NEW.created_at <> OLD.created_at
   ) THEN
     RAISE EXCEPTION 'Published Result aggregate is immutable except for its next revision pointer'

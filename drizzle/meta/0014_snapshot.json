@@ -2785,11 +2785,11 @@
         },
         "result_revisions_home_score_nonnegative": {
           "name": "result_revisions_home_score_nonnegative",
-          "value": "\"result_revisions\".\"home_score\" >= 0 AND \"result_revisions\".\"home_score\" <= 1000"
+          "value": "\"result_revisions\".\"home_score\" >= 0 AND \"result_revisions\".\"home_score\" <= 2147483647"
         },
         "result_revisions_away_score_nonnegative": {
           "name": "result_revisions_away_score_nonnegative",
-          "value": "\"result_revisions\".\"away_score\" >= 0 AND \"result_revisions\".\"away_score\" <= 1000"
+          "value": "\"result_revisions\".\"away_score\" >= 0 AND \"result_revisions\".\"away_score\" <= 2147483647"
         },
         "result_revisions_reason_shape": {
           "name": "result_revisions_reason_shape",
@@ -2970,11 +2970,11 @@
         },
         "results_scores_nonnegative": {
           "name": "results_scores_nonnegative",
-          "value": "\"results\".\"draft_home_score\" IS NULL OR (\"results\".\"draft_home_score\" >= 0 AND \"results\".\"draft_home_score\" <= 1000)"
+          "value": "\"results\".\"draft_home_score\" IS NULL OR (\"results\".\"draft_home_score\" >= 0 AND \"results\".\"draft_home_score\" <= 2147483647)"
         },
         "results_away_score_nonnegative": {
           "name": "results_away_score_nonnegative",
-          "value": "\"results\".\"draft_away_score\" IS NULL OR (\"results\".\"draft_away_score\" >= 0 AND \"results\".\"draft_away_score\" <= 1000)"
+          "value": "\"results\".\"draft_away_score\" IS NULL OR (\"results\".\"draft_away_score\" >= 0 AND \"results\".\"draft_away_score\" <= 2147483647)"
         },
         "results_version_positive": {
           "name": "results_version_positive",

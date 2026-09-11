@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { Result, ResultRevision } from "@/domain/sports/results";
-import type { ManagedResultListItem } from "@/server/repositories/result-repository";
+import type {
+  ManagedResultListItem,
+  ResultHistoryReadResult,
+} from "@/server/repositories/result-repository";
 
 import {
   ResultManagementService,
@@ -57,18 +60,22 @@ function createService() {
   const listManagedResultsForTenant = vi.fn(
     async (): Promise<readonly ManagedResultListItem[]> => [],
   );
+  const listResultRevisionsForTenant = vi.fn(
+    async (): Promise<ResultHistoryReadResult> => ({ ok: true, items: [] }),
+  );
   return {
     service: new ResultManagementService({
       capabilityAuthorizer: { authorize },
       gateway,
       results: {
         listManagedResultsForTenant,
-        listResultRevisionsForTenant: vi.fn(async () => []),
+        listResultRevisionsForTenant,
       },
     }),
     gateway,
     authorize,
     listManagedResultsForTenant,
+    listResultRevisionsForTenant,
   };
 }
 
@@ -162,5 +169,18 @@ describe("ResultManagementService", () => {
       }),
     ).resolves.toEqual({ outcome: "LISTED", items: [] });
     expect(listManagedResultsForTenant).toHaveBeenCalledWith(tenantId, {});
+  });
+
+  it("maps missing or unpublished history to NOT_FOUND", async () => {
+    const { service, listResultRevisionsForTenant } = createService();
+    listResultRevisionsForTenant.mockResolvedValueOnce({ ok: false, error: "NOT_FOUND" });
+    await expect(
+      service.inspectResultHistory({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+        resultId,
+        limit: 50,
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "NOT_FOUND" });
   });
 });

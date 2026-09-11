@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  RESULT_SCORE_MAX,
   parseResultExpectedVersion,
   parseResultHistoryLimit,
   parseResultReason,
@@ -8,11 +9,12 @@ import {
 } from "./results";
 
 describe("Result domain contract", () => {
-  it("accepts only bounded nonnegative integer scores", () => {
+  it("accepts nonnegative integer scores within the PostgreSQL storage type", () => {
     expect(parseResultScore(0)).toBe(0);
-    expect(parseResultScore(1000)).toBe(1000);
+    expect(parseResultScore(1001)).toBe(1001);
+    expect(parseResultScore(RESULT_SCORE_MAX)).toBe(RESULT_SCORE_MAX);
     expect(parseResultScore(-1)).toBeNull();
-    expect(parseResultScore(1001)).toBeNull();
+    expect(parseResultScore(RESULT_SCORE_MAX + 1)).toBeNull();
     expect(parseResultScore(1.5)).toBeNull();
     expect(parseResultScore("1")).toBeNull();
   });

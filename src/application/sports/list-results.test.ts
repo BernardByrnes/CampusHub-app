@@ -54,7 +54,7 @@ describe("ListResultsService", () => {
     const service = new ListResultsService({
       results: {
         listPublishedResultsForTenant,
-        listResultRevisionsForTenant: vi.fn(async () => [item.revision]),
+        listResultRevisionsForTenant: vi.fn(async () => ({ ok: true as const, items: [item.revision] })),
       },
     });
     await expect(
@@ -75,14 +75,31 @@ describe("ListResultsService", () => {
     expect(JSON.stringify(readResult)).not.toContain(item.revision.actorMembershipId);
   });
 
-  it("does not call the repository for a wrong Tenant, draft history, or unbounded filters", async () => {
+  it("does not call the repository for a wrong Tenant or unbounded filters", async () => {
     const listPublishedResultsForTenant = vi.fn(async () => [item]);
-    const listResultRevisionsForTenant = vi.fn(async () => [item.revision]);
+    const listResultRevisionsForTenant = vi.fn(async () => ({ ok: true as const, items: [item.revision] }));
     const service = new ListResultsService({ results: { listPublishedResultsForTenant, listResultRevisionsForTenant } });
     await expect(service.listResults({ trustedContext: context, requestedTenantId: "00000000-0000-4000-8000-000000000099", filters: {} })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     await expect(service.listResults({ trustedContext: context, requestedTenantId: tenantId, filters: { limit: 101 } })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
     await expect(service.listCorrectionHistory({ trustedContext: context, requestedTenantId: tenantId, resultId: item.result.id, limit: 50 })).resolves.toMatchObject({ outcome: "HISTORY", items: [{ revisionNumber: 1 }] });
     expect(listPublishedResultsForTenant).toHaveBeenCalledTimes(0);
     expect(listResultRevisionsForTenant).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an unpublished or missing history to NOT_FOUND", async () => {
+    const service = new ListResultsService({
+      results: {
+        listPublishedResultsForTenant: vi.fn(async () => []),
+        listResultRevisionsForTenant: vi.fn(async () => ({ ok: false as const, error: "NOT_FOUND" as const })),
+      },
+    });
+    await expect(
+      service.listCorrectionHistory({
+        trustedContext: context,
+        requestedTenantId: tenantId,
+        resultId: item.result.id,
+        limit: 50,
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "NOT_FOUND" });
   });
 });
