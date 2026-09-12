@@ -720,10 +720,6 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
             actorMembershipId: graph.membershipId,
             correctionReason: "Skipped revision",
           });
-          await transaction
-            .update(results)
-            .set({ currentRevisionNumber: 3, version: 3 })
-            .where(and(eq(results.tenantId, graph.tenantId), eq(results.id, created.result.id)));
         }),
       "23514",
     );
