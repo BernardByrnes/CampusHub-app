@@ -341,6 +341,137 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     );
   });
 
+  it("rejects direct Fixture state changes for draft and published Results", async () => {
+    const draftGraph = await createFixtureGraph("completed");
+    const repository = new DrizzleResultRepository(getDatabase() as never);
+    const draft = await getDatabase().transaction((transaction) =>
+      repository.createResultInTransaction(transaction, draftGraph.tenantId, {
+        fixtureId: draftGraph.fixtureId,
+        homeScore: 1,
+        awayScore: 0,
+      }),
+    );
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+
+    for (const state of ["cancelled", "abandoned", "postponed", "scheduled"] as const) {
+      await expectPostgresCode(
+        () =>
+          getDatabase()
+            .update(fixtures)
+            .set({ state, reason: "Result is attached", version: sql`${fixtures.version} + 1`, updatedAt: new Date() })
+            .where(and(eq(fixtures.tenantId, draftGraph.tenantId), eq(fixtures.id, draftGraph.fixtureId))),
+        "23514",
+      );
+    }
+    await expect(getDatabase().select({ state: fixtures.state }).from(fixtures).where(eq(fixtures.id, draftGraph.fixtureId))).resolves.toEqual([{ state: "completed" }]);
+    await expect(repository.findResultByIdForTenant(draftGraph.tenantId, draft.result.id)).resolves.toMatchObject({ lifecycle: "draft" });
+
+    const publishedGraph = await createFixtureGraph("completed");
+    const publishedDraft = await getDatabase().transaction((transaction) =>
+      repository.createResultInTransaction(transaction, publishedGraph.tenantId, {
+        fixtureId: publishedGraph.fixtureId,
+        homeScore: 2,
+        awayScore: 1,
+      }),
+    );
+    expect(publishedDraft.ok).toBe(true);
+    if (!publishedDraft.ok) return;
+    const published = await getDatabase().transaction((transaction) =>
+      repository.publishResultInTransaction(
+        transaction,
+        publishedGraph.tenantId,
+        publishedDraft.result.id,
+        { expectedVersion: 1 },
+        publishedGraph.membershipId,
+        new Date("2026-10-01T12:30:00.000Z"),
+      ),
+    );
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    await expectPostgresCode(
+      () =>
+        getDatabase()
+          .update(fixtures)
+          .set({ state: "cancelled", reason: "Result is attached", version: sql`${fixtures.version} + 1`, updatedAt: new Date() })
+          .where(and(eq(fixtures.tenantId, publishedGraph.tenantId), eq(fixtures.id, publishedGraph.fixtureId))),
+      "23514",
+    );
+    await expect(repository.findResultByIdForTenant(publishedGraph.tenantId, publishedDraft.result.id)).resolves.toMatchObject({ lifecycle: "published", currentRevisionNumber: 1 });
+    await expect(getDatabase().select({ revisionNumber: resultRevisions.revisionNumber }).from(resultRevisions).where(eq(resultRevisions.resultId, publishedDraft.result.id))).resolves.toEqual([{ revisionNumber: 1 }]);
+  });
+
+  it("serializes Result creation and Fixture state changes in both transaction orderings", async () => {
+    const resultFirstGraph = await createFixtureGraph("completed");
+    const repository = new DrizzleResultRepository(getDatabase() as never);
+    const resultLockHeld = deferred<void>();
+    const releaseResult = deferred<void>();
+    const resultFirst = getDatabase().transaction(async (transaction) => {
+      await transaction
+        .select({ id: fixtures.id })
+        .from(fixtures)
+        .where(and(eq(fixtures.tenantId, resultFirstGraph.tenantId), eq(fixtures.id, resultFirstGraph.fixtureId)))
+        .for("update");
+      resultLockHeld.resolve();
+      await releaseResult.promise;
+      return repository.createResultInTransaction(transaction, resultFirstGraph.tenantId, {
+        fixtureId: resultFirstGraph.fixtureId,
+        homeScore: 1,
+        awayScore: 0,
+      });
+    });
+    await resultLockHeld.promise;
+    const fixtureAfterResult = getDatabase().transaction((transaction) =>
+      transaction
+        .update(fixtures)
+        .set({ state: "cancelled", reason: "Result is attached", version: sql`${fixtures.version} + 1`, updatedAt: new Date() })
+        .where(and(eq(fixtures.tenantId, resultFirstGraph.tenantId), eq(fixtures.id, resultFirstGraph.fixtureId)))
+        .returning(),
+    );
+    releaseResult.resolve();
+    const [resultFirstOutcome, fixtureAfterResultOutcome] = await Promise.all([
+      resultFirst,
+      fixtureAfterResult.catch((error) => error),
+    ]);
+    expect(resultFirstOutcome).toMatchObject({ ok: true, result: { lifecycle: "draft" } });
+    expect(postgresCode(fixtureAfterResultOutcome)).toBe("23514");
+    await expect(getDatabase().select({ state: fixtures.state }).from(fixtures).where(eq(fixtures.id, resultFirstGraph.fixtureId))).resolves.toEqual([{ state: "completed" }]);
+    await expect(getDatabase().select({ id: results.id }).from(results).where(eq(results.fixtureId, resultFirstGraph.fixtureId))).resolves.toHaveLength(1);
+
+    const fixtureFirstGraph = await createFixtureGraph("completed");
+    const fixtureLockHeld = deferred<void>();
+    const releaseFixture = deferred<void>();
+    const fixtureFirst = getDatabase().transaction(async (transaction) => {
+      await transaction
+        .select({ id: fixtures.id })
+        .from(fixtures)
+        .where(and(eq(fixtures.tenantId, fixtureFirstGraph.tenantId), eq(fixtures.id, fixtureFirstGraph.fixtureId)))
+        .for("update");
+      fixtureLockHeld.resolve();
+      await releaseFixture.promise;
+      return transaction
+        .update(fixtures)
+        .set({ state: "cancelled", reason: "No Result exists", version: sql`${fixtures.version} + 1`, updatedAt: new Date() })
+        .where(and(eq(fixtures.tenantId, fixtureFirstGraph.tenantId), eq(fixtures.id, fixtureFirstGraph.fixtureId)))
+        .returning();
+    });
+    await fixtureLockHeld.promise;
+    const resultAfterFixture = getDatabase().transaction((transaction) =>
+      repository.createResultInTransaction(transaction, fixtureFirstGraph.tenantId, {
+        fixtureId: fixtureFirstGraph.fixtureId,
+        homeScore: 3,
+        awayScore: 2,
+      }),
+    );
+    releaseFixture.resolve();
+    const [fixtureFirstOutcome, resultAfterFixtureOutcome] = await Promise.all([fixtureFirst, resultAfterFixture]);
+    expect(fixtureFirstOutcome).toHaveLength(1);
+    expect(fixtureFirstOutcome[0]?.state).toBe("cancelled");
+    expect(resultAfterFixtureOutcome).toEqual({ ok: false, error: "NOT_READY" });
+    await expect(getDatabase().select({ state: fixtures.state }).from(fixtures).where(eq(fixtures.id, fixtureFirstGraph.fixtureId))).resolves.toEqual([{ state: "cancelled" }]);
+    await expect(getDatabase().select({ id: results.id }).from(results).where(eq(results.fixtureId, fixtureFirstGraph.fixtureId))).resolves.toHaveLength(0);
+  });
+
   it("publishes one immutable revision atomically and reads only published Results", async () => {
     const graph = await createFixtureGraph();
     const repository = new DrizzleResultRepository(getDatabase() as never);

@@ -119,6 +119,30 @@ function scorePair(
     : { homeScore: home, awayScore: away };
 }
 
+async function lockFixtureForResult(
+  transaction: ResultRepositoryTransactionDatabase,
+  tenantId: string,
+  resultId: string,
+): Promise<{ state: string } | null> {
+  const resultReferenceRows = await transaction
+    .select({ fixtureId: results.fixtureId })
+    .from(results)
+    .where(and(eq(results.tenantId, tenantId), eq(results.id, resultId)))
+    .limit(1);
+  const fixtureId = resultReferenceRows[0]?.fixtureId;
+  if (fixtureId === undefined) {
+    return null;
+  }
+
+  const fixtureRows = await transaction
+    .select({ state: fixtures.state })
+    .from(fixtures)
+    .where(and(eq(fixtures.tenantId, tenantId), eq(fixtures.id, fixtureId)))
+    .for("update")
+    .limit(1);
+  return fixtureRows[0] ?? null;
+}
+
 export class DrizzleResultRepository {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
@@ -369,6 +393,14 @@ export class DrizzleResultRepository {
     }
 
     try {
+      const fixture = await lockFixtureForResult(transaction, tenantId, resultId);
+      if (fixture === null) {
+        return { ok: false, error: "NOT_FOUND" };
+      }
+      if (fixture.state !== "completed") {
+        return { ok: false, error: "NOT_READY" };
+      }
+
       const rows = await transaction
         .select()
         .from(results)
@@ -545,6 +577,14 @@ export class DrizzleResultRepository {
     }
 
     try {
+      const fixture = await lockFixtureForResult(transaction, tenantId, resultId);
+      if (fixture === null) {
+        return { ok: false, error: "NOT_FOUND" };
+      }
+      if (fixture.state !== "completed") {
+        return { ok: false, error: "NOT_READY" };
+      }
+
       const resultRows = await transaction
         .select()
         .from(results)
