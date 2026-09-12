@@ -7,7 +7,6 @@ import {
 } from "@/application/sports/list-results";
 import { CampusHomeUnavailableState } from "@/components/campus-home/home-states";
 import { StudentResultHistoryPage } from "@/components/sports/result-surfaces";
-import { DrizzleResultRepository } from "@/server/repositories/result-repository";
 
 type ResultHistoryPageProps = Readonly<{
   params: Promise<{ resultId: string }>;
@@ -25,11 +24,12 @@ export default async function StudentResultHistoryRoute({
   if (trustedRequest === null) return <CampusHomeUnavailableState />;
 
   const { resultId } = await params;
-  const service = new ListResultsService({
-    results: new DrizzleResultRepository(),
-  });
   let history: ResultReadResult;
   try {
+    const { DrizzleResultRepository } = await import("@/server/repositories/result-repository");
+    const service = new ListResultsService({
+      results: new DrizzleResultRepository(),
+    });
     history = await service.listCorrectionHistory({
       trustedContext: trustedRequest.context,
       requestedTenantId: trustedRequest.context.tenantId,

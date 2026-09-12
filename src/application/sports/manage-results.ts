@@ -2,6 +2,7 @@ import "server-only";
 
 import { isCapabilityAuthorizationDecision, type CapabilityAuthorizationRequest, type CapabilityAuthorizer } from "@/domain/authorization/capability-authorization";
 import { CAPABILITIES } from "@/domain/authorization/capability";
+import { parseAssuranceLevel } from "@/domain/authorization/assurance-level";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import { isUuid } from "@/domain/identifiers/uuid";
 import { parseMembershipLifecycle } from "@/domain/membership/membership";
@@ -181,7 +182,8 @@ function isTrustedContext(value: unknown): value is TrustedRequestContext {
     isUuid(value.tenantId) &&
     isUuid(value.membershipId) &&
     parseTenantLifecycle(value.tenantStatus) !== null &&
-    parseMembershipLifecycle(value.membershipStatus) !== null;
+    parseMembershipLifecycle(value.membershipStatus) !== null &&
+    parseAssuranceLevel(value.assuranceLevel) !== null;
 }
 
 function isScopedCommand(

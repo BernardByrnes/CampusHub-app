@@ -4,7 +4,6 @@ import type { CampusHomeRequest } from "@/application/content/campus-home";
 import { ListResultsService, type ResultReadResult } from "@/application/sports/list-results";
 import { CampusHomeUnavailableState } from "@/components/campus-home/home-states";
 import { StudentResultsPage } from "@/components/sports/result-surfaces";
-import { DrizzleResultRepository } from "@/server/repositories/result-repository";
 
 type ResultPageProps = Readonly<{
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -31,6 +30,7 @@ export default async function StudentResultsRoute({ searchParams }: ResultPagePr
   const params = await searchParams;
   let result: ResultReadResult;
   try {
+    const { DrizzleResultRepository } = await import("@/server/repositories/result-repository");
     const service = new ListResultsService({ results: new DrizzleResultRepository() });
     result = await service.listResults({
       trustedContext: trustedRequest.context,

@@ -151,6 +151,39 @@ describe("ResultManagementService", () => {
     expect(third.authorize).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["malformed", "not-an-assurance-level"],
+    ["missing", undefined],
+  ])("rejects %s assurance before authorization or persistence", async (_label, assuranceLevel) => {
+    const candidateContext = { ...context, assuranceLevel } as unknown as TrustedRequestContext;
+    const { service, authorize, gateway } = createService();
+
+    await expect(
+      service.createDraftResult({
+        trustedContext: candidateContext,
+        requestedTenantId: tenantId,
+        result: { fixtureId, homeScore: 1, awayScore: 0 },
+      }),
+    ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+
+    expect(authorize).not.toHaveBeenCalled();
+    expect(gateway.createResult).not.toHaveBeenCalled();
+  });
+
+  it.each(["L0", "L1", "L2", "L3"])("preserves valid assurance level %s in the authorization request", async (assuranceLevel) => {
+    const { service, authorize } = createService();
+
+    await service.createDraftResult({
+      trustedContext: { ...context, assuranceLevel: assuranceLevel as TrustedRequestContext["assuranceLevel"] },
+      requestedTenantId: tenantId,
+      result: { fixtureId, homeScore: 1, awayScore: 0 },
+    });
+
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ assuranceLevel }),
+    }));
+  });
+
   it("rejects unreviewed management filters instead of silently widening reads", async () => {
     const { service, authorize, listManagedResultsForTenant } = createService();
     await expect(
