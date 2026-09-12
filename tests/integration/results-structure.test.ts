@@ -341,6 +341,141 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     );
   });
 
+  it("uses canonical public relations when temporary names shadow Result and Fixture tables", async () => {
+    const scheduledGraph = await createFixtureGraph("scheduled");
+
+    await expectPostgresCode(
+      () =>
+        getDatabase().transaction(async (transaction) => {
+          await transaction.execute(sql`
+            CREATE TEMP TABLE "fixtures" (
+              "tenant_id" uuid NOT NULL,
+              "id" uuid NOT NULL,
+              "state" text NOT NULL
+            ) ON COMMIT DROP
+          `);
+          await transaction.execute(sql`
+            INSERT INTO "fixtures" ("tenant_id", "id", "state")
+            VALUES (${scheduledGraph.tenantId}, ${scheduledGraph.fixtureId}, 'completed')
+          `);
+          await transaction.execute(sql`
+            INSERT INTO "public"."results" (
+              "tenant_id",
+              "fixture_id",
+              "lifecycle",
+              "draft_home_score",
+              "draft_away_score",
+              "version"
+            )
+            VALUES (${scheduledGraph.tenantId}, ${scheduledGraph.fixtureId}, 'draft', 1, 0, 1)
+          `);
+        }),
+      "23514",
+    );
+
+    const completedGraph = await createFixtureGraph("completed");
+    const repository = new DrizzleResultRepository(getDatabase() as never);
+    const created = await getDatabase().transaction((transaction) =>
+      repository.createResultInTransaction(transaction, completedGraph.tenantId, {
+        fixtureId: completedGraph.fixtureId,
+        homeScore: 1,
+        awayScore: 0,
+      }),
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await expectPostgresCode(
+      () =>
+        getDatabase().transaction(async (transaction) => {
+          await transaction.execute(sql`
+            CREATE TEMP TABLE "results" (
+              "tenant_id" uuid NOT NULL,
+              "fixture_id" uuid NOT NULL
+            ) ON COMMIT DROP
+          `);
+          await transaction.execute(sql`
+            UPDATE "public"."fixtures"
+            SET
+              "state" = 'cancelled',
+              "reason" = 'Result is attached',
+              "version" = "version" + 1,
+              "updated_at" = now()
+            WHERE "tenant_id" = ${completedGraph.tenantId}
+              AND "id" = ${completedGraph.fixtureId}
+          `);
+        }),
+      "23514",
+    );
+  });
+
+  it("requires revision one for initial publication and rejects missing predecessors", async () => {
+    for (const revisionNumber of [2, 5]) {
+      const graph = await createFixtureGraph();
+      const repository = new DrizzleResultRepository(getDatabase() as never);
+      const created = await getDatabase().transaction((transaction) =>
+        repository.createResultInTransaction(transaction, graph.tenantId, {
+          fixtureId: graph.fixtureId,
+          homeScore: 2,
+          awayScore: 1,
+        }),
+      );
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await expectPostgresCode(
+        () =>
+          getDatabase().transaction(async (transaction) => {
+            await transaction.execute(sql`
+              INSERT INTO "public"."result_revisions" (
+                "tenant_id",
+                "result_id",
+                "revision_number",
+                "home_score",
+                "away_score",
+                "actor_membership_id",
+                "correction_reason"
+              )
+              VALUES (
+                ${graph.tenantId},
+                ${created.result.id},
+                ${revisionNumber},
+                2,
+                1,
+                ${graph.membershipId},
+                ${`Invalid initial revision ${revisionNumber}`}
+              )
+            `);
+            await transaction.execute(sql`
+              UPDATE "public"."results"
+              SET
+                "lifecycle" = 'published',
+                "draft_home_score" = NULL,
+                "draft_away_score" = NULL,
+                "current_revision_number" = ${revisionNumber},
+                "version" = 2,
+                "updated_at" = now()
+              WHERE "tenant_id" = ${graph.tenantId}
+                AND "id" = ${created.result.id}
+            `);
+          }),
+        "23514",
+      );
+
+      await expect(repository.findResultByIdForTenant(graph.tenantId, created.result.id)).resolves.toMatchObject({
+        lifecycle: "draft",
+        version: 1,
+        currentRevisionNumber: null,
+      });
+      await expect(
+        getDatabase()
+          .select({ revisionNumber: resultRevisions.revisionNumber })
+          .from(resultRevisions)
+          .where(eq(resultRevisions.resultId, created.result.id)),
+      ).resolves.toEqual([]);
+    }
+  });
+
   it("rejects direct Fixture state changes for draft and published Results", async () => {
     const draftGraph = await createFixtureGraph("completed");
     const repository = new DrizzleResultRepository(getDatabase() as never);
@@ -548,7 +683,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
     expect(auditRows).toEqual([{ eventType: "result.published", resourceType: "result" }]);
   });
 
-  it("appends corrections, requires reasons, and rejects revision mutation or truncation", async () => {
+  it("appends sequential corrections, rejects revision gaps, and rejects revision mutation or truncation", async () => {
     const graph = await createFixtureGraph();
     const repository = new DrizzleResultRepository(getDatabase() as never);
     const created = await getDatabase().transaction((transaction) =>
@@ -590,7 +725,7 @@ describe("real PostgreSQL Tenant-owned Sports Result structure", () => {
             .set({ currentRevisionNumber: 3, version: 3 })
             .where(and(eq(results.tenantId, graph.tenantId), eq(results.id, created.result.id)));
         }),
-      "42501",
+      "23514",
     );
 
     await expect(

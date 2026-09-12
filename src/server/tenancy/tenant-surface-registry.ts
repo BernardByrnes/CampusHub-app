@@ -119,7 +119,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0015_guard_fixture_result_eligibility.sql",
+    implementationPath: "drizzle/0016_result_revision_guards.sql",
   },
   "fixtures.services.factory": {
     category: "infrastructure",
@@ -2594,8 +2594,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0015_guard_fixture_result_eligibility.sql",
-    surface: "Reviewed Drizzle migration history through 0015",
+    implementationPath: "drizzle/0016_result_revision_guards.sql",
+    surface: "Reviewed Drizzle migration history through 0016",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -2617,8 +2617,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0013_regular_bug.sql",
       "drizzle/0014_unusual_madelyne_pryor.sql",
       "drizzle/0015_guard_fixture_result_eligibility.sql",
+      "drizzle/0016_result_revision_guards.sql",
     ],
-    migrationHead: "drizzle/0015_guard_fixture_result_eligibility.sql",
+    migrationHead: "drizzle/0016_result_revision_guards.sql",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 
