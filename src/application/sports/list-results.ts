@@ -140,7 +140,8 @@ function toHistoryItem(revision: ResultRevision): StudentResultHistoryItem {
 export class ListResultsService {
   public constructor(private readonly dependencies: ResultReadServiceDependencies) {}
 
-  private validateContext(input: { trustedContext: unknown; requestedTenantId: unknown }): ResultReadDenialCode | null {
+  private validateContext(input: unknown): ResultReadDenialCode | null {
+    if (!isRecord(input)) return "INVALID_INPUT";
     if (!isTrustedContext(input.trustedContext) || !isUuid(input.requestedTenantId) || input.trustedContext.tenantId !== input.requestedTenantId) return "INVALID_INPUT";
     if (!tenantHasFullFunctionality(input.trustedContext.tenantStatus)) return "TENANT_UNAVAILABLE";
     if (!MEMBER_READ_LIFECYCLES.includes(input.trustedContext.membershipStatus)) return "MEMBERSHIP_NOT_ELIGIBLE";

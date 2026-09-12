@@ -86,6 +86,44 @@ describe("ListResultsService", () => {
     expect(listResultRevisionsForTenant).toHaveBeenCalledTimes(1);
   });
 
+  it.each([null, undefined, "invalid", 42, true, {}, { trustedContext: context }, { requestedTenantId: tenantId }])(
+    "denies malformed root input for listResults without calling the repository: %p",
+    async (input) => {
+      const listPublishedResultsForTenant = vi.fn(async () => [item]);
+      const service = new ListResultsService({
+        results: {
+          listPublishedResultsForTenant,
+          listResultRevisionsForTenant: vi.fn(async () => ({ ok: true as const, items: [item.revision] })),
+        },
+      });
+
+      await expect(service.listResults(input as never)).resolves.toEqual({
+        outcome: "DENIED",
+        code: "INVALID_INPUT",
+      });
+      expect(listPublishedResultsForTenant).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, undefined, "invalid", 42, true, {}, { trustedContext: context }, { requestedTenantId: tenantId }])(
+    "denies malformed root input for listCorrectionHistory without calling the repository: %p",
+    async (input) => {
+      const listResultRevisionsForTenant = vi.fn(async () => ({ ok: true as const, items: [item.revision] }));
+      const service = new ListResultsService({
+        results: {
+          listPublishedResultsForTenant: vi.fn(async () => [item]),
+          listResultRevisionsForTenant,
+        },
+      });
+
+      await expect(service.listCorrectionHistory(input as never)).resolves.toEqual({
+        outcome: "DENIED",
+        code: "INVALID_INPUT",
+      });
+      expect(listResultRevisionsForTenant).not.toHaveBeenCalled();
+    },
+  );
+
   it("maps an unpublished or missing history to NOT_FOUND", async () => {
     const service = new ListResultsService({
       results: {
