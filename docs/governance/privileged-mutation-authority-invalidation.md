@@ -252,8 +252,8 @@ evidence.
 | RoleGrant/capability revocation or scope change | Mutation observes revoked/changed grant and fails closed with no success audit. | Mutation commits while the grant is valid; revocation waits, then later work fails. |
 | Guild Term closure/expiry | Mutation observes closed/out-of-window term and fails closed. | Mutation commits under the active term; closure waits/applies afterward and later work fails. |
 | Expiry already passed | Database-clock check fails closed before PMAFB. | Not applicable: a mutation may not win with an already-passed expiry. |
-| Expiry while waiting for an authority lock | After the wait, database-clock revalidation fails closed unless PMAFB was already crossed before expiry. | Mutation may commit only if it crossed PMAFB before expiry; the later wait by invalidation does not retroactively change that result. |
-| Expiry while waiting for a resource lock | After the resource wait, authority and database time are revalidated; a passed expiry fails closed. | Mutation may commit only if PMAFB was crossed before expiry; resource version checks remain separate. |
+| Expiry while waiting for an authority lock | After the wait, fresh database-clock validation is mandatory; if expiry passed, fail closed unconditionally. PMAFB has not occurred. | A mutation still waiting for a required authority lock has not crossed PMAFB. It may proceed only if fresh post-wait authority/time validation passes before PMAFB. |
+| Expiry while waiting for a resource lock | After the wait, resource, authority, and fresh database-time validation are mandatory; if expiry passed, fail closed unconditionally. PMAFB has not occurred. | A mutation still waiting for a required resource lock has not crossed PMAFB. It may proceed only if post-wait resource/authority/time validation passes before PMAFB. |
 | Authority decision immediately before expiry | Strict database-time comparison at PMAFB; `time >= expiry` fails. | Success is valid only when PMAFB was crossed while `time < expiry`; no client or transaction-start time may extend it. |
 
 For every loser, no privileged-success audit event is emitted and the business
