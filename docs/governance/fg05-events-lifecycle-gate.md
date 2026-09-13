@@ -42,21 +42,26 @@ The Pilot Event contract includes Tenant-owned Events, Publisher management,
 audience-bound Home/Discover exposure, Organiser attribution, lifecycle
 transitions, and the bounded RSVP/interest surface described below.
 
-The explicit frozen Pilot OOS items for Events are:
+The relevant frozen global Pilot OOS items for Events, from the Product
+Specification's `Out of Pilot, Deliberately` register, are:
 
+- maps and geolocation;
+- clubs as account-holding entities;
 - ticketing;
 - check-in;
 - an attendee directory or attendee list;
 
-These are not broadened by this gate. The following are frozen Event
-constraints or deferred Product behavior, not additions to that OOS list:
+These global exclusions are not broadened by this gate. Their Event-specific
+consequences are:
 
 - venue is free text only, with no map API, geolocation, or coordinate field;
-- Organiser is attribution-only, with no login or independent publishing club;
-- independent club publishing and account-holding clubs remain deferred.
+- Organiser is attribution-only;
+- a Club/Organiser is not an authority principal, has no independent account
+  or publishing login, and does not receive `event.manage` merely by being an
+  attribution label.
 
 The following are FG-05 checkpoint exclusions or separately gated dependencies,
-not claims that the frozen Product Specification makes them Pilot OOS:
+not additional claims about the global Pilot OOS register:
 
 - Team Follow and follower/reminder behavior;
 - Sports, Polls, Student Voice, Opportunities, sponsorship, and Auth/OD-03;
@@ -98,15 +103,28 @@ receive the Event. Neither dimension is collapsed into, or automatically
 derived from, the other, and the established canonical visibility contract is
 reused rather than replaced with an Event-specific enum.
 
-Draft creation, meaningful draft edits, and lifecycle management are
-Tenant-scoped and default-deny. Each privileged mutation requires the
+Draft creation, every persisted draft edit, and lifecycle management are
+Tenant-scoped and default-deny. Each persisted mutation requires the
 Product-defined `event.manage` capability in the applicable Tenant/module
-scope and a current authorized Publisher or Guild Administrator path. A role
-name, client field, stale RequestContext, prior page access, prior transition,
-cached capability result, or prior grant must not be sufficient. The exact
-runtime capability vocabulary, persistence, and fresh transaction-time
-authorization are implementation-checkpoint work, not authorized by this
-proposal.
+scope and a current authorized Publisher or Guild Administrator path. This
+applies to every persisted Event field, including title, description, image
+reference, Organiser attribution, venue, dates, Campus, visibility, audience,
+and RSVP-enabled state. A role name, client field, stale RequestContext, prior
+page access, prior transition, cached capability result, or prior grant must
+not be sufficient. The exact runtime capability vocabulary, persistence, and
+fresh transaction-time authorization are implementation-checkpoint work, not
+authorized by this proposal.
+
+Only a genuine no-op may avoid a mutation authorization check: the requested
+persisted state is already identical to the authoritative state, no database
+Event mutation occurs, the Event version does not advance, no lifecycle change
+or mutation-success audit event occurs, no notification/side effect is
+generated, and no other Product state changes. A no-op does not grant access
+to management-only draft data; any operation that reads or returns such a
+draft still requires the applicable draft read/management authorization. A
+stale writer, duplicate submission with different state, or idempotency
+replay follows the established conflict/idempotency contract and is not
+silently reclassified as a no-op.
 
 When published, an Event is eligible for the Home and Discover read
 orchestrators only after Tenant/visibility checks and current audience
@@ -119,7 +137,8 @@ and represented according to the approved archive contract below.
 An Organiser is a Tenant-scoped attribution label with a name and optional
 logo, created and maintained by Guild Administrators. It is not an account-
 holding entity in Pilot, has no login, and cannot publish independently.
-Clubs as account-holding entities remain Phase 2.
+Clubs as account-holding entities are globally frozen Pilot OOS under §26.2;
+any future reconsideration requires formal re-chartering.
 
 An Event or Publication may name one Organiser. The Organiser relationship,
 logo reference, and every lookup must be same-Tenant. A future implementation
@@ -190,13 +209,44 @@ implementation may add them merely because a state column permits them.
 Every privileged Event lifecycle mutation independently revalidates current
 `event.manage` authority inside the authoritative transaction immediately
 before mutation commits. This includes draft creation where management
-authority is required, meaningful draft edits, publication, postponement,
+authority is required, every persisted draft edit, publication, postponement,
 republishing after postponement, cancellation, and any explicit privileged
-archive transition. It never relies on stale request facts, a role label, a
-previous successful transition, or a cached capability result. A future
-OD-08-authorized SYSTEM transition is a separately governed execution path;
-this proposal authorizes neither that path nor any additional Event
-capability.
+archive transition. Only a true no-op that performs no persisted mutation may
+avoid mutation authorization; management-only draft reads remain protected.
+It never relies on stale request facts, a role label, a previous successful
+transition, or a cached capability result. A future OD-08-authorized SYSTEM
+transition is a separately governed execution path; this proposal authorizes
+neither that path nor any additional Event capability.
+
+This revalidation is not by itself an authority lease. `RequestContext` is
+trusted context, but it cannot prove that a RoleGrant still exists, that a
+grant has not expired, that the Guild Term remains active, or that the module
+and capability remain enabled at the Event mutation's serialization/commit
+point. The implementation must establish a linearizable authorization/mutation
+boundary so the committed Event mutation corresponds to authority that was
+valid at that point.
+
+The implementation checkpoint must identify and review the serialization
+mechanism. Acceptable implementation families may include deterministic locks
+on authoritative capability/grant/term rows, an authorization/grant epoch or
+version checked atomically with the Event mutation, SERIALIZABLE or an
+equivalent reviewed transaction strategy, or an established authorization
+gateway already proven to provide the same invariant. FG-05 selects none of
+these mechanisms and does not create a new global authorization architecture.
+
+The required ordering is explicit. If applicable authority revocation commits
+first, the in-flight Event mutation must re-observe the revoked authority and
+fail closed, leaving Event state and version unchanged with no false-success
+privileged audit event. If the Event mutation commits first while authority is
+valid, that mutation remains valid; the later revocation applies to subsequent
+privileged operations, which must fail closed. No mutation may commit after a
+committed revocation while relying only on an earlier authorization snapshot.
+
+The later implementation must revalidate, as applicable to the governed
+operation, Tenant lifecycle, module enablement, current Membership/principal
+authority, RoleGrant/capability, grant expiry, Guild Term status, assurance or
+MFA requirements, Event Tenant ownership, and expected Event version. This
+does not resolve OD-01, OD-02, or OD-06.
 
 ### 6.1 Archive semantics requiring Product Owner closure
 
@@ -333,6 +383,12 @@ Required evidence for the implementation checkpoint includes:
 - RSVP versus event-start closure using an authoritative time boundary;
 - aggregate counts remaining Tenant-local and consistent after concurrent
   state replacement/withdrawal;
+- authority revocation versus every privileged Event mutation, using separate
+  real PostgreSQL connections and deterministic blocking/commit-order evidence:
+  when revocation commits first, the Event mutation fails closed with unchanged
+  Event state/version and no false-success audit; when the Event mutation
+  commits first, it remains valid and a later mutation using the revoked
+  authority fails;
 - rollback evidence showing every denial, stale version, invalid lifecycle,
   audience failure, or in-transaction required mutation/audit failure leaves
   the Event/RSVP state at its pre-operation durable value;
@@ -417,10 +473,10 @@ checkpoint.
 | CH-EVT-003 | GSC-14 RSVP/interest/withdraw, one current state, aggregate counts, idempotent changes | Evaluator evidence, membership isolation, PostgreSQL race tests, XP/notification dependency evidence |
 | CH-EVT-004 | Versioned postpone/cancel, mandatory reasons, preserved history, cancellation race | State machine tests, lock/commit-order evidence, A6 review, archive/“original date” closure |
 | Event visibility and public reads | `PUBLIC`, `MEMBERS`, and `VERIFIED_MEMBERS` remain independent of audience; eligible `PUBLIC` Events retain unauthenticated reads | Canonical visibility tests, public-reader Tenant/exposure checks, no fabricated identity, member-read separation |
-| Event management authority | Every privileged lifecycle mutation independently revalidates current `event.manage` in the Event Tenant/module scope inside the authoritative transaction | Fresh-authority denial/revocation/expiry tests for create/edit/publish/postpone/republish/cancel and any privileged archive path |
+| Event management authority | Every persisted draft create/edit and privileged lifecycle mutation requires current `event.manage` and a linearizable authority/mutation boundary; only a true no-op performs no mutation | Fresh-authority denial/revocation/expiry tests plus deterministic two-ordering PostgreSQL revocation races for create/edit/publish/postpone/republish/cancel and any privileged archive path |
 | Event state versus notification delivery | Required Product state and A6 facts commit atomically; post-commit delivery failure never reverses committed state | Transaction rollback tests plus future CH-NTF retry/idempotency evidence |
 | Event notification semantics | Reminder and ordinary change notices follow preference policy; cancellation notices to current `going`/`interested` holders are mandatory and non-disableable | Preference-boundary and cancellation-recipient tests; CH-NTF remains separately gated |
-| FG-05 scope classification | Ticketing/check-in/attendee directory are Frozen Pilot OOS; venue/Organiser rules are frozen constraints/deferred behavior; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
+| FG-05 scope classification | Maps/geolocation, clubs as account-holding entities, ticketing/check-in/attendee directory are Frozen global Pilot OOS; venue/Organiser rules are Event-specific consequences; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
 | A6/GSC-8/GSC-9 | Append-only minimized privileged audit facts | Closed Event audit contract, A6/Tenant registry updates, tamper/rollback tests |
 | Blueprint §§8, 10–15, 20, 22–24 | Server-only authority, persistence/mutation/read ownership, concurrency, jobs, audit, testing, sequencing, recovery | Implementation checkpoint and independent review; not supplied by this document alone |
 
