@@ -42,26 +42,38 @@ The Pilot Event contract includes Tenant-owned Events, Publisher management,
 audience-bound Home/Discover exposure, Organiser attribution, lifecycle
 transitions, and the bounded RSVP/interest surface described below.
 
+The Pilot scope has two distinct exclusion sources. Under the Event-specific
+Pilot contract, the following remain out of scope:
+
+- ticketing;
+- check-in;
+- an attendee directory or attendee list.
+
 The relevant frozen global Pilot OOS items for Events, from the Product
 Specification's `Out of Pilot, Deliberately` register, are:
 
 - maps and geolocation;
 - clubs as account-holding entities;
-- ticketing;
-- check-in;
-- an attendee directory or attendee list;
+- event check-in;
+- attendee lists.
 
-These global exclusions are not broadened by this gate. Their Event-specific
-consequences are:
+Ticketing is Event-specific Pilot OOS; this gate does not attribute it to the
+global §26.2 register. Check-in and attendee-list behavior is both Event-
+specific Pilot OOS and included in the global register where the frozen
+authority lists it. These exclusions are not broadened by this gate.
+
+Their Event-specific consequences are:
 
 - venue is free text only, with no map API, geolocation, or coordinate field;
 - Organiser is attribution-only;
 - a Club/Organiser is not an authority principal, has no independent account
   or publishing login, and does not receive `event.manage` merely by being an
-  attribution label.
+  attribution label;
+- no account-holding or independently publishing Club is implemented in the
+  Pilot Event surface.
 
 The following are FG-05 checkpoint exclusions or separately gated dependencies,
-not additional claims about the global Pilot OOS register:
+not additional claims about either exclusion source:
 
 - Team Follow and follower/reminder behavior;
 - Sports, Polls, Student Voice, Opportunities, sponsorship, and Auth/OD-03;
@@ -137,8 +149,12 @@ and represented according to the approved archive contract below.
 An Organiser is a Tenant-scoped attribution label with a name and optional
 logo, created and maintained by Guild Administrators. It is not an account-
 holding entity in Pilot, has no login, and cannot publish independently.
-Clubs as account-holding entities are globally frozen Pilot OOS under §26.2;
-any future reconsideration requires formal re-chartering.
+Clubs as account-holding entities are deliberately outside the Pilot and remain
+deferred to the frozen trigger-gated Phase 2 roadmap. This gate neither
+implements nor removes that future Phase 2 Club capability, and it adds no
+formal re-chartering requirement. Pilot Organiser support remains attribution-
+only: the label is not an account, Global User, Membership, authority
+principal, or independent publishing login.
 
 An Event or Publication may name one Organiser. The Organiser relationship,
 logo reference, and every lookup must be same-Tenant. A future implementation
@@ -227,12 +243,17 @@ boundary so the committed Event mutation corresponds to authority that was
 valid at that point.
 
 The implementation checkpoint must identify and review the serialization
-mechanism. Acceptable implementation families may include deterministic locks
-on authoritative capability/grant/term rows, an authorization/grant epoch or
-version checked atomically with the Event mutation, SERIALIZABLE or an
-equivalent reviewed transaction strategy, or an established authorization
-gateway already proven to provide the same invariant. FG-05 selects none of
-these mechanisms and does not create a new global authorization architecture.
+mechanism. The required primary mechanism is either (A) deterministic locks
+on the authoritative capability/grant/term rows, with current authority
+re-evaluated while those locks are held, or (B) an authorization/grant epoch or
+version from authoritative server/database state, checked atomically with the
+Event mutation. An established authorization gateway is acceptable only when
+it is independently proven to provide one of those same commit-time
+invariants. PostgreSQL `SERIALIZABLE` may be used as supplemental database
+isolation, but it is not the authority-revocation contract and does not replace
+explicit authority-row locking or atomic authority-version coupling. FG-05
+selects none of these mechanisms and does not create a new global
+authorization architecture.
 
 The required ordering is explicit. If applicable authority revocation commits
 first, the in-flight Event mutation must re-observe the revoked authority and
@@ -396,7 +417,9 @@ Required evidence for the implementation checkpoint includes:
   roll back committed Event/RSVP state and is covered by the later retry and
   idempotency contract.
 
-No arbitrary sleep is evidence of PostgreSQL ordering. Real PostgreSQL lock,
+The tests must prove the actual locking or authority-epoch protocol selected
+by the implementation; a bare isolation-level assertion is not evidence. No
+arbitrary sleep is evidence of PostgreSQL ordering. Real PostgreSQL lock,
 blocking, commit-order, and exact-SHA CI evidence is required for the
 production checkpoint.
 
@@ -476,7 +499,7 @@ checkpoint.
 | Event management authority | Every persisted draft create/edit and privileged lifecycle mutation requires current `event.manage` and a linearizable authority/mutation boundary; only a true no-op performs no mutation | Fresh-authority denial/revocation/expiry tests plus deterministic two-ordering PostgreSQL revocation races for create/edit/publish/postpone/republish/cancel and any privileged archive path |
 | Event state versus notification delivery | Required Product state and A6 facts commit atomically; post-commit delivery failure never reverses committed state | Transaction rollback tests plus future CH-NTF retry/idempotency evidence |
 | Event notification semantics | Reminder and ordinary change notices follow preference policy; cancellation notices to current `going`/`interested` holders are mandatory and non-disableable | Preference-boundary and cancellation-recipient tests; CH-NTF remains separately gated |
-| FG-05 scope classification | Maps/geolocation, clubs as account-holding entities, ticketing/check-in/attendee directory are Frozen global Pilot OOS; venue/Organiser rules are Event-specific consequences; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
+| FG-05 scope classification | Event-specific Pilot OOS: ticketing, check-in, and attendee directory/list; frozen §26.2 global Pilot OOS: maps/geolocation, clubs as account-holding entities, and the listed check-in/attendee-list items; venue/Organiser rules are Event-specific consequences; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
 | A6/GSC-8/GSC-9 | Append-only minimized privileged audit facts | Closed Event audit contract, A6/Tenant registry updates, tamper/rollback tests |
 | Blueprint §§8, 10–15, 20, 22–24 | Server-only authority, persistence/mutation/read ownership, concurrency, jobs, audit, testing, sequencing, recovery | Implementation checkpoint and independent review; not supplied by this document alone |
 
