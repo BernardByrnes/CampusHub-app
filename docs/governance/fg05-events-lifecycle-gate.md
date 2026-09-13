@@ -42,16 +42,26 @@ The Pilot Event contract includes Tenant-owned Events, Publisher management,
 audience-bound Home/Discover exposure, Organiser attribution, lifecycle
 transitions, and the bounded RSVP/interest surface described below.
 
-The frozen Product Specification keeps these capabilities out of Pilot:
+The explicit frozen Pilot OOS items for Events are:
 
 - ticketing;
 - check-in;
 - an attendee directory or attendee list;
-- map APIs, geolocation, and coordinates;
-- Organiser logins or independently publishing clubs;
-- Team Follow, follower/reminder infrastructure, and unrelated Sports behavior;
-- Polls, Student Voice, Auth/OD-03, Opportunities, sponsorship, and XP
-  implementation outside their own gates.
+
+These are not broadened by this gate. The following are frozen Event
+constraints or deferred Product behavior, not additions to that OOS list:
+
+- venue is free text only, with no map API, geolocation, or coordinate field;
+- Organiser is attribution-only, with no login or independent publishing club;
+- independent club publishing and account-holding clubs remain deferred.
+
+The following are FG-05 checkpoint exclusions or separately gated dependencies,
+not claims that the frozen Product Specification makes them Pilot OOS:
+
+- Team Follow and follower/reminder behavior;
+- Sports, Polls, Student Voice, Opportunities, sponsorship, and Auth/OD-03;
+- XP implementation outside its own gate;
+- notification infrastructure and unrelated modules.
 
 This checkpoint creates no runtime or persistence change. In particular it
 does not create an Event table, an RSVP table, an `event.manage` capability
@@ -72,6 +82,8 @@ An Event is a Tenant-owned resource. The proposed Event record carries:
 - start date/time;
 - optional end date/time;
 - one same-Tenant Campus;
+- canonical content visibility: `PUBLIC`, `MEMBERS`, or
+  `VERIFIED_MEMBERS`;
 - the canonical audience definition;
 - whether RSVP is enabled;
 - lifecycle and expected version facts;
@@ -79,15 +91,22 @@ An Event is a Tenant-owned resource. The proposed Event record carries:
   privacy contracts.
 
 The venue is text only. No map lookup, geolocation, or coordinate field is
-part of the Pilot contract.
+part of the Pilot contract. Visibility and audience are independent
+dimensions: visibility defines the canonical content boundary, while the
+audience definition determines which eligible users within that boundary may
+receive the Event. Neither dimension is collapsed into, or automatically
+derived from, the other, and the established canonical visibility contract is
+reused rather than replaced with an Event-specific enum.
 
-Draft creation and management are Tenant-scoped and default-deny. Publishing
-requires the Product-defined `event.manage` capability in the applicable
-Tenant/module scope and a current authorized Publisher or Guild Administrator
-path. A role name, client field, stale RequestContext, or prior grant must not
-be sufficient. The exact runtime capability vocabulary, persistence, and
-fresh transaction-time authorization are implementation-checkpoint work, not
-authorized by this proposal.
+Draft creation, meaningful draft edits, and lifecycle management are
+Tenant-scoped and default-deny. Each privileged mutation requires the
+Product-defined `event.manage` capability in the applicable Tenant/module
+scope and a current authorized Publisher or Guild Administrator path. A role
+name, client field, stale RequestContext, prior page access, prior transition,
+cached capability result, or prior grant must not be sufficient. The exact
+runtime capability vocabulary, persistence, and fresh transaction-time
+authorization are implementation-checkpoint work, not authorized by this
+proposal.
 
 When published, an Event is eligible for the Home and Discover read
 orchestrators only after Tenant/visibility checks and current audience
@@ -110,9 +129,11 @@ separately reviewed media pipeline; this gate does not implement it.
 
 ## 5. Visibility, audience, and participation authority
 
-The Event read path follows the established resource order:
+The Event read path follows the established resource order. A `PUBLIC` Event
+may use the approved unauthenticated Tenant-bound public reader path; a
+Membership-bound read uses the trusted request context:
 
-1. bind the explicit Tenant and trusted request context;
+1. bind the explicit Tenant and applicable exposure context;
 2. resolve the Event within that Tenant;
 3. enforce lifecycle and visibility;
 4. apply the canonical audience/exposure policy;
@@ -131,11 +152,20 @@ defines it. The evaluator is server-only and ordered as follows:
 7. verified attributes;
 8. story-specific prerequisites.
 
+For an unauthenticated visitor, the public path may return only an Event that
+is `PUBLIC`, exposed by a Tenant permitting the applicable public surface,
+within a serving lifecycle, and valid under the applicable public audience and
+exposure rules. No Membership identity is fabricated for that path. PUBLIC
+read authorization and authenticated participation are separate concerns:
+trusted `RequestContext`/`identitySubjectId` remains required for
+member-specific reads, Membership-dependent audience decisions, RSVP,
+Publisher management, and privileged lifecycle mutations.
+
 The Event surface must preserve the single actionable-denial behavior and must
 not infer eligibility from a client-supplied identity, query parameter, cookie,
-header, audience flag, or role label. The existing trusted RequestContext and
-`identitySubjectId` seam remains the only permitted future transport seam; this
-gate does not implement Auth.
+header, local-storage value, audience flag, or role label. The existing trusted
+RequestContext and `identitySubjectId` seam remains the only permitted future
+authenticated transport seam; this gate does not implement Auth.
 
 ## 6. Lifecycle contract
 
@@ -146,16 +176,27 @@ implementation decision below.
 
 | From | To | Required facts | Contract |
 | --- | --- | --- | --- |
-| `draft` | `published` | current `event.manage` authority, complete valid Event, valid audience, expected version | One atomic, versioned transition. |
-| `published` | `postponed` | new date/time and mandatory human-readable reason | Preserve the original date and expose “postponed from”. |
-| `postponed` | `published` | approved current date/time, valid audience, expected version | One atomic, versioned transition; no silent history loss. |
-| `published` or `postponed` | `cancelled` | mandatory human-readable reason and expected version | One atomic, versioned transition; close later RSVP mutation. |
-| `published` | `past/archived` | authoritative time has passed the approved archive threshold | Remove from Home and preserve history. |
-| `cancelled` | `past/archived` | the approved cancellation/archive threshold has passed | Keep clear cancelled treatment until the threshold. |
+| `draft` | `published` | fresh transaction-time `event.manage`, complete valid Event, valid visibility and audience, expected version | One atomic, versioned transition. |
+| `published` | `postponed` | fresh transaction-time `event.manage`, new date/time, mandatory human-readable reason, expected version | Preserve the original date and expose “postponed from”. |
+| `postponed` | `published` | fresh transaction-time `event.manage`, approved current date/time, valid visibility and audience, expected version | One atomic, versioned transition; no silent history loss. |
+| `published` or `postponed` | `cancelled` | fresh transaction-time `event.manage`, mandatory human-readable reason, expected version | One atomic, versioned transition; close later RSVP mutation. |
+| `published` | `past/archived` | approved archive authority and threshold; fresh `event.manage` when a privileged actor performs it | Remove from Home and preserve history. |
+| `cancelled` | `past/archived` | approved archive authority and threshold; fresh `event.manage` when a privileged actor performs it | Keep clear cancelled treatment until the threshold. |
 
 Unlisted transitions, including cancellation back to published, arbitrary
 published-to-draft rollback, and RSVP after closure, fail closed. No
 implementation may add them merely because a state column permits them.
+
+Every privileged Event lifecycle mutation independently revalidates current
+`event.manage` authority inside the authoritative transaction immediately
+before mutation commits. This includes draft creation where management
+authority is required, meaningful draft edits, publication, postponement,
+republishing after postponement, cancellation, and any explicit privileged
+archive transition. It never relies on stale request facts, a role label, a
+previous successful transition, or a cached capability result. A future
+OD-08-authorized SYSTEM transition is a separately governed execution path;
+this proposal authorizes neither that path nor any additional Event
+capability.
 
 ### 6.1 Archive semantics requiring Product Owner closure
 
@@ -207,10 +248,13 @@ implementation must either include the approved XP dependency or stop before
 claiming the full RSVP acceptance criteria; it must not silently claim an XP
 award that was never recorded.
 
-Product authority also requires reminders and non-optional change/cancellation
-notifications. Those effects remain deferred to the separately gated
-CH-NTF infrastructure. This document creates no notification, outbox,
-delivery, retry, or background-job behavior and makes no false claim that the
+Product authority requires one reminder for an RSVP'd student and relevant
+Event-change notifications under the applicable notification preference
+policy. Cancellation notifications are different: students whose current RSVP
+is `going` or `interested` must receive them, and they cannot be disabled by
+the student. Those effects remain deferred to the separately gated CH-NTF
+infrastructure. This document creates no notification, outbox, delivery,
+retry, or background-job behavior and makes no false claim that the
 notification criteria are already satisfied.
 
 ## 8. CH-EVT-004 — Postponement and cancellation
@@ -222,9 +266,10 @@ not a client-side edit that can bypass lifecycle or RSVP checks.
 
 Cancellation requires a mandatory reason, retains the Event with an explicit
 cancelled treatment until the original date passes, and closes future RSVP
-mutation. Existing `going` and `interested` students are the governed
-notification audience once CH-NTF is available; this gate does not implement
-delivery.
+mutation. Existing `going` and `interested` students are the mandatory,
+non-disableable cancellation-notification audience once CH-NTF is available.
+Reminder and ordinary Event-change notifications remain preference-aware; this
+gate does not implement delivery.
 
 Cancellation and RSVP use the same authoritative Event row and a single
 transactional state check. If cancellation commits first, a later RSVP is not
@@ -268,6 +313,16 @@ resource-authority order. It must lock or otherwise serialize the Event row
 before deciding a lifecycle-dependent RSVP result, and must use one transaction
 for validation, state mutation, audit append, and any in-scope durable fact.
 
+The authoritative Product-state transaction covers required Event/RSVP
+mutations, concurrency checks, required Event history/state facts, and required
+A6 audit facts. Failure of one of those in-transaction operations rolls back
+the Product-state transaction. External notification delivery is different:
+after the Product-state transaction commits, a later in-app, email, push, or
+other sender failure must not reverse the committed Event transition. The
+separately approved CH-NTF design must provide durable retry, idempotent
+processing/delivery, and observable failure/retry state without producing
+duplicate logical notifications.
+
 Required evidence for the implementation checkpoint includes:
 
 - publish versus publish: one winner and one canonical version conflict;
@@ -279,8 +334,11 @@ Required evidence for the implementation checkpoint includes:
 - aggregate counts remaining Tenant-local and consistent after concurrent
   state replacement/withdrawal;
 - rollback evidence showing every denial, stale version, invalid lifecycle,
-  audience failure, or side-effect failure leaves the Event/RSVP state at its
-  pre-operation durable value.
+  audience failure, or in-transaction required mutation/audit failure leaves
+  the Event/RSVP state at its pre-operation durable value;
+- evidence that a post-commit external notification-delivery failure does not
+  roll back committed Event/RSVP state and is covered by the later retry and
+  idempotency contract.
 
 No arbitrary sleep is evidence of PostgreSQL ordering. Real PostgreSQL lock,
 blocking, commit-order, and exact-SHA CI evidence is required for the
@@ -320,18 +378,19 @@ student-behavior history or exposing other students' identities.
 | Trusted Auth/RequestContext transport | Existing trusted seam only; no fake Auth | Event work cannot accept query/header/cookie/test identity as production authority. |
 | `event.manage` runtime capability | Product-defined capability; absent from current runtime vocabulary | Add only in an independently reviewed implementation checkpoint. |
 | XP / `CH-XP-002` | Required by Product for one award per Event, not implemented here | Do not claim complete RSVP acceptance without the approved dependency/evidence. |
-| CH-NTF reminders and change/cancellation notices | Required Product behavior, separately gated | No outbox, sender, retry, or job is created by FG-05. |
+| CH-NTF reminders and change/cancellation notices | Reminder/change delivery follows applicable preference policy; cancellation to current `going`/`interested` RSVP holders is mandatory and non-disableable; delivery is post-commit | No notification infrastructure is created by FG-05; future delivery must be retryable and idempotent under CH-NTF. |
 | Event image and Organiser logo | Optional Product fields, future reviewed media seam | No upload, media persistence, transformation, or deletion workflow here. |
 | Background archive/SYSTEM transition | OD-08 and Blueprint background-job gate | No scheduler, worker, or expiry job here. |
-| Ticketing/check-in/attendee directory | Pilot OOS | No schema, UI, or authorization path. |
+| Ticketing/check-in/attendee directory | Frozen Pilot OOS | No schema, UI, or authorization path. |
 
 ## 13. Proposed implementation sequencing after authorization
 
 This order is a planning boundary, not implementation authorization:
 
-1. **CH-EVT-001 core Event:** Tenant ownership, Campus/audience constraints,
-   draft/publish, bounded Home/Discover reads, expected versions, and the
-   approved archive representation/trigger.
+1. **CH-EVT-001 core Event:** Tenant ownership, Campus/visibility/audience
+   constraints, draft/publish, bounded Home/Discover reads including the
+   approved public path, expected versions, and the approved archive
+   representation/trigger.
 2. **CH-EVT-002 attribution:** Tenant Organiser label, Guild Administrator
    maintenance, optional media reference seam, and attribution-only read
    behavior.
@@ -353,10 +412,15 @@ checkpoint.
 
 | Product contract | Proposed governed behavior | Required evidence before runtime claim |
 | --- | --- | --- |
-| CH-EVT-001 | Event fields, Tenant/audience boundary, draft/publish, Home/Discover exposure, archive treatment | Event schema/repository, authorization, audience/visibility tests, Tenant-negative probes, archive decision closure |
+| CH-EVT-001 | Event fields, independent visibility/audience boundary, draft/publish, Home/Discover exposure, archive treatment | Event schema/repository, authorization, visibility/audience tests, public-read and Tenant-negative probes, archive decision closure |
 | CH-EVT-002 | Tenant Organiser attribution only; no login or independent publishing | Same-Tenant relation, Guild Administrator authorization, no-account/no-behavior tests |
 | CH-EVT-003 | GSC-14 RSVP/interest/withdraw, one current state, aggregate counts, idempotent changes | Evaluator evidence, membership isolation, PostgreSQL race tests, XP/notification dependency evidence |
 | CH-EVT-004 | Versioned postpone/cancel, mandatory reasons, preserved history, cancellation race | State machine tests, lock/commit-order evidence, A6 review, archive/“original date” closure |
+| Event visibility and public reads | `PUBLIC`, `MEMBERS`, and `VERIFIED_MEMBERS` remain independent of audience; eligible `PUBLIC` Events retain unauthenticated reads | Canonical visibility tests, public-reader Tenant/exposure checks, no fabricated identity, member-read separation |
+| Event management authority | Every privileged lifecycle mutation independently revalidates current `event.manage` in the Event Tenant/module scope inside the authoritative transaction | Fresh-authority denial/revocation/expiry tests for create/edit/publish/postpone/republish/cancel and any privileged archive path |
+| Event state versus notification delivery | Required Product state and A6 facts commit atomically; post-commit delivery failure never reverses committed state | Transaction rollback tests plus future CH-NTF retry/idempotency evidence |
+| Event notification semantics | Reminder and ordinary change notices follow preference policy; cancellation notices to current `going`/`interested` holders are mandatory and non-disableable | Preference-boundary and cancellation-recipient tests; CH-NTF remains separately gated |
+| FG-05 scope classification | Ticketing/check-in/attendee directory are Frozen Pilot OOS; venue/Organiser rules are frozen constraints/deferred behavior; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
 | A6/GSC-8/GSC-9 | Append-only minimized privileged audit facts | Closed Event audit contract, A6/Tenant registry updates, tamper/rollback tests |
 | Blueprint §§8, 10–15, 20, 22–24 | Server-only authority, persistence/mutation/read ownership, concurrency, jobs, audit, testing, sequencing, recovery | Implementation checkpoint and independent review; not supplied by this document alone |
 
