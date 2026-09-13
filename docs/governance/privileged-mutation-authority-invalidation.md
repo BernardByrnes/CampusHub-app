@@ -87,34 +87,46 @@ handle. The reusable boundary, abbreviated **PMAFB**, is:
    The set includes Tenant, module state where one exists, Membership or
    principal, Guild Term, all applicable RoleGrant/capability rows, and any
    authoritative assurance/MFA rows.
-3. Lock those rows in the canonical order:
+3. Lock those rows in the canonical order using mutually conflicting
+   PostgreSQL row-lock modes. An ordinary privileged mutation that consumes
+   authority but does not change the authority source uses `SELECT ... FOR
+   SHARE` or a strictly stronger lock for every applicable authority row. An
+   operation that invalidates or otherwise changes an authority source uses
+   `SELECT ... FOR UPDATE` on the exact same row before writing it. Using
+   `FOR UPDATE` for both sides is also valid. `FOR KEY SHARE` is not the
+   default and may be used only when an implementation review proves its
+   conflict semantics sufficient for the exact invalidation write.
+4. Lock those rows in the canonical order:
    Tenant; module state; Membership/principal; Guild Term; applicable grants
    ordered by `(tenant_id, id)`; then assurance/MFA rows in a stable order.
    Every invalidation operation uses the same order. Missing or ambiguous
-   authority rows fail closed rather than being skipped.
-4. Re-read every locked source and evaluate current Tenant lifecycle, module
+   authority rows fail closed rather than being skipped. The contract depends
+   on actual PostgreSQL row-level conflict semantics, not merely logical
+   convention; every implementation must prove that the exact consumer and
+   invalidator lock modes mutually block as intended.
+5. Re-read every locked source and evaluate current Tenant lifecycle, module
    enablement, Membership/principal state, capability and scope, revocation,
    Guild Term state, assurance/MFA requirements, and the actor-to-Membership
    binding.
-5. Obtain and evaluate authoritative database time. The implementation must
+6. Obtain and evaluate authoritative database time. The implementation must
    use a changing PostgreSQL/server clock such as `clock_timestamp()` for this
    final temporal check, or an independently reviewed equivalent. PostgreSQL
    transaction-start `now()`/`CURRENT_TIMESTAMP` is not sufficient when it
    could preserve authority after expiry.
-6. For an existing resource, lock the exact same-Tenant resource row in the
+7. For an existing resource, lock the exact same-Tenant resource row in the
    operation's canonical resource order. Re-check expected version, lifecycle,
    ownership, and operation-specific facts. After any blocking wait, repeat
    the authority and database-time checks before proceeding.
-7. The PMAFB is the point after all required authority/resource locks and
+8. The PMAFB is the point after all required authority/resource locks and
    rechecks have completed and immediately before the guarded business
    mutation. At this point all mutable authority facts must be valid and the
    earliest applicable expiry must still be strictly in the future.
-8. Perform the guarded mutation and any required success audit append in the
+9. Perform the guarded mutation and any required success audit append in the
    same transaction. The write must retain the expected-version/resource
    predicate; passing authority does not bypass resource concurrency.
-9. Commit without releasing the authority locks first. External notifications,
-   jobs, and other side effects occur only after the durable transaction and
-   cannot be used to repair an unauthorized commit.
+10. Commit without releasing the authority locks first. External notifications,
+    jobs, and other side effects occur only after the durable transaction and
+    cannot be used to repair an unauthorized commit.
 
 For creation, there may be no resource row to lock. The complete authority
 lock/recheck/PMAFB sequence still applies before the insert. For updates,
@@ -125,7 +137,11 @@ resource locking is always separate from, and follows, the authority locks.
 Every operation that suspends a Tenant, disables a module, changes privileged
 Membership or assurance state, revokes or changes a grant, closes a Guild Term,
 or changes another inventoried authority source must use the same transaction
-and lock order before writing the invalidation.
+and lock order before writing the invalidation. It must acquire the exact
+authority row with `FOR UPDATE` (or a strictly stronger mutually conflicting
+mode) before the write and hold that lock through commit or rollback. A
+privileged operation that itself changes authority is an authority writer, not
+merely an authority consumer, and follows this writer-side rule.
 
 An invalidation path that writes an authority source without participating in
 this protocol is not an acceptable implementation. No background reconciliation
@@ -164,11 +180,12 @@ The required temporal cases are:
 
 - expiry already passed before the PMAFB: fail closed;
 - expiry passes while waiting for an authority lock: after the wait, re-read
-  database time and fail closed unless the mutation had already crossed the
-  PMAFB while authority was valid;
+  every required authority fact, obtain fresh database time, and fail closed
+  unconditionally when `database_time >= expiry`; PMAFB has not occurred;
 - expiry passes while waiting for a resource lock: after the wait, re-read
-  database time and fail closed unless the mutation had already crossed the
-  PMAFB while authority was valid;
+  resource/version/lifecycle and applicable authority facts, obtain fresh
+  database time, and fail closed unconditionally when `database_time >=
+  expiry`; PMAFB has not occurred;
 - final authority decision immediately before expiry: use database time and
   the strict comparison; at or after expiry fails, and success is possible
   only if the PMAFB was crossed before expiry.
@@ -184,8 +201,15 @@ technically truthful about that distinction:
   PMAFB because the mutation holds the shared authority locks through commit;
 - a time expiry that occurs after PMAFB does not retroactively invalidate the
   mutation under this defined business linearization semantics;
-- an expiry that occurs before PMAFB, including during a lock wait, fails
-  closed.
+- an expiry that occurs before PMAFB, including during any authority or
+  resource lock wait, fails closed unconditionally after fresh database-time
+  validation.
+
+There is no valid pre-PMAFB exception for a mutation that “already crossed”
+PMAFB before an authority or resource wait: by definition every lock and
+recheck that can establish authorization or resource eligibility completes
+before PMAFB. An implementation must not deliberately cross PMAFB and then
+wait for such a precondition.
 
 If a future security review requires validity at the physical commit instant
 rather than at PMAFB, the implementation must stop and obtain a stronger
@@ -306,8 +330,15 @@ must include:
 - the canonical lock/epoch order and all invalidation writers;
 - proof that Tenant, module, Membership, RoleGrant, Guild Term, and applicable
   assurance/MFA changes use the same serialization boundary;
+- explicit invalidation-blocking evidence for every applicable mutable source:
+  with the mutation's consumer lock first, the invalidation writer must block
+  until mutation commit, and with the invalidation writer first, the mutation
+  must wait, re-read the changed authority, and fail closed;
 - database-clock evidence for expiry-before, expiry-during-authority-wait,
   expiry-during-resource-wait, and immediately-before-expiry cases;
+- deterministic separate-connection tests proving grant and Guild Term expiry
+  during authority-row waits and resource-row waits fail closed after fresh
+  changing database-time evaluation;
 - two-ordering PostgreSQL races for every mutable source;
 - separate resource-version race evidence;
 - rollback evidence showing no unauthorized business or success-audit commit;
