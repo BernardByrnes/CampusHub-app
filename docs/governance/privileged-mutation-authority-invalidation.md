@@ -1,6 +1,14 @@
 # Privileged Mutation Commit-Time Authority Invalidation Contract
 
-Status: **PROPOSED — ARCHITECTURE/SECURITY APPROVAL REQUIRED**
+Status: **APPROVED — CROSS-CUTTING ARCHITECTURE CONTRACT**
+
+Approval record:
+
+- Semantic candidate reviewed: `1c91a16f6a2bb173237b8bccd5e35be2f7721246`
+- Independent review: `gpt-5.6-sol / High / read-only`
+- Verdict: `APPROVED AS CROSS-CUTTING ARCHITECTURE CONTRACT`
+- Severity: `NONE`
+- Senior approval: `APPROVED`
 
 This document defines a reusable production HOW contract for privileged
 Tenant mutations. It does not change Product WHAT/WHY authority, authorize a
