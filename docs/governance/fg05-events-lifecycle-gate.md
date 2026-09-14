@@ -1,27 +1,31 @@
 # FG-05 Events Lifecycle Gate
 
-Status: **FG-05 PROPOSED — PRODUCT OWNER AUTHORIZATION REQUIRED**
+Status: **FG-05 APPROVED — PRODUCT OWNER AUTHORIZED / IMPLEMENTATION SEPARATELY GATED**
 
-This is a documentation-only governance checkpoint. It proposes the Pilot
-Events contract for Product Owner authorization and independent review; it does
-not authorize Event runtime code, a schema, a migration, a UI, a background
-job, a notification, or deployment.
+This is a documentation-only governance checkpoint. It records the Pilot
+Events contract, Product Owner authorization, and independent review;
+it does not authorize Event runtime code, a schema, a migration, a UI, a
+background job, a notification, or deployment.
 
 - Foundation: `codex/8v-b-next-foundation`
 - Foundation SHA: `b5dff54d60ff2d4d223d6adf5fca99b3db74053d`
-- Proposed stories: `CH-EVT-001` through `CH-EVT-004`
+- Stories in scope: `CH-EVT-001` through `CH-EVT-004`
 - Product authority: `CampusHub_Product_Specification_v1.3_FROZEN.md`
 - Production HOW authority: `CampusHub_Implementation_Blueprint_v1.3_FROZEN.md`
 - Shared privileged-authority HOW contract:
   `docs/governance/privileged-mutation-authority-invalidation.md`
+- Reviewed FG-05 SHA: `a943f96b8534b5dc64a6abd6aa77ac828301316f`
+- Independent review: `gpt-5.6-sol / High / read-only — APPROVED / NONE`
+- Product Owner authorization: `APPROVED`, subject to the recorded decisions
+  below
 
 ## 1. Authority and checkpoint boundary
 
 The frozen Product Specification remains the only Product WHAT/WHY authority.
 The frozen Implementation Blueprint remains the subordinate production HOW
 contract. This document records how the two documents apply to the Events
-epic; it does not amend either frozen document and does not close any open
-Product decision.
+epic; it does not amend either frozen document or close any unrelated open
+Product decision beyond the recorded FG05-OD-01..03 decisions below.
 
 The proposal carries forward the normative contracts in:
 
@@ -207,9 +211,10 @@ authenticated transport seam; this gate does not implement Auth.
 ## 6. Lifecycle contract
 
 The Product lifecycle is the following. The `past/archived` wording is kept
-exactly because the frozen Product Specification uses that conceptual state;
-the persisted representation and transition mechanism remain an explicit
-implementation decision below.
+because the frozen Product Specification uses that conceptual state. For the
+Pilot, `past` is a derived projection; this gate does not authorize an
+automatic persisted archive transition. A future durable `archived` transition
+remains separately governable under OD-08.
 
 | From | To | Required facts | Contract |
 | --- | --- | --- | --- |
@@ -217,8 +222,8 @@ implementation decision below.
 | `published` | `postponed` | fresh transaction-time `event.manage`, new date/time, mandatory human-readable reason, expected version | Preserve the original date and expose “postponed from”. |
 | `postponed` | `published` | fresh transaction-time `event.manage`, approved current date/time, valid visibility and audience, expected version | One atomic, versioned transition; no silent history loss. |
 | `published` or `postponed` | `cancelled` | fresh transaction-time `event.manage`, mandatory human-readable reason, expected version | One atomic, versioned transition; close later RSVP mutation. |
-| `published` | `past/archived` | approved archive authority and threshold; fresh `event.manage` when a privileged actor performs it | Remove from Home and preserve history. |
-| `cancelled` | `past/archived` | approved archive authority and threshold; fresh `event.manage` when a privileged actor performs it | Keep clear cancelled treatment until the threshold. |
+| `published` | derived `past` projection | authoritative Tenant/server time reaches `endAt`, or `startsAt` when no `endAt` exists; no automatic persisted transition | Remove from Home and active upcoming surfaces; direct/history/archive presentation may represent it as past; RSVP is closed. |
+| `cancelled` | derived `past` projection | the authoritative threshold in FG05-OD-01, with the cancelled-after-postponement retention rule in FG05-OD-02; no automatic persisted transition | Keep clear cancelled treatment until the threshold, then represent it as past while preserving history. |
 
 Unlisted transitions, including cancellation back to published, arbitrary
 published-to-draft rollback, and RSVP after closure, fail closed. No
@@ -273,23 +278,18 @@ continues to own Event-specific ownership, lifecycle, transition prerequisites,
 resource locking, and expected-version checks. This does not resolve OD-01,
 OD-02, or OD-06.
 
-### 6.1 Archive semantics requiring Product Owner closure
+### 6.1 Recorded Product Owner decision — FG05-OD-01
 
-The Product contract requires a past Event to move to an archive state, but it
-does not select all of the following implementation-level choices:
+For the Pilot, `past` is a derived projection rather than an automatic
+persisted archive transition. Authoritative Tenant/server time reaches the
+past threshold at `endAt` when `endAt` exists, and at `startsAt` otherwise.
+At that threshold the Event is removed from Home and active upcoming-event
+surfaces; direct, history, or archive presentation may represent it as past
+under the approved read contract; and RSVP mutation is closed.
 
-- whether the durable value is `archived`, a derived `past` projection, or a
-  separately approved equivalent;
-- whether the threshold is `endAt` when present and `startsAt` otherwise;
-- how the original date of a cancelled Event is defined after postponement;
-- whether the transition is performed by a future OD-08-authorized SYSTEM job,
-  an authorized request-time transition, or another governed mechanism.
-
-This gate chooses none of those branches. Background execution is not
-authorized: the Blueprint requires SYSTEM reauthorization under OD-08 before
-future jobs or scheduled transitions. CH-EVT-001/004 implementation must stop
-at this boundary until the Product Owner and the applicable execution/security
-review supply the missing choice.
+This gate does not authorize a scheduler, worker, SYSTEM transition, or
+automatic database lifecycle mutation. A future durable `archived` transition
+remains separately governable under OD-08 if needed.
 
 ## 7. CH-EVT-003 — RSVP and interest
 
@@ -297,6 +297,12 @@ For an active, eligible Event with RSVP enabled, a Student Member may hold one
 current RSVP state: `going` or `interested`, and may withdraw it. A state may
 be changed or withdrawn only until the Event starts, using the authoritative
 server/Tenant time in the same transaction as the mutation.
+
+While an Event is `postponed`, no new RSVP, RSVP state change, or RSVP
+withdrawal mutation is accepted. Existing RSVP records remain preserved and no
+automatic withdrawal occurs. After republishing with the approved replacement
+schedule, normal RSVP actionability resumes subject to GSC-14 and the new
+Event start time.
 
 The proposed persistence and mutation contract is:
 
@@ -334,15 +340,25 @@ notification criteria are already satisfied.
 
 ## 8. CH-EVT-004 — Postponement and cancellation
 
-Postponement requires a new date/time and a mandatory reason. It preserves the
-original date in the Event history and displays “postponed from”. Each durable
+Postponement requires a new date/time and a mandatory reason. For each
+postponement, the immediately preceding published start date/time is displayed
+as “postponed from”; the first-ever scheduled date/time remains in immutable
+history; and every subsequent schedule revision is retained. Each durable
 transition is expected-version protected and auditable. A replacement date is
 not a client-side edit that can bypass lifecycle or RSVP checks.
 
+While an Event is `postponed`, no new RSVP, RSVP state change, or RSVP
+withdrawal mutation is accepted. Existing RSVP records remain preserved and no
+automatic withdrawal occurs. After republishing with the approved replacement
+schedule, normal RSVP actionability resumes subject to GSC-14 and the new
+Event start time.
+
 Cancellation requires a mandatory reason, retains the Event with an explicit
-cancelled treatment until the original date passes, and closes future RSVP
-mutation. Existing `going` and `interested` students are the mandatory,
-non-disableable cancellation-notification audience once CH-NTF is available.
+cancelled treatment until the effective published start date/time current when
+cancellation commits if the Event was postponed, and otherwise until the
+applicable approved past threshold. It closes future RSVP mutation. Existing
+`going` and `interested` students are the mandatory, non-disableable
+cancellation-notification audience once CH-NTF is available.
 Reminder and ordinary Event-change notifications remain preference-aware; this
 gate does not implement delivery.
 
@@ -353,11 +369,8 @@ Event state. If an RSVP commits first, cancellation observes the current
 version and proceeds only under its expected-version contract. Neither path
 may silently overwrite the other or report success after a partial state.
 
-The treatment of RSVP while an Event is `postponed`, the definition of
-“original date” after repeated postponements, and whether a postponed Event
-remains RSVP-actionable before republishing are not selected here. They are
-listed as Product Owner decisions rather than guessed by an implementation
-agent.
+These repeated-postponement, RSVP, and cancellation-retention rules are the
+recorded Product Owner decision in FG05-OD-02 below.
 
 ## 9. Tenant isolation and read surfaces
 
@@ -509,21 +522,51 @@ checkpoint.
 | A6/GSC-8/GSC-9 | Append-only minimized privileged audit facts | Closed Event audit contract, A6/Tenant registry updates, tamper/rollback tests |
 | Blueprint §§8, 10–15, 20, 22–24 | Server-only authority, persistence/mutation/read ownership, concurrency, jobs, audit, testing, sequencing, recovery | Implementation checkpoint and independent review; not supplied by this document alone |
 
-## 15. Genuine Product Owner decisions required
+## 15. Recorded Product Owner decisions
 
-The following are the only material Event branches intentionally left open by
-this proposal. They must be resolved in a recorded Product decision before an
-implementation agent chooses a value:
+The following decisions were approved for the Pilot and are part of the
+authorized FG-05 contract. They do not authorize runtime implementation by
+themselves; each implementation checkpoint must still satisfy its listed
+dependencies and independent review.
 
-| Decision | Supplied contract | Unresolved question | Timing / consequence |
-| --- | --- | --- | --- |
-| FG05-OD-01: archive representation and trigger | A past Event moves to an archive state and leaves Home; cancelled Events remain treated as cancelled until the original date passes | Durable `archived` versus derived `past`; authoritative threshold (`endAt`/`startsAt`/cancelled original date); and OD-08-authorized execution mechanism | Blocker before the archive portion of CH-EVT-001/004 and any claim of automatic archival. |
-| FG05-OD-02: repeated postponement semantics | Original date is retained and shown as “postponed from”; `published → postponed → published` exists | Does “original date” mean the first scheduled date or the immediately preceding published date, and how is RSVP actionability handled while postponed? | Blocker before CH-EVT-004 implementation. |
-| FG05-OD-03: dependency-complete RSVP release | RSVP awards XP once and sends required reminders/change/cancellation notices | May a separately approved Event checkpoint ship RSVP only with XP/CH-NTF dependencies present, or must it remain gated until both are implemented? | Blocker before claiming complete CH-EVT-003 acceptance. |
+### FG05-OD-01 — Archive representation and trigger
 
-These entries do not decide values, close OD-08, authorize XP/notifications,
-or replace any frozen Product decision. Existing OD-02, OD-03, A1, OD-07,
-OD-08, OD-11, OD-12, and other governing gates remain unchanged.
+Use a derived `past` projection for the Pilot rather than an automatic
+persisted archive transition. An Event becomes past when authoritative
+Tenant/server time reaches `endAt` when `endAt` exists, or `startsAt`
+otherwise. It is removed from Home and active upcoming-event surfaces, may be
+represented as past in direct/history/archive presentation, and closes RSVP
+mutation at that threshold. No scheduler, worker, SYSTEM transition, or
+automatic database lifecycle mutation is authorized here. A durable `archived`
+transition remains separately governable under OD-08.
+
+### FG05-OD-02 — Repeated postponement and RSVP
+
+For each postponement, the immediately preceding published start date/time is
+shown as `postponed from`; the first-ever scheduled date/time is retained in
+immutable history; and every later schedule revision is retained. While
+`postponed`, no new RSVP, RSVP state change, or withdrawal mutation is
+accepted; existing RSVP records remain preserved; and no automatic withdrawal
+occurs. After republishing with the approved replacement schedule, normal RSVP
+actionability resumes subject to GSC-14 and the new Event start time. If an
+Event is cancelled after postponements, its cancelled-visible retention
+threshold is the effective published start date/time current when cancellation
+commits. Full schedule history remains preserved.
+
+### FG05-OD-03 — RSVP dependency sequencing
+
+CH-EVT-003 RSVP is not released as complete until the approved CH-XP-002 XP
+dependency and required CH-NTF notification behavior are available. The
+implementation must not fabricate, omit, or silently defer those acceptance
+criteria. This does not block CH-EVT-001 Event Core, CH-EVT-002 Organiser
+attribution, or CH-EVT-004 lifecycle work that does not depend on RSVP
+delivery infrastructure. CH-EVT-003 may be implemented only when its
+dependency checkpoint explicitly includes the required XP and notification
+contracts and evidence.
+
+These decisions do not close OD-08, authorize XP or notifications, or replace
+any frozen Product decision. Existing OD-02, OD-03, A1, OD-07, OD-08, OD-11,
+OD-12, and other governing gates remain unchanged.
 
 ## 16. Exit criteria for FG-05
 
@@ -531,7 +574,7 @@ FG-05 may move beyond this proposal only when all of the following are
 recorded:
 
 1. Product Owner authorization of this narrow CH-EVT-001..004 contract and
-   closure or explicit sequencing treatment for FG05-OD-01..03;
+   the recorded FG05-OD-01..03 decisions above;
 2. independent Sol High read-only review of this exact document;
 3. a separate implementation checkpoint naming exact stories, acceptance
    criteria, migration/recovery plan, A2/A4 evidence, A6 event contracts,
@@ -555,4 +598,4 @@ This checkpoint does not authorize:
 - frozen Product Specification or Blueprint edits;
 - Agent Orchestrator or KlinKlik changes.
 
-**FG-05 PROPOSED — PRODUCT OWNER AUTHORIZATION REQUIRED**
+**FG-05 APPROVED — PRODUCT OWNER AUTHORIZED / IMPLEMENTATION SEPARATELY GATED**
