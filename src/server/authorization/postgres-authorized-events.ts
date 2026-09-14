@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 
 import { CAPABILITIES } from "@/domain/authorization/capability";
@@ -17,6 +18,8 @@ import {
 } from "./postgres-privileged-mutation-authority";
 import {
   DrizzleEventRepository,
+  type PreparedCreateEvent,
+  type PreparedEventMutation,
   type EventMutationError,
   type EventMutationResult,
   type EventRepositoryTransactionDatabase,
@@ -42,8 +45,9 @@ export type PostgresAuthorizedEventManagementDependencies = Readonly<{
   runtimeDatabaseAuthorityVerifier?: (
     database: Pick<CampusHubDatabase, "execute">,
   ) => Promise<boolean>;
-  beforeMutation?: () => Promise<void>;
-  afterMutation?: () => Promise<void>;
+  beforeFinalAuthorityCheck?: () => Promise<void>;
+  beforeFinalClockCheck?: () => Promise<void>;
+  applicationName?: string;
 }>;
 
 function runtimeAuthorityIsSafe(
@@ -133,6 +137,7 @@ export class PostgresAuthorizedEventManagementExecutor {
   private async execute(
     request: CapabilityAuthorizationRequest,
     tenantId: string,
+    applicationName: string,
     prepareResource: (transaction: EventTransactionDatabase) => Promise<true | EventMutationError>,
     mutation: (transaction: EventTransactionDatabase, actorMembershipId: string, databaseTime: Date) => Promise<EventMutationResult>,
     action: EventAuditEventFacts["action"],
@@ -141,16 +146,24 @@ export class PostgresAuthorizedEventManagementExecutor {
     const authority = this.dependencies.authority ?? new PostgresPrivilegedMutationAuthority();
     try {
       return await this.dependencies.database.transaction(async (transaction) => {
+        await transaction.execute(sql`select set_config('application_name', ${applicationName}, true)`);
         const runtimeVerifier = this.dependencies.runtimeDatabaseAuthorityVerifier ?? runtimeAuthorityIsSafe;
         const outcome = await authority.run(transaction, {
           request,
           capability: CAPABILITIES.EVENT_MANAGE,
           moduleScope: "event",
           resource: "event",
-          prepareResource: () => prepareResource(transaction),
+          prepareResource: async () => {
+            const prepared = await prepareResource(transaction);
+            if (prepared !== true) return prepared;
+            if (!(await runtimeVerifier(transaction))) {
+              return "PERSISTENCE_FAILED";
+            }
+            await this.dependencies.beforeFinalAuthorityCheck?.();
+            return true;
+          },
+          beforeFinalClockCheck: this.dependencies.beforeFinalClockCheck,
           guardedMutation: async ({ actorMembershipId, databaseTime }) => {
-            if (!(await runtimeVerifier(transaction))) return { ok: false as const, error: "PERSISTENCE_FAILED" as const };
-            await this.dependencies.beforeMutation?.();
             const result = await mutation(transaction, actorMembershipId, databaseTime);
             if (!result.ok) return result;
             if (result.changed) {
@@ -168,7 +181,6 @@ export class PostgresAuthorizedEventManagementExecutor {
                 eventType: eventAuditType(action),
                 eventFacts: facts,
               });
-              await this.dependencies.afterMutation?.();
             }
             return result;
           },
@@ -195,11 +207,21 @@ export class PostgresAuthorizedEventManagementExecutor {
     input: CreateEventInput,
   ): Promise<EventMutationResult> {
     const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    const eventId = randomUUID();
+    let prepared: PreparedCreateEvent | undefined;
     return this.execute(
       request,
       tenantId,
-      (transaction) => repository.prepareCreateEventInTransaction(transaction, tenantId, input).then((ok) => ok ? true : "NOT_READY"),
-      (transaction, _actor, databaseTime) => repository.createEventInTransaction(transaction, tenantId, input, databaseTime),
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareCreateEventInTransaction(transaction, tenantId, eventId, input);
+        if (result === null) return "NOT_READY";
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.createEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
       "created",
     );
   }
@@ -211,11 +233,20 @@ export class PostgresAuthorizedEventManagementExecutor {
     input: UpdateEventInput,
   ): Promise<EventMutationResult> {
     const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    let prepared: PreparedEventMutation | undefined;
     return this.execute(
       request,
       tenantId,
-      (transaction) => repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "edit"),
-      (transaction, _actor, databaseTime) => repository.updateEventInTransaction(transaction, tenantId, eventId, input, databaseTime),
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "edit", input);
+        if (typeof result === "string") return result;
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.updateEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
       "changed",
     );
   }
@@ -227,11 +258,20 @@ export class PostgresAuthorizedEventManagementExecutor {
     input: PublishEventInput,
   ): Promise<EventMutationResult> {
     const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    let prepared: PreparedEventMutation | undefined;
     return this.execute(
       request,
       tenantId,
-      (transaction) => repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "publish"),
-      (transaction, _actor, databaseTime) => repository.publishEventInTransaction(transaction, tenantId, eventId, input, databaseTime),
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "publish");
+        if (typeof result === "string") return result;
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.publishEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
       "published",
     );
   }

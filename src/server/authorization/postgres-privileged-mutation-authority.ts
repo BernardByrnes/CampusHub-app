@@ -45,11 +45,13 @@ export type PrivilegedMutationAuthorityOptions<T> = Readonly<{
   moduleScope: CapabilityModuleScope;
   resource: string;
   prepareResource: () => Promise<true | PrivilegedMutationDenied["code"]>;
+  beforeFinalClockCheck?: () => Promise<void>;
   guardedMutation: (input: Readonly<{ databaseTime: Date; actorMembershipId: string }>) => Promise<T>;
 }>;
 
 type AuthorityFacts = Readonly<{
   actorMembershipId: string;
+  grantExpiresAt: Date;
   termEndsAt: Date;
 }>;
 
@@ -103,8 +105,9 @@ function validRequest(
  *
  * The API deliberately does not return a reusable permit. It locks the
  * authority rows, lets the caller lock and validate its resource, re-reads
- * those authority rows and PostgreSQL clock_timestamp(), then invokes the
- * guarded mutation while every lock remains held by the caller's transaction.
+ * those authority rows and PostgreSQL clock_timestamp(), then compares the
+ * fresh clock with the earliest grant/term expiry before invoking the guarded
+ * mutation while every lock remains held by the caller's transaction.
  */
 export class PostgresPrivilegedMutationAuthority {
   public constructor() {}
@@ -153,11 +156,16 @@ export class PostgresPrivilegedMutationAuthority {
         return { ok: false, code: "PERMISSION_DENIED" };
       }
 
+      await options.beforeFinalClockCheck?.();
       const finalTime = await databaseClock(database);
       if (finalTime === null) {
         return { ok: false, code: "PERMISSION_DENIED" };
       }
-      if (finalTime.getTime() >= finalAuthority.termEndsAt.getTime()) {
+      const earliestApplicableExpiry = Math.min(
+        finalAuthority.grantExpiresAt.getTime(),
+        finalAuthority.termEndsAt.getTime(),
+      );
+      if (finalTime.getTime() >= earliestApplicableExpiry) {
         return { ok: false, code: "PERMISSION_DENIED" };
       }
 
@@ -274,6 +282,10 @@ export class PostgresPrivilegedMutationAuthority {
       return null;
     }
 
-    return { actorMembershipId: membership.id, termEndsAt: term.endsAt };
+    return {
+      actorMembershipId: membership.id,
+      grantExpiresAt: validGrants[0]!.expiresAt,
+      termEndsAt: term.endsAt,
+    };
   }
 }

@@ -1,6 +1,5 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import {
@@ -55,6 +54,17 @@ export type EventRepositoryTransactionDatabase = Pick<
   CampusHubDatabase,
   "select" | "insert" | "update" | "delete"
 >;
+
+export type PreparedCreateEvent = Readonly<{
+  eventId: string;
+  audience: EventAudienceDefinition;
+}>;
+
+export type PreparedEventMutation = Readonly<{
+  event: Event;
+  currentAudience: EventAudienceDefinition;
+  audience: EventAudienceDefinition;
+}>;
 
 export type EventListOptions = Readonly<{
   now: Date;
@@ -227,29 +237,113 @@ function bindServerOwnedAudience(
   return isEventAudienceDefinition(bound) ? bound : null;
 }
 
-async function validAudienceTargets(
+async function lockAndValidateAudienceTargets(
   database: Pick<CampusHubDatabase, "select">,
   definition: EventAudienceDefinition,
 ): Promise<boolean> {
-  for (const group of definition.groups) {
+  const groups = [...definition.groups].sort((left, right) =>
+    left.dimension.localeCompare(right.dimension),
+  );
+  for (const group of groups) {
     if (group.dimension === "campus") {
-      const rows = await database.select({ id: campuses.id }).from(campuses).where(and(eq(campuses.tenantId, definition.tenantId), inArray(campuses.id, group.campusIds), eq(campuses.status, "active")));
-      if (rows.length !== group.campusIds.length) return false;
+      const ids = [...group.campusIds].sort();
+      const rows = await database
+        .select({ id: campuses.id })
+        .from(campuses)
+        .where(
+          and(
+            eq(campuses.tenantId, definition.tenantId),
+            inArray(campuses.id, ids),
+            eq(campuses.status, "active"),
+          ),
+        )
+        .orderBy(asc(campuses.id))
+        .for("update");
+      if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index])) return false;
     } else if (group.dimension === "academic_division") {
-      const rows = await database.select({ id: academicDivisions.id }).from(academicDivisions).where(and(eq(academicDivisions.tenantId, definition.tenantId), inArray(academicDivisions.id, group.academicDivisionIds), eq(academicDivisions.status, "active")));
-      if (rows.length !== group.academicDivisionIds.length) return false;
+      const ids = [...group.academicDivisionIds].sort();
+      const rows = await database
+        .select({ id: academicDivisions.id })
+        .from(academicDivisions)
+        .where(
+          and(
+            eq(academicDivisions.tenantId, definition.tenantId),
+            inArray(academicDivisions.id, ids),
+            eq(academicDivisions.status, "active"),
+          ),
+        )
+        .orderBy(asc(academicDivisions.id))
+        .for("update");
+      if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index])) return false;
     } else if (group.dimension === "programme") {
-      const rows = await database.select({ id: programmes.id }).from(programmes).where(and(eq(programmes.tenantId, definition.tenantId), inArray(programmes.id, group.programmeIds), eq(programmes.status, "active")));
-      if (rows.length !== group.programmeIds.length) return false;
+      const ids = [...group.programmeIds].sort();
+      const rows = await database
+        .select({ id: programmes.id })
+        .from(programmes)
+        .where(
+          and(
+            eq(programmes.tenantId, definition.tenantId),
+            inArray(programmes.id, ids),
+            eq(programmes.status, "active"),
+          ),
+        )
+        .orderBy(asc(programmes.id))
+        .for("update");
+      if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index])) return false;
     } else if (group.dimension === "residence") {
-      const ids = group.residenceTargets.flatMap((target) => target.kind === "specific_residence" ? [target.residenceId] : []);
-      if (ids.length > 0) {
-        const rows = await database.select({ id: residences.id }).from(residences).where(and(eq(residences.tenantId, definition.tenantId), inArray(residences.id, ids), eq(residences.status, "active")));
-        if (rows.length !== ids.length) return false;
-      }
+      const ids = group.residenceTargets
+        .flatMap((target) => target.kind === "specific_residence" ? [target.residenceId] : [])
+        .sort();
+      if (ids.length === 0) continue;
+      const rows = await database
+        .select({ id: residences.id })
+        .from(residences)
+        .where(
+          and(
+            eq(residences.tenantId, definition.tenantId),
+            inArray(residences.id, ids),
+            eq(residences.status, "active"),
+          ),
+        )
+        .orderBy(asc(residences.id))
+        .for("update");
+      if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index])) return false;
     }
   }
   return true;
+}
+
+async function lockActiveCampus(
+  database: Pick<CampusHubDatabase, "select">,
+  tenantId: string,
+  campusId: string,
+): Promise<boolean> {
+  const rows = await database
+    .select({ id: campuses.id })
+    .from(campuses)
+    .where(
+      and(
+        eq(campuses.tenantId, tenantId),
+        eq(campuses.id, campusId),
+        eq(campuses.status, "active"),
+      ),
+    )
+    .orderBy(asc(campuses.id))
+    .for("update")
+    .limit(1);
+  return rows.length === 1;
+}
+
+function validEventInput(input: CreateEventInput): boolean {
+  const title = parseEventTitle(input.title);
+  const description = parseEventDescription(input.description);
+  const venue = parseEventVenue(input.venue);
+  return title !== null &&
+    description !== null &&
+    venue !== null &&
+    isValidDate(input.startsAt) &&
+    (input.endsAt === null || (isValidDate(input.endsAt) && input.endsAt > input.startsAt)) &&
+    isUuid(input.campusId);
 }
 
 async function loadAudience(
@@ -297,18 +391,14 @@ export class DrizzleEventRepository {
   public async createEventInTransaction(
     transaction: EventRepositoryTransactionDatabase,
     tenantId: string,
+    eventId: string,
     input: CreateEventInput,
+    prepared: PreparedCreateEvent,
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
-    if (!isUuid(tenantId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const eventId = randomUUID();
-    const audience = bindServerOwnedAudience(input.audience, eventId, tenantId);
-    if (audience === null || audience.mode !== input.audienceMode || !(await validAudienceTargets(transaction, audience))) {
-      return { ok: false, error: "NOT_READY" };
-    }
+    if (!isUuid(tenantId) || !isUuid(eventId) || prepared.eventId !== eventId || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { audience } = prepared;
     try {
-      const campusRows = await transaction.select().from(campuses).where(and(eq(campuses.tenantId, tenantId), eq(campuses.id, input.campusId), eq(campuses.status, "active"))).for("update").limit(1);
-      if (campusRows.length !== 1) return { ok: false, error: "NOT_READY" };
       const rows = await transaction.insert(events).values({
         id: eventId,
         tenantId,
@@ -339,13 +429,15 @@ export class DrizzleEventRepository {
   public async prepareCreateEventInTransaction(
     transaction: EventRepositoryTransactionDatabase,
     tenantId: string,
+    eventId: string,
     input: CreateEventInput,
-  ): Promise<boolean> {
-    if (!isUuid(tenantId) || !isUuid(input.campusId)) return false;
-    const campusRows = await transaction.select().from(campuses).where(and(eq(campuses.tenantId, tenantId), eq(campuses.id, input.campusId), eq(campuses.status, "active"))).for("update").limit(1);
-    if (campusRows.length !== 1) return false;
-    const audienceValue = input.audience;
-    return typeof audienceValue === "object" && audienceValue !== null;
+  ): Promise<PreparedCreateEvent | null> {
+    if (!isUuid(tenantId) || !isUuid(eventId) || !validEventInput(input)) return null;
+    const audience = bindServerOwnedAudience(input.audience, eventId, tenantId);
+    if (audience === null || audience.mode !== input.audienceMode) return null;
+    if (!(await lockActiveCampus(transaction, tenantId, input.campusId))) return null;
+    if (!(await lockAndValidateAudienceTargets(transaction, audience))) return null;
+    return { eventId, audience };
   }
 
   public async prepareEventMutationInTransaction(
@@ -354,18 +446,30 @@ export class DrizzleEventRepository {
     eventId: string,
     expectedVersion: number,
     operation: "edit" | "publish",
-  ): Promise<true | EventMutationError> {
+    input?: UpdateEventInput,
+  ): Promise<PreparedEventMutation | EventMutationError> {
     if (!isUuid(tenantId) || !isUuid(eventId)) return "PERMISSION_DENIED";
     const rows = await transaction.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).for("update").limit(1);
     const event = rows[0] ? toEvent(rows[0]) : null;
     if (event === null) return "NOT_FOUND";
     if (event.version !== expectedVersion) return "VERSION_CONFLICT";
     if (event.lifecycle !== "draft") return "INVALID_STATE";
-    if (operation === "publish") {
-      const audience = await loadAudience(transaction, tenantId, event);
-      if (audience === null || !(await validAudienceTargets(transaction, audience))) return "NOT_READY";
-    }
-    return true;
+    const campusId = operation === "edit" ? input?.campusId : event.campusId;
+    const audience = operation === "edit"
+      ? input === undefined || !validEventInput(input)
+        ? null
+        : bindServerOwnedAudience(input.audience, event.id, tenantId)
+      : await loadAudience(transaction, tenantId, event);
+    if (campusId === undefined || audience === null) return "NOT_READY";
+    if (operation === "edit" && (input === undefined || input.audienceMode !== audience.mode)) return "NOT_READY";
+    if (operation === "publish" && audience.mode !== event.audienceMode) return "NOT_READY";
+    if (!(await lockActiveCampus(transaction, tenantId, campusId))) return "NOT_READY";
+    if (!(await lockAndValidateAudienceTargets(transaction, audience))) return "NOT_READY";
+    const currentAudience = operation === "edit"
+      ? await loadAudience(transaction, tenantId, event)
+      : audience;
+    if (currentAudience === null) return "NOT_READY";
+    return { event, currentAudience, audience };
   }
 
   public async findEventByIdForTenant(tenantId: string, eventId: string): Promise<EventRecord | null> {
@@ -404,21 +508,16 @@ export class DrizzleEventRepository {
     tenantId: string,
     eventId: string,
     input: UpdateEventInput,
+    prepared: PreparedEventMutation,
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { event: existing, currentAudience, audience } = prepared;
+    if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
+      return { ok: false, error: "VERSION_CONFLICT" };
+    }
     try {
-      const rows = await transaction.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).for("update").limit(1);
-      const existing = rows[0] ? toEvent(rows[0]) : null;
-      if (existing === null) return { ok: false, error: "NOT_FOUND" };
-      if (existing.version !== input.expectedVersion) return { ok: false, error: "VERSION_CONFLICT" };
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
-      const campusRows = await transaction.select().from(campuses).where(and(eq(campuses.tenantId, tenantId), eq(campuses.id, input.campusId), eq(campuses.status, "active"))).for("update").limit(1);
-      if (campusRows.length !== 1) return { ok: false, error: "NOT_READY" };
-      const audience = bindServerOwnedAudience(input.audience, eventId, tenantId);
-      if (audience === null || audience.mode !== input.audienceMode || !(await validAudienceTargets(transaction, audience))) return { ok: false, error: "NOT_READY" };
-      const currentAudience = await loadAudience(transaction, tenantId, existing);
-      if (currentAudience === null) return { ok: false, error: "NOT_READY" };
       const material = isMaterialEventChange(existing, input);
       if (!material && sameAudience(currentAudience, audience)) return { ok: true, record: { event: existing, audience: currentAudience }, changed: false };
       const updatedRows = await transaction.update(events).set({
@@ -450,17 +549,16 @@ export class DrizzleEventRepository {
     tenantId: string,
     eventId: string,
     input: PublishEventInput,
+    prepared: PreparedEventMutation,
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { event: existing, audience } = prepared;
+    if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
+      return { ok: false, error: "VERSION_CONFLICT" };
+    }
     try {
-      const rows = await transaction.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).for("update").limit(1);
-      const existing = rows[0] ? toEvent(rows[0]) : null;
-      if (existing === null) return { ok: false, error: "NOT_FOUND" };
-      if (existing.version !== input.expectedVersion) return { ok: false, error: "VERSION_CONFLICT" };
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
-      const audience = await loadAudience(transaction, tenantId, existing);
-      if (audience === null || !(await validAudienceTargets(transaction, audience))) return { ok: false, error: "NOT_READY" };
       const updatedRows = await transaction.update(events).set({ lifecycle: "published", version: sql`${events.version} + 1`, updatedAt: occurredAt }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), eq(events.lifecycle, "draft"))).returning();
       const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
       return updated === null ? { ok: false, error: "PERSISTENCE_FAILED" } : { ok: true, record: { event: updated, audience }, changed: true };
