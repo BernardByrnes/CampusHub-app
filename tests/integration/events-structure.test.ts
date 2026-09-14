@@ -205,8 +205,7 @@ async function waitForEventLockWait(applicationName: string, tableName: string):
     async () => getDatabase().execute(sql`
       select 1
       from pg_stat_activity
-      where application_name = ${applicationName}
-        and state = 'active'
+      where state = 'active'
         and wait_event_type = 'Lock'
         and query ilike ${`%from "${tableName}"%`}
         and query ilike '%for update%'
@@ -221,9 +220,10 @@ async function waitForNamedLockWait(applicationName: string): Promise<void> {
     async () => getDatabase().execute(sql`
       select 1
       from pg_stat_activity
-      where application_name = ${applicationName}
-        and state = 'active'
+      where state = 'active'
         and wait_event_type = 'Lock'
+        and query ilike ${`%from "${applicationName}"%`}
+        and query ilike '%for update%'
     `),
     (result) => result.rows.length > 0,
     `Timed out waiting for ${applicationName} to be blocked by the Event transaction.`,
@@ -419,14 +419,17 @@ describe("real PostgreSQL Event Core", () => {
       const invalidatorName = `campushub-event-invalidator-${kind}-${randomUUID()}`;
       const eventApplicationName = `campushub-event-authority-first-${kind}-${randomUUID()}`;
       const invalidator = await beginAuthorityInvalidation(graph, kind, invalidatorName);
-      let attempt: ReturnType<PostgresAuthorizedEventManagementExecutor["publishEvent"]>;
+      let attempt: ReturnType<PostgresAuthorizedEventManagementExecutor["publishEvent"]> | undefined;
       try {
         const executor = services(undefined, undefined, undefined, undefined, eventApplicationName);
         attempt = executor.publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
         await waitForEventLockWait(eventApplicationName, tableName);
-      } finally {
+      } catch (error) {
         await finishClient(invalidator, true);
+        await attempt?.catch(() => undefined);
+        throw error;
       }
+      await finishClient(invalidator, true);
       await expect(attempt!).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
       await expect(eventState(graph.tenantId, eventId)).resolves.toEqual({
         event: { version: 1, lifecycle: "draft" },
@@ -449,17 +452,32 @@ describe("real PostgreSQL Event Core", () => {
         await release.promise;
       }, undefined, undefined, undefined, eventApplicationName);
       const attempt = executor.publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
-      await entered.promise;
-      const invalidatorPromise = beginAuthorityInvalidation(graph, kind, invalidatorName);
-      await waitForNamedLockWait(invalidatorName);
-      release.resolve();
-      await expect(attempt).resolves.toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "published" } } });
-      const invalidator = await invalidatorPromise;
-      await finishClient(invalidator, true);
-      await expect(eventState(graph.tenantId, eventId)).resolves.toEqual({
-        event: { version: 2, lifecycle: "published" },
-        auditCount: 2,
-      });
+      let invalidator: PoolClient | undefined;
+      let invalidatorPromise: Promise<PoolClient> | undefined;
+      let invalidatorFinished = false;
+      try {
+        await entered.promise;
+        invalidatorPromise = beginAuthorityInvalidation(graph, kind, invalidatorName);
+        await waitForNamedLockWait(AUTHORITY_INVALIDATIONS.find((item) => item.kind === kind)!.tableName);
+        release.resolve();
+        await expect(attempt).resolves.toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "published" } } });
+        invalidator = await invalidatorPromise;
+        await finishClient(invalidator, true);
+        invalidatorFinished = true;
+        await expect(eventState(graph.tenantId, eventId)).resolves.toEqual({
+          event: { version: 2, lifecycle: "published" },
+          auditCount: 2,
+        });
+      } finally {
+        release.resolve();
+        await attempt.catch(() => undefined);
+        if (!invalidatorFinished && invalidator === undefined && invalidatorPromise !== undefined) {
+          invalidator = await invalidatorPromise.catch(() => undefined);
+        }
+        if (!invalidatorFinished && invalidator !== undefined) {
+          await finishClient(invalidator, false);
+        }
+      }
     },
   );
 
@@ -477,12 +495,20 @@ describe("real PostgreSQL Event Core", () => {
       await releaseFinalAuthority.promise;
     }, undefined, undefined, undefined, eventApplicationName);
     const attempt = executor.updateEvent(actor, graph.tenantId, eventId, { ...input(graph), title: "Campus-blocked Edit", expectedVersion: 1 });
-    await waitForEventLockWait(eventApplicationName, "campuses");
-    expect(finalAuthorityWasEntered).toBe(false);
-    await finishClient(campusHolder, true);
-    await finalAuthorityEntered.promise;
-    releaseFinalAuthority.resolve();
-    await expect(attempt).resolves.toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "draft" } } });
+    let campusReleased = false;
+    try {
+      await waitForEventLockWait(eventApplicationName, "campuses");
+      expect(finalAuthorityWasEntered).toBe(false);
+      await finishClient(campusHolder, true);
+      campusReleased = true;
+      await finalAuthorityEntered.promise;
+      releaseFinalAuthority.resolve();
+      await expect(attempt).resolves.toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "draft" } } });
+    } finally {
+      releaseFinalAuthority.resolve();
+      if (!campusReleased) await finishClient(campusHolder, false);
+      await attempt.catch(() => undefined);
+    }
   });
 
   it("denies a grant that expires while Event waits on the Tenant authority row", async () => {
