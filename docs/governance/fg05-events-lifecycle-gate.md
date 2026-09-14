@@ -8,10 +8,12 @@ not authorize Event runtime code, a schema, a migration, a UI, a background
 job, a notification, or deployment.
 
 - Foundation: `codex/8v-b-next-foundation`
-- Foundation SHA: `c721f44de06963c6bd8ce0775ed7bd9fed1cd756`
+- Foundation SHA: `b5dff54d60ff2d4d223d6adf5fca99b3db74053d`
 - Proposed stories: `CH-EVT-001` through `CH-EVT-004`
 - Product authority: `CampusHub_Product_Specification_v1.3_FROZEN.md`
 - Production HOW authority: `CampusHub_Implementation_Blueprint_v1.3_FROZEN.md`
+- Shared privileged-authority HOW contract:
+  `docs/governance/privileged-mutation-authority-invalidation.md`
 
 ## 1. Authority and checkpoint boundary
 
@@ -242,18 +244,17 @@ point. The implementation must establish a linearizable authorization/mutation
 boundary so the committed Event mutation corresponds to authority that was
 valid at that point.
 
-The implementation checkpoint must identify and review the serialization
-mechanism. The required primary mechanism is either (A) deterministic locks
-on the authoritative capability/grant/term rows, with current authority
-re-evaluated while those locks are held, or (B) an authorization/grant epoch or
-version from authoritative server/database state, checked atomically with the
-Event mutation. An established authorization gateway is acceptable only when
-it is independently proven to provide one of those same commit-time
-invariants. PostgreSQL `SERIALIZABLE` may be used as supplemental database
-isolation, but it is not the authority-revocation contract and does not replace
-explicit authority-row locking or atomic authority-version coupling. FG-05
-selects none of these mechanisms and does not create a new global
-authorization architecture.
+All privileged Event mutations MUST use the approved cross-cutting Privileged
+Mutation Authority Finalization Boundary (PMAFB) contract in
+`docs/governance/privileged-mutation-authority-invalidation.md`. That approved
+contract owns Tenant, module-state where applicable, Membership/principal,
+RoleGrant/capability, Guild Term, assurance/MFA, lock-order, mutually
+conflicting PostgreSQL consumer/writer lock modes, fresh database-clock expiry
+validation, PMAFB finalization, and authority-invalidation race semantics.
+FG-05 must not select, reopen, or describe an alternative authority mechanism
+and must not duplicate the global algorithm. PostgreSQL `SERIALIZABLE` may be
+supplemental only where the approved contract permits it; it is not a
+replacement for PMAFB.
 
 The required ordering is explicit. If applicable authority revocation commits
 first, the in-flight Event mutation must re-observe the revoked authority and
@@ -267,7 +268,10 @@ The later implementation must revalidate, as applicable to the governed
 operation, Tenant lifecycle, module enablement, current Membership/principal
 authority, RoleGrant/capability, grant expiry, Guild Term status, assurance or
 MFA requirements, Event Tenant ownership, and expected Event version. This
-does not resolve OD-01, OD-02, or OD-06.
+must be performed through the shared PMAFB for authority facts, while FG-05
+continues to own Event-specific ownership, lifecycle, transition prerequisites,
+resource locking, and expected-version checks. This does not resolve OD-01,
+OD-02, or OD-06.
 
 ### 6.1 Archive semantics requiring Product Owner closure
 
@@ -404,12 +408,14 @@ Required evidence for the implementation checkpoint includes:
 - RSVP versus event-start closure using an authoritative time boundary;
 - aggregate counts remaining Tenant-local and consistent after concurrent
   state replacement/withdrawal;
-- authority revocation versus every privileged Event mutation, using separate
-  real PostgreSQL connections and deterministic blocking/commit-order evidence:
-  when revocation commits first, the Event mutation fails closed with unchanged
-  Event state/version and no false-success audit; when the Event mutation
-  commits first, it remains valid and a later mutation using the revoked
-  authority fails;
+- every privileged Event operation (create, draft edit, publish, postpone,
+  republish, cancel, and any privileged archive transition) invoking the
+  approved shared PMAFB, with the cross-cutting PostgreSQL authority-race
+  evidence required by that contract;
+- Event-specific resource/version/lifecycle races, including publish versus
+  publish and stale competing publish/postpone/cancel transitions, using
+  separate real PostgreSQL connections and deterministic blocking/commit-order
+  evidence;
 - rollback evidence showing every denial, stale version, invalid lifecycle,
   audience failure, or in-transaction required mutation/audit failure leaves
   the Event/RSVP state at its pre-operation durable value;
@@ -417,11 +423,11 @@ Required evidence for the implementation checkpoint includes:
   roll back committed Event/RSVP state and is covered by the later retry and
   idempotency contract.
 
-The tests must prove the actual locking or authority-epoch protocol selected
-by the implementation; a bare isolation-level assertion is not evidence. No
-arbitrary sleep is evidence of PostgreSQL ordering. Real PostgreSQL lock,
-blocking, commit-order, and exact-SHA CI evidence is required for the
-production checkpoint.
+The Event implementation must prove conformance to the approved shared PMAFB
+and supply the cross-cutting lock-mode, authority-invalidation, expiry-wait,
+blocking, commit-order, and exact-SHA CI evidence required by that contract.
+Event-specific resource/version/lifecycle evidence remains separate. A bare
+isolation-level assertion or arbitrary sleep is not evidence.
 
 ## 11. A6 audit and minimization
 
@@ -496,7 +502,7 @@ checkpoint.
 | CH-EVT-003 | GSC-14 RSVP/interest/withdraw, one current state, aggregate counts, idempotent changes | Evaluator evidence, membership isolation, PostgreSQL race tests, XP/notification dependency evidence |
 | CH-EVT-004 | Versioned postpone/cancel, mandatory reasons, preserved history, cancellation race | State machine tests, lock/commit-order evidence, A6 review, archive/“original date” closure |
 | Event visibility and public reads | `PUBLIC`, `MEMBERS`, and `VERIFIED_MEMBERS` remain independent of audience; eligible `PUBLIC` Events retain unauthenticated reads | Canonical visibility tests, public-reader Tenant/exposure checks, no fabricated identity, member-read separation |
-| Event management authority | Every persisted draft create/edit and privileged lifecycle mutation requires current `event.manage` and a linearizable authority/mutation boundary; only a true no-op performs no mutation | Fresh-authority denial/revocation/expiry tests plus deterministic two-ordering PostgreSQL revocation races for create/edit/publish/postpone/republish/cancel and any privileged archive path |
+| Event management authority | Every persisted draft create/edit and privileged lifecycle mutation requires current `event.manage` and the approved shared Privileged Mutation Authority Finalization Boundary (PMAFB); only a true no-op performs no mutation | Shared PMAFB authority/invalidation evidence plus Event-specific expected-version and transition races for create/edit/publish/postpone/republish/cancel and any privileged archive path |
 | Event state versus notification delivery | Required Product state and A6 facts commit atomically; post-commit delivery failure never reverses committed state | Transaction rollback tests plus future CH-NTF retry/idempotency evidence |
 | Event notification semantics | Reminder and ordinary change notices follow preference policy; cancellation notices to current `going`/`interested` holders are mandatory and non-disableable | Preference-boundary and cancellation-recipient tests; CH-NTF remains separately gated |
 | FG-05 scope classification | Event-specific Pilot OOS: ticketing, check-in, and attendee directory/list; frozen §26.2 global Pilot OOS: maps/geolocation, clubs as account-holding entities, and the listed check-in/attendee-list items; venue/Organiser rules are Event-specific consequences; other modules are checkpoint exclusions | Scope traceability review with no silent Pilot-OOS expansion |
