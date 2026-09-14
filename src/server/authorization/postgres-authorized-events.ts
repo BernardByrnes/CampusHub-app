@@ -173,7 +173,16 @@ export class PostgresAuthorizedEventManagementExecutor {
             return result;
           },
         });
-        return outcome.ok ? outcome.value : { ok: false, error: outcome.code };
+        if (outcome.ok) {
+          if (!outcome.value.ok && outcome.value.error === "PERSISTENCE_FAILED") {
+            throw new Error("Event persistence failed; rolling back transaction.");
+          }
+          return outcome.value;
+        }
+        if (outcome.code === "PERSISTENCE_FAILED") {
+          throw new Error("Event persistence failed; rolling back transaction.");
+        }
+        return { ok: false, error: outcome.code };
       });
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
