@@ -13,6 +13,7 @@ import {
   parseFixtureVenue,
   type FixtureState,
 } from "@/domain/sports/fixtures";
+import { parseEventLifecycle, type EventLifecycle } from "@/domain/events/events";
 
 export const AUDIT_EVENT_TYPES = [
   "publication.published",
@@ -35,6 +36,9 @@ export const AUDIT_EVENT_TYPES = [
   "result.draft_changed",
   "result.published",
   "result.corrected",
+  "event.created",
+  "event.changed",
+  "event.published",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -45,6 +49,7 @@ export const AUDIT_RESOURCE_TYPES = [
   "team",
   "fixture",
   "result",
+  "event",
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
 
@@ -76,6 +81,12 @@ export const RESULT_AUDIT_EVENT_TYPES = [
   "result.corrected",
 ] as const;
 export type ResultAuditEventType = (typeof RESULT_AUDIT_EVENT_TYPES)[number];
+export const EVENT_AUDIT_EVENT_TYPES = [
+  "event.created",
+  "event.changed",
+  "event.published",
+] as const;
+export type EventAuditEventType = (typeof EVENT_AUDIT_EVENT_TYPES)[number];
 export type SportsAuditResourceType = "sport" | "competition" | "team";
 
 export const AUDIT_INTEGRITY_FORMAT_VERSION = 1 as const;
@@ -135,6 +146,12 @@ export type ResultAuditEventFacts = Readonly<{
   correctionReason: string | null;
 }>;
 
+export type EventAuditEventFacts = Readonly<{
+  action: "created" | "changed" | "published";
+  lifecycle: EventLifecycle;
+  version: number;
+}>;
+
 export type AuditEvent = Readonly<{
   id: string;
   tenantId: string;
@@ -149,7 +166,8 @@ export type AuditEvent = Readonly<{
     | PublicationPublishedAuditEventFacts
     | SportsAuditEventFacts
     | FixtureAuditEventFacts
-    | ResultAuditEventFacts;
+    | ResultAuditEventFacts
+    | EventAuditEventFacts;
   previousHash: string;
   currentHash: string;
   keyVersion: number;
@@ -173,7 +191,8 @@ export type AuditIntegrityEnvelopeV1 = Readonly<{
     | PublicationPublishedAuditEventFacts
     | SportsAuditEventFacts
     | FixtureAuditEventFacts
-    | ResultAuditEventFacts;
+    | ResultAuditEventFacts
+    | EventAuditEventFacts;
   previousHash: string;
   keyVersion: number;
 }>;
@@ -644,6 +663,52 @@ export function isResultAuditEventFacts(
   return normalizeResultAuditEventFacts(value, eventType) !== null;
 }
 
+function isEventAuditEventType(
+  value: unknown,
+): value is EventAuditEventType {
+  return typeof value === "string" &&
+    EVENT_AUDIT_EVENT_TYPES.includes(value as EventAuditEventType);
+}
+
+export function normalizeEventAuditEventFacts(
+  value: unknown,
+  eventType: EventAuditEventType,
+): EventAuditEventFacts | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["action", "lifecycle", "version"]) ||
+    !isEventAuditEventType(eventType) ||
+    parseEventLifecycle(value.lifecycle) === null ||
+    !isPositiveInteger(value.version)
+  ) {
+    return null;
+  }
+
+  const [resource, expectedAction] = eventType.split(".");
+  if (resource !== "event" || value.action !== expectedAction) {
+    return null;
+  }
+
+  const action = value.action as EventAuditEventFacts["action"];
+  const lifecycle = value.lifecycle as EventLifecycle;
+  if (
+    (action === "created" && lifecycle !== "draft") ||
+    (action === "changed" && lifecycle !== "draft") ||
+    (action === "published" && lifecycle !== "published")
+  ) {
+    return null;
+  }
+
+  return { action, lifecycle, version: value.version };
+}
+
+export function isEventAuditEventFacts(
+  value: unknown,
+  eventType: EventAuditEventType,
+): value is EventAuditEventFacts {
+  return normalizeEventAuditEventFacts(value, eventType) !== null;
+}
+
 export function normalizeAuditIntegrityEnvelope(
   value: unknown,
 ): AuditIntegrityEnvelopeV1 | null {
@@ -698,10 +763,13 @@ export function normalizeAuditIntegrityEnvelope(
         : isFixtureAuditEventType(value.eventType) &&
             value.resourceType === "fixture"
         ? normalizeFixtureAuditEventFacts(value.eventFacts, value.eventType)
-          : isResultAuditEventType(value.eventType) &&
+        : isResultAuditEventType(value.eventType) &&
               value.resourceType === "result"
             ? normalizeResultAuditEventFacts(value.eventFacts, value.eventType)
-        : null;
+            : isEventAuditEventType(value.eventType) &&
+                value.resourceType === "event"
+              ? normalizeEventAuditEventFacts(value.eventFacts, value.eventType)
+              : null;
   if (eventFacts === null) {
     return null;
   }

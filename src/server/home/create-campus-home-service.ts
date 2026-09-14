@@ -10,6 +10,7 @@ import { ListPublicationsService } from "@/application/content/list-publications
 import { ReadPublicationService } from "@/application/content/read-publication";
 import { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 import { DrizzlePublicationRepository } from "@/server/repositories/publication-repository";
+import { createEventServices } from "@/server/events/create-event-services";
 
 /**
  * The foundation has no separate persisted content-exposure table. The
@@ -38,6 +39,7 @@ export function createCampusHomeService(): CampusHomeService {
     publications,
     memberships,
   });
+  const eventServices = createEventServices();
 
   return new CampusHomeService({
     listPublications: new ListPublicationsService({
@@ -50,5 +52,6 @@ export function createCampusHomeService(): CampusHomeService {
       exposureResolver,
       audienceResolver,
     }),
+    events: eventServices.reads,
   });
 }

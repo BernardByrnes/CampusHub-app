@@ -9,6 +9,7 @@ import { ReadPublicationService } from "./read-publication";
 import type { Publication } from "@/domain/content/publication";
 import type { TrustedRequestContext } from "@/domain/authorization/trusted-request-context";
 import type { PublicationCollectionQuery } from "@/domain/content/publication-collection";
+import type { EventReadProjection, ReadEventService } from "@/application/events/read-events";
 
 const tenantAId = "00000000-0000-4000-8000-000000000001";
 const tenantBId = "00000000-0000-4000-8000-000000000002";
@@ -67,6 +68,7 @@ function publication(
 function createService(
   candidates: readonly Publication[],
   audienceById: ReadonlyMap<string, boolean> = new Map(),
+  events?: Pick<ReadEventService, "listEvents">,
 ) {
   const listCalls: Array<Readonly<{ tenantId: string; cursor: unknown }>> = [];
   const readCalls: Array<Readonly<{ tenantId: string; publicationId: string }>> = [];
@@ -116,6 +118,7 @@ function createService(
     home: new CampusHomeService({
       listPublications: list,
       readPublication: read,
+      events,
     }),
     listCalls,
     readCalls,
@@ -124,6 +127,38 @@ function createService(
 }
 
 describe("CampusHomeService", () => {
+  it("selects the first eligible Event from a bounded chronological window", async () => {
+    const firstEvent: EventReadProjection = {
+      id: "00000000-0000-4000-8000-000000000031",
+      tenantId: tenantAId,
+      version: 1,
+      title: "First event",
+      description: "First event description",
+      venue: "Main Hall",
+      startsAt: new Date("2026-01-20T10:00:00.000Z"),
+      endsAt: new Date("2026-01-20T12:00:00.000Z"),
+      campusId: "00000000-0000-4000-8000-000000000041",
+      visibility: "MEMBERS",
+      rsvpEnabled: false,
+      lifecycle: "published",
+      past: false,
+    };
+    const secondEvent = { ...firstEvent, id: "00000000-0000-4000-8000-000000000032", title: "Second event" };
+    const listEvents = vi.fn(async (input: Parameters<ReadEventService["listEvents"]>[0]) => {
+      expect(input.limit).toBe(50);
+      return { outcome: "OK" as const, items: [firstEvent, secondEvent] };
+    });
+    const { home } = createService([], new Map(), { listEvents });
+
+    const result = await home.getFeed({ ...homeRequest, now });
+
+    expect(result).toMatchObject({
+      outcome: "READY",
+      events: [{ id: firstEvent.id, title: firstEvent.title, venue: firstEvent.venue }],
+    });
+    expect(listEvents).toHaveBeenCalledOnce();
+  });
+
   it("uses the trusted Tenant when listing and never exposes a foreign Publication", async () => {
     const local = publication({ title: "Local" });
     const foreign = publication({

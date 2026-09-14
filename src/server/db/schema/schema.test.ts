@@ -29,6 +29,9 @@ import {
   tenantAcademicYearConfig,
   tenantLifecycleEnum,
   tenants,
+  eventLifecycleEnum,
+  events,
+  eventAudienceCriteria,
 } from "./index";
 
 describe("Tenant, Membership, and Publication Drizzle schema", () => {
@@ -45,6 +48,8 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     );
     expect(getTableConfig(guildTerms).name).toBe("guild_terms");
     expect(getTableConfig(roleGrants).name).toBe("role_grants");
+    expect(getTableConfig(events).name).toBe("events");
+    expect(getTableConfig(eventAudienceCriteria).name).toBe("event_audience_criteria");
   });
 
   it("declares closed lifecycle and assurance values at the database boundary", () => {
@@ -78,6 +83,12 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "PUBLIC",
       "MEMBERS",
       "VERIFIED_MEMBERS",
+    ]);
+    expect(eventLifecycleEnum.enumValues).toEqual([
+      "draft",
+      "published",
+      "postponed",
+      "cancelled",
     ]);
     expect(campusLifecycleEnum.enumValues).toEqual(["active", "inactive"]);
     expect(academicDivisionLifecycleEnum.enumValues).toEqual([
@@ -118,6 +129,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "publication.priority_publish",
       "publication.retract",
       "sport.manage",
+      "event.manage",
     ]);
     expect(roleGrantModuleScopeEnum.enumValues).toContain("publication");
   });

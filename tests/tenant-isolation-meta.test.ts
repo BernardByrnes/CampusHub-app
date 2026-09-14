@@ -49,6 +49,8 @@ function implementationPathForDatabaseObject(
     fixtures: "src/server/db/schema/sports.ts",
     results: "src/server/db/schema/sports.ts",
     result_revisions: "src/server/db/schema/sports.ts",
+    events: "src/server/db/schema/events.ts",
+    event_audience_criteria: "src/server/db/schema/events.ts",
   };
 
   return (

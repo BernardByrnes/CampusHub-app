@@ -4,4 +4,5 @@ export * from "./governance";
 export * from "./organization";
 export * from "./publication";
 export * from "./sports";
+export * from "./events";
 export * from "./tenant";

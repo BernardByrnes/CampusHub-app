@@ -25,6 +25,8 @@ import { FixtureManagementService } from "@/application/sports/manage-fixtures";
 import { ListFixturesService } from "@/application/sports/list-fixtures";
 import { ListResultsService } from "@/application/sports/list-results";
 import { ResultManagementService } from "@/application/sports/manage-results";
+import { EventManagementService } from "@/application/events/manage-events";
+import { PostgresAuthorizedEventManagementExecutor } from "@/server/authorization/postgres-authorized-events";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -51,6 +53,8 @@ import {
   sports,
   teams,
   tenantAcademicYearConfig,
+  events,
+  eventAudienceCriteria,
   tenants,
   type MembershipRow,
 } from "@/server/db/schema";
@@ -1887,6 +1891,77 @@ async function resultsStudentReadProbe(): Promise<void> {
   expect(repositoryCalled).toBe(false);
 }
 
+function eventPersistenceProbe(): void {
+  expectTenantOwnedTable(events);
+  expectTenantCompositeIdentity(events);
+  expectForeignKey(events, ["tenant_id", "campus_id"], ["tenant_id", "id"]);
+}
+
+function eventAudiencePersistenceProbe(): void {
+  expectTenantOwnedTable(eventAudienceCriteria);
+  expectForeignKey(
+    eventAudienceCriteria,
+    ["tenant_id", "event_id"],
+    ["tenant_id", "id"],
+  );
+  expectForeignKey(
+    eventAudienceCriteria,
+    ["tenant_id", "campus_id"],
+    ["tenant_id", "id"],
+  );
+}
+
+async function eventManagementProbe(): Promise<void> {
+  let gatewayCalled = false;
+  const service = new EventManagementService({
+    capabilityAuthorizer: { authorize: async () => ({ allowed: true }) },
+    gateway: {
+      createEvent: async () => {
+        gatewayCalled = true;
+        return { ok: false as const, error: "PERSISTENCE_FAILED" as const };
+      },
+      updateEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+      publishEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+    },
+  });
+  await expect(
+    service.createEvent({
+      trustedContext: {
+        identitySubjectId: "event-probe",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      requestedTenantId: tenantBId,
+      event: {},
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(gatewayCalled).toBe(false);
+}
+
+async function eventAuthorizationProbe(): Promise<void> {
+  const executor = new PostgresAuthorizedEventManagementExecutor({
+    database: {} as never,
+    authorizer: {} as never,
+    auditEvents: {} as never,
+  });
+  await expect(
+    executor.publishEvent(
+      {
+        actor: { identitySubjectId: "event-probe", tenantId: tenantAId, membershipId: membershipAId },
+        context: { tenantStatus: "active", membershipStatus: "verified", assuranceLevel: "L2" },
+        capability: "publication.create" as never,
+        scope: { tenantId: tenantAId, module: "event", resource: "event" },
+      },
+      tenantAId,
+      publicationId,
+      { expectedVersion: 1 },
+    ),
+  ).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -2073,6 +2148,14 @@ export const tenantIsolationProbeRegistry: Readonly<
       ["tenant_id", "id"],
     );
   },
+  "events.persistence": eventPersistenceProbe,
+  "event-audience.persistence": eventAudiencePersistenceProbe,
+  "events.direct": eventPersistenceProbe,
+  "events.collection": eventPersistenceProbe,
+  "events.home": eventPersistenceProbe,
+  "events.discover": eventPersistenceProbe,
+  "events.management": eventManagementProbe,
+  "events.authorization": eventAuthorizationProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":
     publicationAudienceDefinitionBatchProbe,

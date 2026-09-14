@@ -10,14 +10,18 @@ import {
   normalizeSportsAuditEventFacts,
   normalizeFixtureAuditEventFacts,
   normalizeResultAuditEventFacts,
+  normalizeEventAuditEventFacts,
   SPORTS_AUDIT_EVENT_TYPES,
   FIXTURE_AUDIT_EVENT_TYPES,
   RESULT_AUDIT_EVENT_TYPES,
+  EVENT_AUDIT_EVENT_TYPES,
   type AuditEvent,
   type FixtureAuditEventFacts,
   type FixtureAuditEventType,
   type ResultAuditEventFacts,
   type ResultAuditEventType,
+  type EventAuditEventFacts,
+  type EventAuditEventType,
   type PublicationPublishedAuditEventFacts,
   type SportsAuditEventFacts,
   type SportsAuditEventType,
@@ -76,6 +80,16 @@ export type ResultAuditMutationAppendInput = Readonly<{
   occurredAt: Date;
   eventType: ResultAuditEventType;
   eventFacts: ResultAuditEventFacts;
+}>;
+
+export type EventAuditMutationAppendInput = Readonly<{
+  tenantId: string;
+  actorMembershipId: string;
+  resourceId: string;
+  resourceVersion: number;
+  occurredAt: Date;
+  eventType: EventAuditEventType;
+  eventFacts: EventAuditEventFacts;
 }>;
 
 export type AuditEventTransactionDatabase = Pick<
@@ -557,6 +571,101 @@ export class DrizzleAuditEventRepository {
       persisted.resourceType !== "result"
     ) {
       throw new Error("Result audit append returned an invalid persisted row.");
+    }
+    return persisted;
+  }
+
+  /** Appends one closed Event Core lifecycle event atomically with the Event
+   * mutation. Event facts intentionally contain no content or audience data. */
+  public async appendEventMutationInTransaction(
+    transaction: AuditEventTransactionDatabase,
+    input: EventAuditMutationAppendInput,
+  ): Promise<AuditEvent> {
+    const eventFacts = normalizeEventAuditEventFacts(
+      input.eventFacts,
+      input.eventType,
+    );
+    if (
+      !isUuid(input.tenantId) ||
+      !isUuid(input.actorMembershipId) ||
+      !isUuid(input.resourceId) ||
+      !isPositiveInteger(input.resourceVersion) ||
+      !(input.occurredAt instanceof Date) ||
+      Number.isNaN(input.occurredAt.getTime()) ||
+      !EVENT_AUDIT_EVENT_TYPES.includes(input.eventType) ||
+      eventFacts === null
+    ) {
+      throw new Error("Invalid Event audit input.");
+    }
+
+    const latestRows = await transaction
+      .select({ sequence: auditEvents.sequence, currentHash: auditEvents.currentHash })
+      .from(auditEvents)
+      .where(eq(auditEvents.tenantId, input.tenantId))
+      .orderBy(desc(auditEvents.sequence))
+      .limit(1);
+    const latest = latestRows[0];
+    const sequence = latest === undefined ? 1 : latest.sequence + 1;
+    const previousHash = latest?.currentHash ?? "0".repeat(64);
+    if (!isPositiveInteger(sequence) || !/^[0-9a-f]{64}$/.test(previousHash)) {
+      throw new Error("Invalid prior Tenant audit chain state.");
+    }
+
+    const signingKey = this.dependencies.keyProvider.getActiveSigningKey();
+    if (signingKey === null) {
+      throw new Error("No active AuditEvent signing key is configured.");
+    }
+
+    const event: AuditEvent = {
+      id: (this.dependencies.eventIdFactory ?? randomUUID)(),
+      tenantId: input.tenantId.toLowerCase(),
+      sequence,
+      eventType: input.eventType,
+      actorMembershipId: input.actorMembershipId.toLowerCase(),
+      resourceType: "event",
+      resourceId: input.resourceId.toLowerCase(),
+      resourceVersion: input.resourceVersion,
+      occurredAt: input.occurredAt,
+      eventFacts,
+      previousHash,
+      currentHash: "",
+      keyVersion: signingKey.keyVersion,
+      integrityFormatVersion: AUDIT_INTEGRITY_FORMAT_VERSION,
+      eventContractVersion: AUDIT_EVENT_CONTRACT_VERSION,
+    };
+    const currentHash = computeAuditCurrentHash(
+      auditEventToIntegrityEnvelope(event),
+      signingKey.key,
+    );
+    const signedEvent = { ...event, currentHash };
+    const rows = await transaction
+      .insert(auditEvents)
+      .values({
+        id: signedEvent.id,
+        tenantId: signedEvent.tenantId,
+        sequence: signedEvent.sequence,
+        eventType: signedEvent.eventType,
+        actorMembershipId: signedEvent.actorMembershipId,
+        resourceType: signedEvent.resourceType,
+        resourceId: signedEvent.resourceId,
+        resourceVersion: signedEvent.resourceVersion,
+        occurredAt: signedEvent.occurredAt,
+        eventFacts: signedEvent.eventFacts,
+        previousHash: signedEvent.previousHash,
+        currentHash: signedEvent.currentHash,
+        keyVersion: signedEvent.keyVersion,
+        integrityFormatVersion: signedEvent.integrityFormatVersion,
+        eventContractVersion: signedEvent.eventContractVersion,
+      })
+      .returning();
+    const persisted = rows[0] ? toAuditEvent(rows[0]) : null;
+    if (
+      persisted === null ||
+      persisted.currentHash !== currentHash ||
+      persisted.eventType !== input.eventType ||
+      persisted.resourceType !== "event"
+    ) {
+      throw new Error("Event audit append returned an invalid persisted row.");
     }
     return persisted;
   }

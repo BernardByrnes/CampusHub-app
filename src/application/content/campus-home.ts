@@ -22,6 +22,7 @@ import {
   type ReadPublicationInput,
   type ReadPublicationResult,
 } from "./read-publication";
+import type { EventReadProjection, ReadEventService } from "@/application/events/read-events";
 
 export type CampusHomeRequest = Readonly<{
   context: TrustedRequestContext;
@@ -59,12 +60,21 @@ export type CampusHomePublicationDetail = CampusHomePublicationCard &
     body: string;
   }>;
 
+export type CampusHomeEventCard = Readonly<{
+  id: string;
+  title: string;
+  venue: string;
+  startsAt: Date;
+  endsAt: Date | null;
+}>;
+
 export type CampusHomeFeedResult =
   | Readonly<{
       outcome: "READY";
       tenantDisplayName: string;
       items: readonly CampusHomePublicationCard[];
       nextCursor: string | null;
+      events?: readonly CampusHomeEventCard[];
     }>
   | Readonly<{ outcome: "UNAVAILABLE" }>;
 
@@ -78,6 +88,7 @@ export type CampusHomeDetailResult =
 export type CampusHomeServiceDependencies = Readonly<{
   listPublications: Pick<ListPublicationsService, "listPublications">;
   readPublication: Pick<ReadPublicationService, "getPublicationForRead">;
+  events?: Pick<ReadEventService, "listEvents">;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -187,6 +198,16 @@ function membershipViewer(context: TrustedRequestContext): ResourceReadViewer {
   return { kind: "membership", context };
 }
 
+function mapEventToCard(event: EventReadProjection): CampusHomeEventCard {
+  return {
+    id: event.id,
+    title: event.title,
+    venue: event.venue,
+    startsAt: event.startsAt,
+    endsAt: event.endsAt,
+  };
+}
+
 export class CampusHomeService {
   public constructor(
     private readonly dependencies: CampusHomeServiceDependencies,
@@ -227,11 +248,31 @@ export class CampusHomeService {
           publication !== null,
       );
 
+    let eventResult: Awaited<ReturnType<ReadEventService["listEvents"]>> | null = null;
+    if (this.dependencies.events !== undefined) {
+      try {
+        eventResult = await this.dependencies.events.listEvents({
+          tenantId: input.context.tenantId,
+          viewer: membershipViewer(input.context),
+          tenantFacts: input.tenantFacts,
+          now: input.now,
+          // Read a bounded candidate window before audience filtering so the
+          // first ineligible Event does not hide the next eligible one.
+          limit: 50,
+        });
+      } catch {
+        eventResult = null;
+      }
+    }
+
     return {
       outcome: "READY",
       tenantDisplayName: input.tenantDisplayName,
       items,
       nextCursor: result.nextCursor,
+      ...(eventResult?.outcome === "OK"
+        ? { events: eventResult.items.slice(0, 1).map(mapEventToCard) }
+        : {}),
     };
   }
 

@@ -162,13 +162,21 @@ export class PostgresCapabilityAuthorizer implements CapabilityAuthorizer {
         capability === CAPABILITIES.SPORT_MANAGE &&
         request.scope.module === "sports" &&
         isSupportedSportsResource(request.scope.resource);
+      const eventRequest =
+        capability === CAPABILITIES.EVENT_MANAGE &&
+        request.scope.module === "event" &&
+        request.scope.resource === "event";
       if (
-        (!publicationRequest && !sportsRequest) ||
+        (!publicationRequest && !sportsRequest && !eventRequest) ||
         request.actor.tenantId !== request.scope.tenantId
       ) {
         return { allowed: false };
       }
-      const moduleScope = sportsRequest ? "sports" : "publication";
+      const moduleScope = sportsRequest
+        ? "sports"
+        : eventRequest
+          ? "event"
+          : "publication";
 
       const membershipId = request.actor.membershipId;
       if (membershipId === undefined) {
