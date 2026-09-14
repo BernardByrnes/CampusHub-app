@@ -45,6 +45,7 @@ export type PostgresAuthorizedEventManagementDependencies = Readonly<{
   runtimeDatabaseAuthorityVerifier?: (
     database: Pick<CampusHubDatabase, "execute">,
   ) => Promise<boolean>;
+  onTransactionStarted?: (backendPid: number) => void | Promise<void>;
   beforeFinalAuthorityCheck?: () => Promise<void>;
   beforeFinalClockCheck?: () => Promise<void>;
   applicationName?: string;
@@ -147,6 +148,21 @@ export class PostgresAuthorizedEventManagementExecutor {
     try {
       return await this.dependencies.database.transaction(async (transaction) => {
         await transaction.execute(sql`select set_config('application_name', ${applicationName}, true)`);
+        if (this.dependencies.onTransactionStarted !== undefined) {
+          const backendResult = await transaction.execute(
+            sql`select pg_backend_pid() as backend_pid`,
+          );
+          const rawBackendPid = (
+            backendResult.rows[0] as { backend_pid?: unknown } | undefined
+          )?.backend_pid;
+          const backendPid = typeof rawBackendPid === "number"
+            ? rawBackendPid
+            : Number(rawBackendPid);
+          if (!Number.isInteger(backendPid) || backendPid <= 0) {
+            throw new Error("Event transaction backend identity was unavailable.");
+          }
+          await this.dependencies.onTransactionStarted(backendPid);
+        }
         const runtimeVerifier = this.dependencies.runtimeDatabaseAuthorityVerifier ?? runtimeAuthorityIsSafe;
         const outcome = await authority.run(transaction, {
           request,

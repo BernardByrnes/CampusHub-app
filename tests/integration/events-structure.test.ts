@@ -97,6 +97,7 @@ function services(
   beforeFinalClockCheck?: () => Promise<void>,
   runtimeDatabaseAuthorityVerifier: (database: Pick<CampusHubDatabase, "execute">) => Promise<boolean> = async () => true,
   applicationName?: string,
+  onTransactionStarted?: (backendPid: number) => void | Promise<void>,
 ) {
   const repository = new DrizzleEventRepository(getDatabase());
   const membershipsRepository = new DrizzleMembershipRepository();
@@ -124,6 +125,7 @@ function services(
     beforeFinalAuthorityCheck,
     beforeFinalClockCheck,
     applicationName,
+    onTransactionStarted,
   });
 }
 
@@ -200,34 +202,43 @@ async function waitForCondition<T>(read: () => Promise<T>, ready: (value: T) => 
   }
 }
 
-async function waitForEventLockWait(applicationName: string, tableName: string): Promise<void> {
+async function waitForEventLockWait(blockingBackendPid: number, tableName: string): Promise<void> {
   await waitForCondition(
     async () => getDatabase().execute(sql`
-      select 1
-      from pg_stat_activity
-      where state = 'active'
-        and wait_event_type = 'Lock'
-        and query ilike ${`%from "${tableName}"%`}
-        and query ilike '%for update%'
+      select activity.pid
+      from pg_stat_activity as activity
+      where activity.state = 'active'
+        and activity.wait_event_type = 'Lock'
+        and ${blockingBackendPid} = any(pg_blocking_pids(activity.pid))
+        and activity.query ilike ${`%from "${tableName}"%`}
+        and activity.query ilike '%for update%'
     `),
     (result) => result.rows.length > 0,
-    `Timed out waiting for Event ${applicationName} to wait on ${tableName}.`,
+    `Timed out waiting for an Event transaction to wait on ${tableName} behind backend ${blockingBackendPid}.`,
   ).then(() => undefined);
 }
 
-async function waitForNamedLockWait(applicationName: string): Promise<void> {
+async function waitForNamedLockWait(blockingBackendPid: number, tableName: string): Promise<void> {
   await waitForCondition(
     async () => getDatabase().execute(sql`
-      select 1
-      from pg_stat_activity
-      where state = 'active'
-        and wait_event_type = 'Lock'
-        and query ilike ${`%from "${applicationName}"%`}
-        and query ilike '%for update%'
+      select activity.pid
+      from pg_stat_activity as activity
+      where activity.state = 'active'
+        and activity.wait_event_type = 'Lock'
+        and ${blockingBackendPid} = any(pg_blocking_pids(activity.pid))
+        and activity.query ilike ${`%from "${tableName}"%`}
+        and activity.query ilike '%for update%'
     `),
     (result) => result.rows.length > 0,
-    `Timed out waiting for ${applicationName} to be blocked by the Event transaction.`,
+    `Timed out waiting for an invalidation transaction to wait on ${tableName} behind backend ${blockingBackendPid}.`,
   ).then(() => undefined);
+}
+
+async function backendPid(client: PoolClient): Promise<number> {
+  const result = await client.query<{ backend_pid: number }>("select pg_backend_pid() as backend_pid");
+  const value = result.rows[0]?.backend_pid;
+  if (!Number.isInteger(value) || value <= 0) throw new Error("PostgreSQL backend identity was unavailable.");
+  return value;
 }
 
 async function waitForDatabaseTimeAtOrAfter(target: Date): Promise<void> {
@@ -367,6 +378,7 @@ describe("real PostgreSQL Event Core", () => {
 
     const entered = deferred<void>();
     const release = deferred<void>();
+    const firstBackend = deferred<number>();
     let pauses = 0;
     const first = services(async () => {
       pauses += 1;
@@ -374,25 +386,15 @@ describe("real PostgreSQL Event Core", () => {
         entered.resolve();
         await release.promise;
       }
+    }, undefined, undefined, undefined, undefined, (backend) => {
+      firstBackend.resolve(backend);
     });
     const second = services();
     const firstAttempt = first.publishEvent(actor, graph.tenantId, created.record.event.id, { expectedVersion: 1 });
     await entered.promise;
+    const firstBackendPid = await firstBackend.promise;
     const secondAttempt = second.publishEvent(actor, graph.tenantId, created.record.event.id, { expectedVersion: 1 });
-    const activityDeadline = Date.now() + 5_000;
-    let observedLockWait = false;
-    while (Date.now() < activityDeadline && !observedLockWait) {
-      const activity = await getDatabase().execute(sql`
-        select 1
-        from pg_stat_activity
-        where wait_event_type = 'Lock'
-          and query ilike '%for update%'
-          and query ilike '%tenants%'
-      `);
-      observedLockWait = activity.rows.length > 0;
-      if (!observedLockWait) await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    expect(observedLockWait).toBe(true);
+    await waitForEventLockWait(firstBackendPid, "tenants");
     release.resolve();
     const [winner, loser] = await Promise.all([firstAttempt, secondAttempt]);
     expect([winner, loser].filter((result) => result.ok)).toHaveLength(1);
@@ -419,11 +421,12 @@ describe("real PostgreSQL Event Core", () => {
       const invalidatorName = `campushub-event-invalidator-${kind}-${randomUUID()}`;
       const eventApplicationName = `campushub-event-authority-first-${kind}-${randomUUID()}`;
       const invalidator = await beginAuthorityInvalidation(graph, kind, invalidatorName);
+      const invalidatorBackendPid = await backendPid(invalidator);
       let attempt: ReturnType<PostgresAuthorizedEventManagementExecutor["publishEvent"]> | undefined;
       try {
         const executor = services(undefined, undefined, undefined, undefined, eventApplicationName);
         attempt = executor.publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
-        await waitForEventLockWait(eventApplicationName, tableName);
+        await waitForEventLockWait(invalidatorBackendPid, tableName);
       } catch (error) {
         await finishClient(invalidator, true);
         await attempt?.catch(() => undefined);
@@ -445,20 +448,27 @@ describe("real PostgreSQL Event Core", () => {
       const { eventId, actor } = await createDraft(graph);
       const entered = deferred<void>();
       const release = deferred<void>();
+      const eventBackend = deferred<number>();
       const eventApplicationName = `campushub-event-event-first-${kind}-${randomUUID()}`;
       const invalidatorName = `campushub-event-invalidator-after-${kind}-${randomUUID()}`;
       const executor = services(async () => {
         entered.resolve();
         await release.promise;
-      }, undefined, undefined, undefined, eventApplicationName);
+      }, undefined, undefined, undefined, eventApplicationName, (backend) => {
+        eventBackend.resolve(backend);
+      });
       const attempt = executor.publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
       let invalidator: PoolClient | undefined;
       let invalidatorPromise: Promise<PoolClient> | undefined;
       let invalidatorFinished = false;
       try {
         await entered.promise;
+        const eventBackendPid = await eventBackend.promise;
         invalidatorPromise = beginAuthorityInvalidation(graph, kind, invalidatorName);
-        await waitForNamedLockWait(AUTHORITY_INVALIDATIONS.find((item) => item.kind === kind)!.tableName);
+        await waitForNamedLockWait(
+          eventBackendPid,
+          AUTHORITY_INVALIDATIONS.find((item) => item.kind === kind)!.tableName,
+        );
         release.resolve();
         await expect(attempt).resolves.toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "published" } } });
         invalidator = await invalidatorPromise;
@@ -485,6 +495,7 @@ describe("real PostgreSQL Event Core", () => {
     const graph = await createGraph();
     const { eventId, actor } = await createDraft(graph);
     const campusHolder = await holdRowLock("campuses", graph.campusId, `campushub-event-campus-holder-${randomUUID()}`);
+    const campusHolderBackendPid = await backendPid(campusHolder);
     const finalAuthorityEntered = deferred<void>();
     const releaseFinalAuthority = deferred<void>();
     const eventApplicationName = `campushub-event-resource-order-${randomUUID()}`;
@@ -497,7 +508,7 @@ describe("real PostgreSQL Event Core", () => {
     const attempt = executor.updateEvent(actor, graph.tenantId, eventId, { ...input(graph), title: "Campus-blocked Edit", expectedVersion: 1 });
     let campusReleased = false;
     try {
-      await waitForEventLockWait(eventApplicationName, "campuses");
+      await waitForEventLockWait(campusHolderBackendPid, "campuses");
       expect(finalAuthorityWasEntered).toBe(false);
       await finishClient(campusHolder, true);
       campusReleased = true;
@@ -522,9 +533,10 @@ describe("real PostgreSQL Event Core", () => {
     `);
     const expiry = new Date(String((expiryRows.rows[0] as { expires_at: unknown }).expires_at));
     const tenantHolder = await holdRowLock("tenants", graph.tenantId, `campushub-event-grant-tenant-holder-${randomUUID()}`);
+    const tenantHolderBackendPid = await backendPid(tenantHolder);
     const eventApplicationName = `campushub-event-grant-authority-wait-${randomUUID()}`;
     const attempt = services(undefined, undefined, undefined, undefined, eventApplicationName).publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
-    await waitForEventLockWait(eventApplicationName, "tenants");
+    await waitForEventLockWait(tenantHolderBackendPid, "tenants");
     await waitForDatabaseTimeAtOrAfter(expiry);
     await finishClient(tenantHolder, true);
     await expect(attempt).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
@@ -542,9 +554,10 @@ describe("real PostgreSQL Event Core", () => {
     `);
     const expiry = new Date(String((expiryRows.rows[0] as { expires_at: unknown }).expires_at));
     const campusHolder = await holdRowLock("campuses", graph.campusId, `campushub-event-grant-campus-holder-${randomUUID()}`);
+    const campusHolderBackendPid = await backendPid(campusHolder);
     const eventApplicationName = `campushub-event-grant-resource-wait-${randomUUID()}`;
     const attempt = services(undefined, undefined, undefined, undefined, eventApplicationName).updateEvent(actor, graph.tenantId, eventId, { ...input(graph), title: "Expired Campus Edit", expectedVersion: 1 });
-    await waitForEventLockWait(eventApplicationName, "campuses");
+    await waitForEventLockWait(campusHolderBackendPid, "campuses");
     await waitForDatabaseTimeAtOrAfter(expiry);
     await finishClient(campusHolder, true);
     await expect(attempt).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
@@ -575,9 +588,10 @@ describe("real PostgreSQL Event Core", () => {
       setupClient.release();
     }
     const tenantHolder = await holdRowLock("tenants", graph.tenantId, `campushub-event-term-tenant-holder-${randomUUID()}`);
+    const tenantHolderBackendPid = await backendPid(tenantHolder);
     const eventApplicationName = `campushub-event-term-authority-wait-${randomUUID()}`;
     const attempt = services(undefined, undefined, undefined, undefined, eventApplicationName).publishEvent(actor, graph.tenantId, eventId, { expectedVersion: 1 });
-    await waitForEventLockWait(eventApplicationName, "tenants");
+    await waitForEventLockWait(tenantHolderBackendPid, "tenants");
     await waitForDatabaseTimeAtOrAfter(termEnd!);
     await finishClient(tenantHolder, true);
     await expect(attempt).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
@@ -619,12 +633,16 @@ describe("real PostgreSQL Event Core", () => {
     const publishFirstDraft = await createDraft(publishFirst);
     const publishEntered = deferred<void>();
     const publishRelease = deferred<void>();
-    const publishFirstExecutor = services(async () => { publishEntered.resolve(); await publishRelease.promise; }, undefined, undefined, undefined, `campushub-event-publish-first-${randomUUID()}`);
+    const publishBackend = deferred<number>();
+    const publishFirstExecutor = services(async () => { publishEntered.resolve(); await publishRelease.promise; }, undefined, undefined, undefined, `campushub-event-publish-first-${randomUUID()}`, (backend) => {
+      publishBackend.resolve(backend);
+    });
     const publishFirstAttempt = publishFirstExecutor.publishEvent(publishFirstDraft.actor, publishFirst.tenantId, publishFirstDraft.eventId, { expectedVersion: 1 });
     await publishEntered.promise;
+    const publishBackendPid = await publishBackend.promise;
     const editAfterPublishApplicationName = `campushub-event-edit-after-publish-${randomUUID()}`;
     const editAfterPublishAttempt = services(undefined, undefined, undefined, undefined, editAfterPublishApplicationName).updateEvent(publishFirstDraft.actor, publishFirst.tenantId, publishFirstDraft.eventId, { ...input(publishFirst), title: "Stale edit", expectedVersion: 1 });
-    await waitForEventLockWait(editAfterPublishApplicationName, "tenants");
+    await waitForEventLockWait(publishBackendPid, "tenants");
     publishRelease.resolve();
     const [published, edited] = await Promise.all([publishFirstAttempt, editAfterPublishAttempt]);
     expect(published).toMatchObject({ ok: true, record: { event: { version: 2, lifecycle: "published" } } });
@@ -634,12 +652,16 @@ describe("real PostgreSQL Event Core", () => {
     const editFirstDraft = await createDraft(editFirst);
     const editEntered = deferred<void>();
     const editRelease = deferred<void>();
-    const editFirstExecutor = services(async () => { editEntered.resolve(); await editRelease.promise; }, undefined, undefined, undefined, `campushub-event-edit-first-${randomUUID()}`);
+    const editBackend = deferred<number>();
+    const editFirstExecutor = services(async () => { editEntered.resolve(); await editRelease.promise; }, undefined, undefined, undefined, `campushub-event-edit-first-${randomUUID()}`, (backend) => {
+      editBackend.resolve(backend);
+    });
     const editFirstAttempt = editFirstExecutor.updateEvent(editFirstDraft.actor, editFirst.tenantId, editFirstDraft.eventId, { ...input(editFirst), title: "Winning edit", expectedVersion: 1 });
     await editEntered.promise;
+    const editBackendPid = await editBackend.promise;
     const publishAfterEditApplicationName = `campushub-event-publish-after-edit-${randomUUID()}`;
     const publishAfterEditAttempt = services(undefined, undefined, undefined, undefined, publishAfterEditApplicationName).publishEvent(editFirstDraft.actor, editFirst.tenantId, editFirstDraft.eventId, { expectedVersion: 1 });
-    await waitForEventLockWait(publishAfterEditApplicationName, "tenants");
+    await waitForEventLockWait(editBackendPid, "tenants");
     editRelease.resolve();
     const [editedFirst, publishedAfter] = await Promise.all([editFirstAttempt, publishAfterEditAttempt]);
     expect(editedFirst).toMatchObject({ ok: true, record: { event: { version: 2, lifecycle: "draft" } } });
@@ -651,11 +673,15 @@ describe("real PostgreSQL Event Core", () => {
     const publishFirstDraft = await createDraft(publishFirst);
     const publishEntered = deferred<void>();
     const publishRelease = deferred<void>();
-    const publishFirstAttempt = services(async () => { publishEntered.resolve(); await publishRelease.promise; }, undefined, undefined, undefined, `campushub-event-audience-publish-first-${randomUUID()}`).publishEvent(publishFirstDraft.actor, publishFirst.tenantId, publishFirstDraft.eventId, { expectedVersion: 1 });
+    const publishBackend = deferred<number>();
+    const publishFirstAttempt = services(async () => { publishEntered.resolve(); await publishRelease.promise; }, undefined, undefined, undefined, `campushub-event-audience-publish-first-${randomUUID()}`, (backend) => {
+      publishBackend.resolve(backend);
+    }).publishEvent(publishFirstDraft.actor, publishFirst.tenantId, publishFirstDraft.eventId, { expectedVersion: 1 });
     await publishEntered.promise;
+    const publishBackendPid = await publishBackend.promise;
     const audienceAfterPublishApplicationName = `campushub-event-audience-edit-after-publish-${randomUUID()}`;
     const audienceAfterPublish = services(undefined, undefined, undefined, undefined, audienceAfterPublishApplicationName).updateEvent(publishFirstDraft.actor, publishFirst.tenantId, publishFirstDraft.eventId, targetedInput(publishFirst, 1));
-    await waitForEventLockWait(audienceAfterPublishApplicationName, "tenants");
+    await waitForEventLockWait(publishBackendPid, "tenants");
     publishRelease.resolve();
     const [published, audienceEdit] = await Promise.all([publishFirstAttempt, audienceAfterPublish]);
     expect(published).toMatchObject({ ok: true, record: { event: { version: 2, lifecycle: "published" } } });
@@ -665,11 +691,15 @@ describe("real PostgreSQL Event Core", () => {
     const editFirstDraft = await createDraft(editFirst);
     const editEntered = deferred<void>();
     const editRelease = deferred<void>();
-    const editFirstAttempt = services(async () => { editEntered.resolve(); await editRelease.promise; }, undefined, undefined, undefined, `campushub-event-audience-edit-first-${randomUUID()}`).updateEvent(editFirstDraft.actor, editFirst.tenantId, editFirstDraft.eventId, targetedInput(editFirst, 1));
+    const editBackend = deferred<number>();
+    const editFirstAttempt = services(async () => { editEntered.resolve(); await editRelease.promise; }, undefined, undefined, undefined, `campushub-event-audience-edit-first-${randomUUID()}`, (backend) => {
+      editBackend.resolve(backend);
+    }).updateEvent(editFirstDraft.actor, editFirst.tenantId, editFirstDraft.eventId, targetedInput(editFirst, 1));
     await editEntered.promise;
+    const editBackendPid = await editBackend.promise;
     const publishAfterAudienceApplicationName = `campushub-event-audience-publish-after-edit-${randomUUID()}`;
     const publishAfterAudience = services(undefined, undefined, undefined, undefined, publishAfterAudienceApplicationName).publishEvent(editFirstDraft.actor, editFirst.tenantId, editFirstDraft.eventId, { expectedVersion: 1 });
-    await waitForEventLockWait(publishAfterAudienceApplicationName, "tenants");
+    await waitForEventLockWait(editBackendPid, "tenants");
     editRelease.resolve();
     const [audienceWinner, publishedAfter] = await Promise.all([editFirstAttempt, publishAfterAudience]);
     expect(audienceWinner).toMatchObject({ ok: true, record: { event: { version: 2, lifecycle: "draft" } } });
