@@ -26,6 +26,7 @@ import {
   guildTerms,
   memberships,
   roleGrants,
+  tenantAcademicYearConfig,
   tenants,
 } from "@/server/db/schema";
 
@@ -89,6 +90,18 @@ async function createGraph() {
   const grantId = grantRows[0]?.id;
   if (grantId === undefined) throw new Error("Role Grant insert returned no row.");
   return { tenantId, campusId, membershipId, guildTermId, grantId };
+}
+
+async function setAcademicYearRange(
+  graph: Awaited<ReturnType<typeof createGraph>>,
+  minimumYear: number,
+  maximumYear: number,
+): Promise<void> {
+  await getDatabase().insert(tenantAcademicYearConfig).values({
+    tenantId: graph.tenantId,
+    minimumYear,
+    maximumYear,
+  });
 }
 
 function services(
@@ -178,6 +191,32 @@ function targetedInput(
       }],
     },
   };
+}
+
+function academicYearCreateInput(
+  graph: Awaited<ReturnType<typeof createGraph>>,
+  academicYear: number,
+): CreateEventInput {
+  return {
+    ...input(graph),
+    audienceMode: "targeted",
+    audience: {
+      mode: "targeted",
+      groups: [{
+        dimension: "academic_year",
+        provenancePolicy: "authoritative_only",
+        academicYears: [academicYear],
+      }],
+    },
+  };
+}
+
+function academicYearEditInput(
+  graph: Awaited<ReturnType<typeof createGraph>>,
+  expectedVersion: number,
+  academicYear: number,
+): UpdateEventInput {
+  return { ...academicYearCreateInput(graph, academicYear), expectedVersion };
 }
 
 async function prepareRequest(graph: Awaited<ReturnType<typeof createGraph>>) {
@@ -331,6 +370,24 @@ async function createDraft(graph: Awaited<ReturnType<typeof createGraph>>): Prom
   return { eventId: result.record.event.id, actor };
 }
 
+async function createAcademicYearDraft(
+  graph: Awaited<ReturnType<typeof createGraph>>,
+  academicYear: number,
+): Promise<{ eventId: string; actor: Awaited<ReturnType<typeof prepareRequest>> }> {
+  const actor = await prepareRequest(graph);
+  const result = await services().createEvent(
+    actor,
+    graph.tenantId,
+    academicYearCreateInput(graph, academicYear),
+  );
+  expect(result).toMatchObject({
+    ok: true,
+    record: { event: { version: 1, lifecycle: "draft" } },
+  });
+  if (!result.ok) throw new Error("Academic-year Event draft fixture creation failed.");
+  return { eventId: result.record.event.id, actor };
+}
+
 beforeAll(async () => {
   pool = new Pool({ connectionString: databaseUrl });
   database = drizzle({ client: pool }) as CampusHubDatabase;
@@ -367,6 +424,201 @@ describe("real PostgreSQL Event Core", () => {
     expect(criteria).toHaveLength(0);
     const listed = await new DrizzleEventRepository(getDatabase()).listEventsForTenant(graph.tenantId, { now: NOW, limit: 10 });
     expect(listed.map((record) => record.event.id)).toContain(created.record.event.id);
+  });
+
+  it("rejects an out-of-range academic-year Event create before insertion", async () => {
+    const graph = await createGraph();
+    await setAcademicYearRange(graph, 1, 4);
+    const actor = await prepareRequest(graph);
+    const result = await services().createEvent(
+      actor,
+      graph.tenantId,
+      academicYearCreateInput(graph, 5),
+    );
+    expect(result).toEqual({ ok: false, error: "NOT_READY" });
+
+    const eventRows = await getDatabase()
+      .select({ count: sql<number>`count(*)::int` })
+      .from(events)
+      .where(eq(events.tenantId, graph.tenantId));
+    const audienceRows = await getDatabase()
+      .select({ count: sql<number>`count(*)::int` })
+      .from(eventAudienceCriteria)
+      .where(eq(eventAudienceCriteria.tenantId, graph.tenantId));
+    const auditRows = await getDatabase()
+      .select({ count: sql<number>`count(*)::int` })
+      .from(auditEvents)
+      .where(eq(auditEvents.tenantId, graph.tenantId));
+    expect(Number(eventRows[0]?.count ?? 0)).toBe(0);
+    expect(Number(audienceRows[0]?.count ?? 0)).toBe(0);
+    expect(Number(auditRows[0]?.count ?? 0)).toBe(0);
+  });
+
+  it("rejects an out-of-range academic-year Event edit without changing state", async () => {
+    const graph = await createGraph();
+    await setAcademicYearRange(graph, 1, 4);
+    const { eventId, actor } = await createAcademicYearDraft(graph, 2);
+    const beforeAudience = await getDatabase()
+      .select()
+      .from(eventAudienceCriteria)
+      .where(eq(eventAudienceCriteria.eventId, eventId));
+
+    const result = await services().updateEvent(
+      actor,
+      graph.tenantId,
+      eventId,
+      academicYearEditInput(graph, 1, 5),
+    );
+    expect(result).toEqual({ ok: false, error: "NOT_READY" });
+    expect(await eventState(graph.tenantId, eventId)).toEqual({
+      event: { version: 1, lifecycle: "draft" },
+      auditCount: 1,
+    });
+    const afterAudience = await getDatabase()
+      .select()
+      .from(eventAudienceCriteria)
+      .where(eq(eventAudienceCriteria.eventId, eventId));
+    expect(afterAudience).toEqual(beforeAudience);
+    const auditRows = await getDatabase()
+      .select({ eventType: auditEvents.eventType })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, eventId)))
+      .orderBy(auditEvents.sequence);
+    expect(auditRows.map((row) => row.eventType)).toEqual(["event.created"]);
+  });
+
+  it("rejects publishing when the current academic-year range no longer includes the persisted target", async () => {
+    const graph = await createGraph();
+    await setAcademicYearRange(graph, 1, 4);
+    const { eventId, actor } = await createAcademicYearDraft(graph, 4);
+    await getDatabase()
+      .update(tenantAcademicYearConfig)
+      .set({ maximumYear: 3, updatedAt: new Date() })
+      .where(eq(tenantAcademicYearConfig.tenantId, graph.tenantId));
+
+    const result = await services().publishEvent(
+      actor,
+      graph.tenantId,
+      eventId,
+      { expectedVersion: 1 },
+    );
+    expect(result).toEqual({ ok: false, error: "NOT_READY" });
+    expect(await eventState(graph.tenantId, eventId)).toEqual({
+      event: { version: 1, lifecycle: "draft" },
+      auditCount: 1,
+    });
+    const auditRows = await getDatabase()
+      .select({ eventType: auditEvents.eventType })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, eventId)))
+      .orderBy(auditEvents.sequence);
+    expect(auditRows.map((row) => row.eventType)).toEqual(["event.created"]);
+  });
+
+  it("serializes Event mutations with academic-year configuration changes in both orderings", async () => {
+    const configurationFirst = await createGraph();
+    await setAcademicYearRange(configurationFirst, 1, 4);
+    const configurationFirstDraft = await createAcademicYearDraft(configurationFirst, 2);
+    const configurationHolder = await getPool().connect();
+    let configurationHolderFinished = false;
+    let configurationFirstAttempt: Promise<unknown> | undefined;
+    try {
+      await configurationHolder.query("BEGIN");
+      await configurationHolder.query(
+        'select tenant_id from "tenant_academic_year_config" where tenant_id = $1 for update',
+        [configurationFirst.tenantId],
+      );
+      await configurationHolder.query(
+        'update "tenant_academic_year_config" set maximum_year = 1, updated_at = clock_timestamp() where tenant_id = $1',
+        [configurationFirst.tenantId],
+      );
+      const configurationBackendPid = await backendPid(configurationHolder);
+      configurationFirstAttempt = services().publishEvent(
+        configurationFirstDraft.actor,
+        configurationFirst.tenantId,
+        configurationFirstDraft.eventId,
+        { expectedVersion: 1 },
+      );
+      await waitForEventLockWait(configurationBackendPid, "tenant_academic_year_config");
+      await finishClient(configurationHolder, true);
+      configurationHolderFinished = true;
+      await expect(configurationFirstAttempt).resolves.toEqual({ ok: false, error: "NOT_READY" });
+      await expect(eventState(configurationFirst.tenantId, configurationFirstDraft.eventId)).resolves.toEqual({
+        event: { version: 1, lifecycle: "draft" },
+        auditCount: 1,
+      });
+    } finally {
+      if (!configurationHolderFinished) await finishClient(configurationHolder, false);
+      await configurationFirstAttempt?.catch(() => undefined);
+    }
+
+    const eventFirst = await createGraph();
+    await setAcademicYearRange(eventFirst, 1, 4);
+    const eventFirstDraft = await createAcademicYearDraft(eventFirst, 2);
+    const eventEntered = deferred<void>();
+    const eventRelease = deferred<void>();
+    const eventBackend = deferred<number>();
+    const eventFirstExecutor = services(
+      async () => {
+        eventEntered.resolve();
+        await eventRelease.promise;
+      },
+      undefined,
+      undefined,
+      undefined,
+      `campushub-event-academic-year-event-first-${randomUUID()}`,
+      (backend) => eventBackend.resolve(backend),
+    );
+    const eventFirstAttempt = eventFirstExecutor.publishEvent(
+      eventFirstDraft.actor,
+      eventFirst.tenantId,
+      eventFirstDraft.eventId,
+      { expectedVersion: 1 },
+    );
+    let configurationUpdateClient: PoolClient | undefined;
+    let configurationUpdateFinished = false;
+    try {
+      await eventEntered.promise;
+      const eventBackendPid = await eventBackend.promise;
+      configurationUpdateClient = await getPool().connect();
+      await configurationUpdateClient.query("BEGIN");
+      await configurationUpdateClient.query(
+        "select set_config('application_name', $1, true)",
+        [`campushub-event-academic-year-update-${randomUUID()}`],
+      );
+      const configurationUpdate = configurationUpdateClient.query(
+        'select tenant_id from "tenant_academic_year_config" where tenant_id = $1 for update',
+        [eventFirst.tenantId],
+      ).then(async () => {
+        await configurationUpdateClient!.query(
+          'update "tenant_academic_year_config" set maximum_year = 1, updated_at = clock_timestamp() where tenant_id = $1',
+          [eventFirst.tenantId],
+        );
+        await configurationUpdateClient!.query("COMMIT");
+      });
+      await waitForNamedLockWait(eventBackendPid, "tenant_academic_year_config");
+      eventRelease.resolve();
+      await expect(eventFirstAttempt).resolves.toMatchObject({
+        ok: true,
+        changed: true,
+        record: { event: { version: 2, lifecycle: "published" } },
+      });
+      await configurationUpdate;
+      configurationUpdateFinished = true;
+      await expect(eventState(eventFirst.tenantId, eventFirstDraft.eventId)).resolves.toEqual({
+        event: { version: 2, lifecycle: "published" },
+        auditCount: 2,
+      });
+    } finally {
+      eventRelease.resolve();
+      await eventFirstAttempt.catch(() => undefined);
+      if (configurationUpdateClient !== undefined && !configurationUpdateFinished) {
+        await configurationUpdateClient.query("ROLLBACK").catch(() => undefined);
+        configurationUpdateClient.release();
+      } else if (configurationUpdateClient !== undefined) {
+        configurationUpdateClient.release();
+      }
+    }
   });
 
   it("serializes two publish contenders so only one advances the draft", async () => {

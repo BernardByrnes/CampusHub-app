@@ -29,6 +29,7 @@ import {
   events,
   programmes,
   residences,
+  tenantAcademicYearConfig,
   type EventAudienceCriteriaRow,
   type EventRow,
 } from "@/server/db/schema";
@@ -290,6 +291,28 @@ async function lockAndValidateAudienceTargets(
         .orderBy(asc(programmes.id))
         .for("update");
       if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index])) return false;
+    } else if (group.dimension === "academic_year") {
+      const rows = await database
+        .select({
+          minimumYear: tenantAcademicYearConfig.minimumYear,
+          maximumYear: tenantAcademicYearConfig.maximumYear,
+        })
+        .from(tenantAcademicYearConfig)
+        .where(eq(tenantAcademicYearConfig.tenantId, definition.tenantId))
+        .orderBy(asc(tenantAcademicYearConfig.tenantId))
+        .for("update");
+      const config = rows.length === 1 ? rows[0] : undefined;
+      if (
+        config === undefined ||
+        group.academicYears.some(
+          (year) =>
+            !Number.isInteger(year) ||
+            year < config.minimumYear ||
+            year > config.maximumYear,
+        )
+      ) {
+        return false;
+      }
     } else if (group.dimension === "residence") {
       const ids = group.residenceTargets
         .flatMap((target) => target.kind === "specific_residence" ? [target.residenceId] : [])
