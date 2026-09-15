@@ -375,7 +375,8 @@ describe("real PostgreSQL Organiser Core", () => {
       await organiserClient.query("select id from organisers where tenant_id = $1 and id = $2 for update", [graph.tenantId, created.organiser.id]);
       const expiryRows = await getDatabase().execute(sql`
         update role_grants
-        set expires_at = clock_timestamp() + interval '1 second'
+        set expires_at = greatest(clock_timestamp() + interval '1 second', created_at + interval '1 second'),
+            updated_at = clock_timestamp()
         where id = ${graph.eventGrantId}
         returning expires_at
       `);
