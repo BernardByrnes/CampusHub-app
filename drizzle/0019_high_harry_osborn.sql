@@ -24,18 +24,6 @@ BEGIN
     SELECT count(*)::integer
     INTO matching_publication_count
     FROM public.audit_events AS audit
-    CROSS JOIN LATERAL (
-      SELECT CASE
-        WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
-          AND length(audit.event_facts->>'version') <= 10
-          AND (
-            length(audit.event_facts->>'version') < 10
-            OR audit.event_facts->>'version' <= '2147483647'
-          )
-        THEN (audit.event_facts->>'version')::integer
-        ELSE NULL
-      END AS normalized_version
-    ) AS normalized
     WHERE audit.tenant_id IS NOT DISTINCT FROM event_row.tenant_id
       AND audit.event_type = 'event.published'
       AND audit.resource_type = 'event'
@@ -43,7 +31,18 @@ BEGIN
       AND audit.resource_version IS NOT DISTINCT FROM event_row.version
       AND audit.event_facts->>'action' IS NOT DISTINCT FROM 'published'
       AND audit.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
-      AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version;
+      AND (
+        CASE
+          WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+            AND length(audit.event_facts->>'version') <= 10
+            AND (
+              length(audit.event_facts->>'version') < 10
+              OR audit.event_facts->>'version' <= '2147483647'
+            )
+          THEN (audit.event_facts->>'version')::integer
+          ELSE NULL
+        END
+      ) IS NOT DISTINCT FROM event_row.version;
 
     IF matching_publication_count <> 1 THEN
       RAISE EXCEPTION 'CH-EVT-004 requires exactly one matching event.published audit fact for Event %', event_row.id;
@@ -52,18 +51,6 @@ BEGIN
     SELECT count(*)::integer
     INTO contradictory_publication_count
     FROM public.audit_events AS audit
-    CROSS JOIN LATERAL (
-      SELECT CASE
-        WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
-          AND length(audit.event_facts->>'version') <= 10
-          AND (
-            length(audit.event_facts->>'version') < 10
-            OR audit.event_facts->>'version' <= '2147483647'
-          )
-        THEN (audit.event_facts->>'version')::integer
-        ELSE NULL
-      END AS normalized_version
-    ) AS normalized
     WHERE audit.event_type = 'event.published'
       AND audit.resource_type = 'event'
       AND audit.resource_id = event_row.id
@@ -72,7 +59,18 @@ BEGIN
         OR audit.resource_version IS DISTINCT FROM event_row.version
         OR audit.event_facts->>'action' IS DISTINCT FROM 'published'
         OR audit.event_facts->>'lifecycle' IS DISTINCT FROM 'published'
-        OR normalized.normalized_version IS DISTINCT FROM event_row.version
+        OR (
+          CASE
+            WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+              AND length(audit.event_facts->>'version') <= 10
+              AND (
+                length(audit.event_facts->>'version') < 10
+                OR audit.event_facts->>'version' <= '2147483647'
+              )
+            THEN (audit.event_facts->>'version')::integer
+            ELSE NULL
+          END
+        ) IS DISTINCT FROM event_row.version
       );
 
     IF contradictory_publication_count <> 0 THEN
@@ -179,20 +177,19 @@ JOIN public.audit_events AS audit_row
  AND audit_row.resource_version IS NOT DISTINCT FROM event_row.version
  AND audit_row.event_facts->>'action' IS NOT DISTINCT FROM 'published'
  AND audit_row.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
-CROSS JOIN LATERAL (
-  SELECT CASE
-    WHEN audit_row.event_facts->>'version' ~ '^[0-9]+$'
-      AND length(audit_row.event_facts->>'version') <= 10
-      AND (
-        length(audit_row.event_facts->>'version') < 10
-        OR audit_row.event_facts->>'version' <= '2147483647'
-      )
-    THEN (audit_row.event_facts->>'version')::integer
-    ELSE NULL
-  END AS normalized_version
-) AS normalized
 WHERE event_row.lifecycle = 'published'
-  AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version;--> statement-breakpoint
+  AND (
+    CASE
+      WHEN audit_row.event_facts->>'version' ~ '^[0-9]+$'
+        AND length(audit_row.event_facts->>'version') <= 10
+        AND (
+          length(audit_row.event_facts->>'version') < 10
+          OR audit_row.event_facts->>'version' <= '2147483647'
+        )
+      THEN (audit_row.event_facts->>'version')::integer
+      ELSE NULL
+    END
+  ) IS NOT DISTINCT FROM event_row.version;--> statement-breakpoint
 
 -- CH-EVT-004 migration phase 4: verify complete bootstrap before success.
 DO $$
@@ -218,18 +215,6 @@ BEGIN
        AND audit.event_facts->>'action' IS NOT DISTINCT FROM 'published'
        AND audit.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
        AND audit.occurred_at = history.occurred_at
-      CROSS JOIN LATERAL (
-        SELECT CASE
-          WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
-            AND length(audit.event_facts->>'version') <= 10
-            AND (
-              length(audit.event_facts->>'version') < 10
-              OR audit.event_facts->>'version' <= '2147483647'
-            )
-          THEN (audit.event_facts->>'version')::integer
-          ELSE NULL
-        END AS normalized_version
-      ) AS normalized
       WHERE history.tenant_id = event_row.tenant_id
         AND history.event_id = event_row.id
         AND history.sequence = 1
@@ -241,7 +226,18 @@ BEGIN
         AND history.postponed_from_starts_at IS NULL
         AND history.reason IS NULL
         AND history.cancellation_retention_until IS NULL
-        AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version
+        AND (
+          CASE
+            WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+              AND length(audit.event_facts->>'version') <= 10
+              AND (
+                length(audit.event_facts->>'version') < 10
+                OR audit.event_facts->>'version' <= '2147483647'
+              )
+            THEN (audit.event_facts->>'version')::integer
+            ELSE NULL
+          END
+        ) IS NOT DISTINCT FROM event_row.version
     )
   ) OR (event_row.lifecycle = 'draft' AND (
     EXISTS (SELECT 1 FROM public.event_lifecycle_history AS history
