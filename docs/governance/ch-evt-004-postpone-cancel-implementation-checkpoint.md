@@ -361,9 +361,21 @@ that must be decided before implementation.
 ### 8.1 Provenance-safe bootstrap for existing published Events
 
 The future `0019` migration must close the gap for Events that are already
-`published` before CH-EVT-004 runtime exists. Before creating any history row,
-the migration must provenance-check every existing published Event and locate
-the matching same-Tenant A6 `event.published` record. The match must have:
+`published` before CH-EVT-004 runtime exists. Its first phase is a read-only
+preflight over the existing pre-`0019` Event and A6 structures only. The
+preflight must not insert into `event_lifecycle_history`, because that new
+table does not exist until the later structure-creation phase. It only proves
+that a safe deterministic baseline backfill can be performed.
+
+The preflight must classify every existing Event:
+
+- `published`: require the provenance contract below;
+- `draft`: valid and requires no bootstrap history row;
+- `postponed` or `cancelled`: unexpected under the promoted pre-CH-EVT-004
+  runtime and therefore fail closed for investigation.
+
+For every existing `published` Event, the preflight must locate the matching
+same-Tenant A6 `event.published` record. The match must have:
 
 - the exact same Tenant;
 - the exact Event resource ID;
@@ -783,12 +795,104 @@ are dependency-gated and are not fabricated in this checkpoint.
 This documentation checkpoint creates no migration. If the runtime slice is
 approved, it may create exactly one append-only migration after
 `0018_parched_maximus.sql`, conventionally `0019_<generated-name>.sql`, with
-its matching Drizzle snapshot and journal entry. That migration must first run
-the provenance-safe baseline-history preflight/backfill in §8.1 for every
-already-published Event, then add the history structure, required current Event
-retention state, checks, indexes, same-Tenant foreign keys, and closed audit
-vocabulary support. The preflight must abort/fail closed on ambiguous legacy
-state; it must not fabricate history or synthetic A6 entries.
+its matching Drizzle snapshot and journal entry. The actual PostgreSQL and
+Drizzle execution order must be the following:
+
+### Phase 1 — Preflight existing durable state
+
+Before any new lifecycle-history write, read only the existing pre-`0019`
+Event and A6 structures and perform the provenance classification in §8.1.
+This phase must not attempt to insert into `event_lifecycle_history`, add a
+baseline row, or otherwise depend on a new table, column, constraint, or enum
+value. It must fail closed on an unexpected `postponed`/`cancelled` Event or
+any ambiguous or inconsistent published provenance.
+
+### Phase 2 — Create the new persistence structures
+
+Only after Phase 1 succeeds, create the approved CH-EVT-004 structures in a
+PostgreSQL-valid order, including:
+
+- `event_lifecycle_history`;
+- the nullable current Event retention state such as
+  `cancellation_retention_until`;
+- same-Tenant foreign keys;
+- checks, uniqueness, sequence/version constraints, and required indexes; and
+- closed A6 vocabulary support for `event.postponed`, `event.republished`,
+  and `event.cancelled` before runtime can emit those events.
+
+Do not change existing A6 rows or synthesize historical A6 events. No operation
+may reference a table, column, constraint, or enum value before it exists.
+
+### Phase 3 — Perform the provenance-safe baseline backfill
+
+After `event_lifecycle_history` and all required supporting structures exist,
+insert exactly one sequence-1 baseline row for every pre-existing supported
+`published` Event that passed Phase 1:
+
+```text
+sequence = 1
+fromLifecycle = draft
+toLifecycle = published
+eventVersion = current Event version
+startsAt = current Event startsAt
+endsAt = current Event endsAt
+postponedFromStartsAt = null
+reason = null
+cancellationRetentionUntil = null
+occurredAt = matching event.published A6 occurredAt
+```
+
+Do not use migration execution time or guessed timestamps, create
+`legacy_unknown`, synthesize an A6 record, rewrite the A6 chain, or create a
+baseline for an existing draft. Every inserted row must satisfy all new
+structural constraints.
+
+### Phase 4 — Verify complete initialization
+
+Before migration success, verify deterministically that every pre-existing
+published Event has exactly one matching sequence-1 row with the same Tenant,
+Event ID, Event version, `startsAt`, and `endsAt`, the matching
+`event.published.occurredAt`, and `draft → published` facts. Verify that every
+pre-existing draft has no history row. Also verify globally:
+
+- no duplicate `(tenantId, eventId, sequence)`;
+- no duplicate `(tenantId, eventId, eventVersion)`;
+- no cross-Tenant Event/history relation;
+- no unsupported pre-feature postponed/cancelled Event;
+- no synthetic publication audit; and
+- no missing baseline for a supported existing published Event.
+
+Any failed postcondition fails the migration closed.
+
+### Phase 5 — Migration atomicity and rollback
+
+The required outcome is:
+
+```text
+preflight succeeds
+→ schema structures created
+→ baseline rows inserted
+→ postconditions verified
+→ migration succeeds
+```
+
+Any failure must not leave a partially initialized CH-EVT-004 state. The
+implementation review must verify the actual PostgreSQL/Drizzle migration
+runner semantics for the selected DDL and DML. If it cannot safely provide the
+required transactional behavior, implementation must stop and use a reviewed
+PostgreSQL-safe migration structure rather than assuming atomicity. It must
+not accept a created table with incomplete backfill, a current Event column
+without history, partial published-Event initialization, or changed audit
+vocabulary with failed initialization. Runtime CH-EVT-004 must remain disabled
+until the migration completes successfully.
+
+After `0019` succeeds, existing published Events already have sequence 1 and
+their next successful lifecycle transition appends sequence 2. Existing drafts
+still have no history; their future `draft → published` transaction creates
+sequence 1 atomically with the Event update, lifecycle-history append, and
+`event.published` A6. New Events follow the same runtime contract. Postpone,
+republish, and cancel must fail closed on unexpected missing or inconsistent
+history; runtime must never repair or synthesize lifecycle history on demand.
 
 The migration must not edit migrations `0001`–`0018`, create a compensating
 migration, or apply anything to production or a persistent managed database as
@@ -833,7 +937,7 @@ The following decisions are presented explicitly for independent senior review.
 | 18 | Persisted past/scheduler | Approve no persisted `past`, scheduler, worker, SYSTEM transition, or expiry job. |
 | 19 | First runtime slice boundary | Approve postpone, republish, cancel, history, retention, read projections, A6, isolation, and PostgreSQL evidence only. |
 | 20 | Full CH-EVT-004 qualifier | Approve that full story completion is not claimed until RSVP race and cancellation-notification dependencies are separately available and evidenced. |
-| 21 | Existing published history bootstrap | Approve a future `0019` provenance-checked sequence-1 baseline using the current published Event schedule plus the matching same-Tenant `event.published` A6 record; ambiguous or inconsistent state fails closed, with no synthetic audit or guessed timestamp. |
+| 21 | Existing published history bootstrap | Approve a future `0019` sequence: preflight existing Event + A6 data; create lifecycle-history/current-state structures; insert sequence-1 baselines from the current published schedule plus matching same-Tenant `event.published` A6; verify complete initialization; then succeed. Ambiguous or inconsistent state fails closed, with no synthetic audit or guessed timestamp. |
 | 22 | Complete PMAFB evidence | Approve the complete shared PMAFB matrix for every applicable authority source: both transaction orderings, authority/resource-lock expiry, strict database-clock boundary, PMAFB-first semantics, commit-boundary locking, resource/version races, and rollback invariants. |
 
 ## 18. Validation and review gate
