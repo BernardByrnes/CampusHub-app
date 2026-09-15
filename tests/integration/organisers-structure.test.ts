@@ -175,7 +175,7 @@ async function waitForLock(blockingBackendPid: number, tableName: string): Promi
       where activity.state = 'active'
         and activity.wait_event_type = 'Lock'
         and ${blockingBackendPid} = any(pg_blocking_pids(activity.pid))
-        and activity.query ilike ${`%from "${tableName}"%`}
+        and activity.query ilike ${`%${tableName}%`}
         and activity.query ilike '%for update%'
     `);
     if (result.rows.length > 0) return;
