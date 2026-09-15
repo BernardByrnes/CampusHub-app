@@ -266,20 +266,51 @@ recommends the following unambiguous interpretation for senior approval:
 
 This preserves the distinction between the current replacement schedule and
 the last effective published schedule without reconstructing state from
-mutable fields. For example, cancellation of `postponed to B` after published
-A uses A for the retention threshold; cancellation after B has been republished
-and later postponed to C uses B.
+mutable fields. The presence of at least one committed `published →
+postponed` history row is the authoritative proof that the special
+post-postponement rule applies; it must not be inferred from the current
+mutable lifecycle or schedule fields. For example, cancellation of `postponed
+to B` after published A uses A for the retention threshold; cancellation after
+B has been republished and later postponed to C uses B.
 
 ### 7.2 Immutable cancellation-retention snapshot
 
-At cancellation commit, persist an immutable `cancellationRetentionUntil`
-snapshot equal to the effective published `startsAt` defined above. The future
-runtime should add this nullable current-state field to `events` and store the
-same value in the cancellation history row. It is null for non-cancelled
-Events, set exactly once by the cancellation transition, and never changed
-after cancellation. The two values must be written in the same transaction;
-the current Event field supports bounded reads and the history field preserves
-the immutable transition fact.
+At cancellation commit, compute and persist an immutable
+`cancellationRetentionUntil` snapshot using this exact decision tree:
+
+1. For a currently `published` Event with no committed `published →
+   postponed` history, use `endsAt ?? startsAt`.
+2. For an Event with at least one committed `published → postponed` history row,
+   use the effective published `startsAt` current when cancellation commits:
+   - if currently `published` after republish, this is the current `startsAt`;
+   - if currently `postponed`, this is the latest immutable
+     `postponedFromStartsAt`, which is the last successfully published
+     schedule's `startsAt`.
+
+The special post-postponement rule never uses `endsAt`. The future runtime must
+add this nullable current-state field to `events` and store the same value in
+the cancellation history row. It is null for non-cancelled Events, set exactly
+once by the cancellation transition, and never changed after cancellation. The
+two values must be written in the same transaction; the current Event field
+supports bounded reads and the history field preserves the immutable transition
+fact.
+
+Examples:
+
+```text
+published A (10:00–14:00), never postponed, cancelled at 09:00
+→ cancellationRetentionUntil = 14:00
+
+published A → postponed B, cancelled while postponed
+→ cancellationRetentionUntil = A.startsAt
+
+published A → postponed B → republished B → cancelled
+→ cancellationRetentionUntil = B.startsAt
+
+published A → postponed B → republished B → postponed C, cancelled while
+postponed
+→ cancellationRetentionUntil = B.startsAt
+```
 
 An Event cancelled after its retention threshold has already passed remains
 durably cancelled but is immediately a derived-past projection. No background
@@ -326,6 +357,59 @@ do not create schedule history. This keeps the history about published
 lifecycle/schedule facts rather than transient authoring values. If Product
 authority intends “first-ever scheduled” to include unpublished draft values,
 that must be decided before implementation.
+
+### 8.1 Provenance-safe bootstrap for existing published Events
+
+The future `0019` migration must close the gap for Events that are already
+`published` before CH-EVT-004 runtime exists. Before creating any history row,
+the migration must provenance-check every existing published Event and locate
+the matching same-Tenant A6 `event.published` record. The match must have:
+
+- the exact same Tenant;
+- the exact Event resource ID;
+- A6 resource type `event`;
+- successful `draft → published` transition facts;
+- an audit `resourceVersion` matching the current Event version;
+- normalized Event audit facts whose version matches the current Event version;
+- no contradictory pre-CH-EVT-004 lifecycle evidence.
+
+For each unambiguous match, create exactly one baseline history row:
+
+```text
+sequence = 1
+fromLifecycle = draft
+toLifecycle = published
+eventVersion = current Event version
+startsAt = current Event startsAt
+endsAt = current Event endsAt
+postponedFromStartsAt = null
+reason = null
+cancellationRetentionUntil = null
+occurredAt = matching event.published A6 occurredAt
+```
+
+The current schedule is valid for this backfill because the promoted runtime
+before CH-EVT-004 does not permit published schedule edits, postponement,
+republish, or cancellation. It is therefore the schedule that crossed the
+approved `draft → published` transition. The existing atomic `event.published`
+A6 record supplies the authoritative publication timestamp and version; the
+migration must not substitute `updatedAt`, migration execution time, or any
+guessed timestamp.
+
+The migration must abort/fail closed rather than fabricate history when any
+required provenance is missing or contradictory, including a published Event
+with no matching A6 publication, incompatible duplicate publication records,
+an Event/audit version disagreement, an unexpected pre-feature `postponed` or
+`cancelled` Event, a Tenant/resource mismatch, or lifecycle data that
+contradicts the approved runtime. It must not create `legacy_unknown` rows,
+synthetic audit entries, guessed timestamps, or a rewritten A6 chain.
+
+Existing `draft` Events receive no history row during the migration. Their
+first post-migration publication creates sequence 1 atomically with the Event
+publish update, the first lifecycle-history row, and `event.published` A6.
+After the migration, postpone, republish, and cancel must fail closed if the
+required lifecycle history is missing or inconsistent; a privileged lifecycle
+mutation must never reconstruct missing history.
 
 The current `events` row remains the current authoritative state. Reads do not
 become event-sourcing reconstruction: the current schedule/lifecycle/version
@@ -468,8 +552,9 @@ Cancel needs:
 - authority rows required by PMAFB;
 - exact Tenant/Event row `FOR UPDATE`;
 - expected version and allowed lifecycle check;
-- immutable history lookup under the Event lock to determine effective
-  published schedule and retention snapshot.
+- immutable history lookup under the Event lock to determine whether a
+  committed `published → postponed` exists, the effective published schedule,
+  and the retention snapshot according to the exact decision tree in §7.2.
 
 It must not add unrelated Campus/audience/Organiser blocking work. After the
 final authority/time check, it updates current lifecycle and retention,
@@ -537,7 +622,141 @@ Required negative evidence includes:
 
 The implementation checkpoint must use separate real PostgreSQL connections,
 deterministic barriers, and explicit lock/blocking/commit-order evidence. A
-sleep-only test is not proof. At minimum it must prove:
+sleep-only test is not proof. The exact implementation SHA must first inventory
+the applicable authority sources and then provide the following complete
+evidence.
+
+### 14.1 Applicable authority-source inventory
+
+The implementation review must identify every applicable authority source at
+the exact SHA, with repository evidence. At minimum inspect:
+
+- Tenant lifecycle;
+- persisted module-enable state, if applicable;
+- Membership/principal state;
+- RoleGrant capability, scope, and revocation;
+- Guild Term;
+- assurance/MFA mutable state, if separately persisted and applicable;
+- RoleGrant expiry;
+- Guild Term expiry/end;
+- any operation-specific expiry.
+
+If a source is not applicable at the implementation SHA, record exactly
+`NOT APPLICABLE AT THIS SHA` and cite the repository evidence. Do not invent
+authority storage and do not silently omit a source.
+
+### 14.2 Two transaction orderings for every applicable mutable authority source
+
+For every applicable mutable authority source, provide separate deterministic
+real-PostgreSQL tests for both orderings. A generic invalidation test cannot
+stand in for source-specific evidence.
+
+#### Invalidation first
+
+The invalidation writer obtains its conflicting authority lock and commits
+first. The lifecycle mutation then waits or observes the committed invalid
+state, re-reads authoritative facts and fresh PostgreSQL time, fails before
+PMAFB, and leaves all of the following unchanged:
+
+```text
+Event lifecycle, version, startsAt, endsAt,
+cancellationRetentionUntil, lifecycle history, history sequence, and A6
+```
+
+Require this separately for each applicable source:
+
+| Authority source | Required invalidation-first proof |
+| --- | --- |
+| Tenant lifecycle | Suspension/inactivation commits first; lifecycle mutation fails before PMAFB. |
+| Membership/principal | Suspension, deactivation, or ineligibility commits first; mutation fails before PMAFB. |
+| RoleGrant | Revocation commits first; mutation fails before PMAFB. |
+| RoleGrant capability/scope | Capability or scope change commits first; mutation fails before PMAFB. |
+| Guild Term | Closure commits first; mutation fails before PMAFB. |
+| Module enablement | Disablement commits first, when applicable; mutation fails before PMAFB. |
+| Assurance/MFA | Invalidation commits first, when applicable; mutation fails before PMAFB. |
+
+#### Mutation first
+
+The lifecycle mutation obtains the required PMAFB consumer locks while
+authority is valid. The invalidation writer must block. The lifecycle mutation
+may then cross PMAFB, update Event state, append lifecycle history and A6, and
+commit while the authority locks remain held. Only after that commit may the
+invalidation continue; a subsequent lifecycle mutation must fail. Prove this
+separately for every applicable source in the table above.
+
+### 14.3 Required expiry matrix
+
+Use deterministic PostgreSQL barriers and changing database time. The final
+temporal decision must use `clock_timestamp()` or the approved equivalent, not
+transaction-start `now()` or `CURRENT_TIMESTAMP`. Require evidence for:
+
+1. expiry already passed before PMAFB — fail closed;
+2. RoleGrant expiry while waiting for an authority lock — after the wait,
+   fresh authority and `clock_timestamp()` reads, then fail when DB time is
+   greater than or equal to expiry;
+3. Guild Term expiry while waiting for an authority lock — same behavior;
+4. RoleGrant expiry while waiting for the Event resource lock — after the
+   wait, re-read Event/version/lifecycle, authority, and DB time, then fail
+   before PMAFB;
+5. Guild Term expiry while waiting for the Event resource lock — same;
+6. expiry while waiting for a transition-specific resource lock, especially
+   republish dependency locks, with fresh resource, authority, and database
+   time reads before PMAFB;
+7. the strict immediately-before-expiry boundary, where
+   `databaseTime >= expiry` fails closed;
+8. PMAFB crossed while `databaseTime < expiry`, followed by expiry afterward,
+   where the mutation remains valid under the approved PMAFB business
+   linearization because authority locks remain held through commit.
+
+No sleep-only timing claim is sufficient.
+
+### 14.4 Resource and expected-version races
+
+Keep authority serialization separate from Event serialization. Require
+deterministic evidence for stale postpone, stale republish, stale cancel, two
+concurrent postponements, postpone-versus-cancel, republish-versus-cancel,
+exactly one expected-version winner, no duplicate committed history sequence,
+no duplicate Event-version history record, and retry/idempotency behavior.
+
+### 14.5 PMAFB commit-boundary proof
+
+Exact-SHA evidence must prove that:
+
+- all required authority locks complete before PMAFB;
+- all required Event/transition resource locks complete before PMAFB;
+- no blocking authority or resource lookup begins after PMAFB;
+- authority locks remain held through Event, history, and A6 commit;
+- an invalidation writer cannot overtake the lifecycle mutation after PMAFB;
+- external notification and job behavior is outside the transaction.
+
+### 14.6 Rollback invariants
+
+Every failed or losing path must prove:
+
+```text
+Event lifecycle unchanged
+Event version unchanged
+Event startsAt unchanged
+Event endsAt unchanged
+cancellationRetentionUntil unchanged
+history unchanged
+history sequence unchanged
+no privileged-success A6
+```
+
+Explicitly cover history-append failure rolling back Event mutation, A6-append
+failure rolling back Event and history, and structural FK/check failure leaving
+no partial state.
+
+### 14.7 Shared PMAFB reuse
+
+The runtime must reuse the existing approved shared PMAFB implementation and
+must not create a second authorization algorithm. Shared generic evidence may
+be reused only where it is truly identical; exact-SHA CH-EVT-004 evidence must
+still prove that postpone, republish, and cancel are wired through the
+approved boundary.
+
+The following baseline transition-specific evidence must also be present:
 
 1. stale postpone returns `VERSION_CONFLICT`;
 2. stale republish returns `VERSION_CONFLICT`;
@@ -564,13 +783,16 @@ are dependency-gated and are not fabricated in this checkpoint.
 This documentation checkpoint creates no migration. If the runtime slice is
 approved, it may create exactly one append-only migration after
 `0018_parched_maximus.sql`, conventionally `0019_<generated-name>.sql`, with
-its matching Drizzle snapshot and journal entry.
-
-That future migration may add the history structure, required current Event
+its matching Drizzle snapshot and journal entry. That migration must first run
+the provenance-safe baseline-history preflight/backfill in §8.1 for every
+already-published Event, then add the history structure, required current Event
 retention state, checks, indexes, same-Tenant foreign keys, and closed audit
-vocabulary support. It must not edit migrations `0001`–`0018`, create a
-compensating migration, or apply anything to production or a persistent
-managed database as part of implementation review.
+vocabulary support. The preflight must abort/fail closed on ambiguous legacy
+state; it must not fabricate history or synthetic A6 entries.
+
+The migration must not edit migrations `0001`–`0018`, create a compensating
+migration, or apply anything to production or a persistent managed database as
+part of implementation review.
 
 ## 16. Explicit exclusions
 
@@ -594,8 +816,8 @@ The following decisions are presented explicitly for independent senior review.
 | 1 | Append-only Event history schema | Approve `event_lifecycle_history` with same-Tenant Event FK, one-based per-Event sequence, unique Event version, complete after-transition schedule, immutable reasons, retention snapshot, and authoritative timestamp. |
 | 2 | Full replacement schedule | Approve required `startsAt` plus explicit `endsAt`/`null`; never retain the old `endsAt`. |
 | 3 | Chronologically later replacement | **OPEN — SENIOR DECISION REQUIRED.** Recommend replacement `startsAt` strictly later than the current published `startsAt`. |
-| 4 | Effective published schedule | **PROPOSED — SENIOR CONFIRMATION REQUIRED.** For a postponed Event, use the latest `postponedFrom` / last successfully published schedule, not the unpublished replacement. |
-| 5 | Cancellation retention snapshot | Approve immutable `cancellationRetentionUntil` equal to the effective published `startsAt`, stored in current Event state and cancellation history. |
+| 4 | Effective published schedule | Approve the current schedule when `published`; when `postponed`, use the latest immutable `postponedFrom` / last successfully published schedule, not the unpublished replacement; after republish, use the replacement as the effective published schedule. |
+| 5 | Cancellation retention snapshot | Approve: never-postponed `published` uses `endsAt ?? startsAt`; an Event with at least one committed `published → postponed` uses the effective published `startsAt` current at cancellation; currently postponed uses the latest `postponedFromStartsAt`. Store the immutable value in current state and cancellation history. |
 | 6 | Postponed Home behavior | Proposed: show while replacement schedule is not derived past, with postponed treatment and all existing eligibility checks. |
 | 7 | Postponed Discover behavior | Proposed: show in upcoming results while replacement schedule is not derived past, with postponed treatment and all existing eligibility checks. |
 | 8 | Cancelled Home behavior | Proposed: show with clear cancelled treatment until retention threshold; then remove as derived past. |
@@ -611,6 +833,8 @@ The following decisions are presented explicitly for independent senior review.
 | 18 | Persisted past/scheduler | Approve no persisted `past`, scheduler, worker, SYSTEM transition, or expiry job. |
 | 19 | First runtime slice boundary | Approve postpone, republish, cancel, history, retention, read projections, A6, isolation, and PostgreSQL evidence only. |
 | 20 | Full CH-EVT-004 qualifier | Approve that full story completion is not claimed until RSVP race and cancellation-notification dependencies are separately available and evidenced. |
+| 21 | Existing published history bootstrap | Approve a future `0019` provenance-checked sequence-1 baseline using the current published Event schedule plus the matching same-Tenant `event.published` A6 record; ambiguous or inconsistent state fails closed, with no synthetic audit or guessed timestamp. |
+| 22 | Complete PMAFB evidence | Approve the complete shared PMAFB matrix for every applicable authority source: both transaction orderings, authority/resource-lock expiry, strict database-clock boundary, PMAFB-first semantics, commit-boundary locking, resource/version races, and rollback invariants. |
 
 ## 18. Validation and review gate
 
