@@ -186,39 +186,50 @@ the authoritative Tenant/server time reaching endsAt when endsAt exists, or
 startsAt otherwise. RSVP is closed at startsAt even where a later endsAt exists.
 No scheduler or persisted automatic archive transition is introduced.
 
-The canonical denial mapping is:
+The canonical GSC-14 primary denial is selected in the fixed evaluator order.
+The mapping is exact; a generic fallback must not replace an earlier canonical
+participation denial:
 
-| Condition | Required outcome |
-| --- | --- |
-| Foreign Tenant or hidden Event | NOT_FOUND or the existing Tenant-safe equivalent |
-| Ineligible Tenant or Membership | PERMISSION_DENIED or the primary GSC-14 denial |
-| Event module disabled | MODULE_DISABLED |
-| Event not published or not RSVP-enabled | RESOURCE_NOT_ACTIVE or NOT_READY |
-| Postponed or cancelled Event | INVALID_STATE |
-| Event start reached | INVALID_STATE or the existing governed time-closed denial |
-| Audience or assurance failure | AUDIENCE_INELIGIBLE or ASSURANCE_REQUIRED |
-| Stale expected version | VERSION_CONFLICT |
-| Same current state with matching request | successful idempotent no-op |
-| Repeated key with different material request | IDEMPOTENCY_CONFLICT |
+| GSC-14 step | Condition | Required outcome |
+| --- | --- | --- |
+| 1. Tenant lifecycle | Tenant lifecycle blocks participation | TENANT_SUSPENDED |
+| 2. module enabled | The authoritative Event module is disabled | MODULE_DISABLED |
+| 3. resource exists/actionable | The Event is unavailable in the caller's authorized context | NOT_FOUND, or TENANT_SCOPE_NOT_FOUND where that existing Tenant boundary requires it |
+| 3. resource exists/actionable | An ordinary Event is not in an actionable serving state, RSVP is disabled, the start instant has been reached, the Event is postponed, or the Event is derived-past | RESOURCE_NOT_ACTIVE |
+| 3. cancellation override | A cancellation committed before the RSVP can commit | INVALID_STATE with the current Event state, as required by CH-EVT-004 |
+| 4. current Membership state | Membership is stale, suspended, participation-suspended, alumni, transferred-out, closed, or otherwise ineligible | MEMBERSHIP_STATE_INELIGIBLE |
+| 5. assurance | Required assurance is not present | ASSURANCE_REQUIRED |
+| 6. resource audience/frozen cohort | Current Membership is outside the Event audience | AUDIENCE_INELIGIBLE |
+| 7. verified attributes | A required verified participation fact is unavailable | PREREQUISITE_MISSING |
+| 8. story-specific prerequisites | A prerequisite remains missing after the earlier steps | PREREQUISITE_MISSING |
 
-The exact public error code must use the existing domain family rather than a
-new RSVP-only family. Error precedence must not disclose the existence of a
-foreign Event.
+The evaluator returns exactly one primary GSC-14 denial. In particular,
+TENANT_SUSPENDED, MODULE_DISABLED, MEMBERSHIP_STATE_INELIGIBLE,
+ASSURANCE_REQUIRED, AUDIENCE_INELIGIBLE, and PREREQUISITE_MISSING are not
+collapsed to PERMISSION_DENIED. A foreign Event is never exposed merely
+because a version or idempotency token was supplied.
+
+VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, and INVALID_INPUT are later
+request/concurrency outcomes, not substitutes for an earlier GSC-14 denial.
+They apply only after the authoritative participation evaluation allows the
+request to reach the relevant request or concurrency boundary.
 
 The following transition table is the minimum contract:
 
 | Current state | Requested going | Requested interested | Requested withdrawn |
 | --- | --- | --- | --- |
-| no current row | create current state | create current state | reject as invalid request |
-| going | idempotent no-op | replace current state | replace current state |
-| interested | replace current state | idempotent no-op | replace current state |
-| withdrawn | requires explicit approved reactivation rule | requires explicit approved reactivation rule | idempotent no-op |
+| no current row | create | create | invalid: no prior RSVP to withdraw |
+| going | no-op | update | update |
+| interested | update | no-op | update |
+| withdrawn | update/reactivate | update/reactivate | no-op |
 
-The withdrawn-row reactivation rule is not silently invented here. If product
-authority permits reactivation, the implementation must name that authority and
-test it. Otherwise a withdrawn row remains withdrawn until a new approved
-contract defines how a new current participation is created. In either case,
-the Event, Tenant, Membership, assurance, audience, and time checks run again.
+The withdrawn-to-going and withdrawn-to-interested transitions are already
+authorized by the frozen Event RSVP state model and CH-EVT-003. They update the
+same current RSVP row; they do not create a second RSVP or Membership
+relationship. Reactivation is permitted only before startsAt and only after
+the same fresh GSC-14 and Event-actionability evaluation as every other
+state-changing RSVP mutation. It never bypasses RSVP enabled, audience,
+assurance, Membership, Event lifecycle, or the authoritative time boundary.
 
 While an Event is postponed, no new RSVP, state change, withdrawal, or
 reactivation is permitted. Existing current rows are preserved and are not
@@ -230,8 +241,7 @@ The narrow command input is limited to:
 
 - the Event identifier;
 - requested state;
-- expected Event or participation version, as defined by the implementation
-  contract;
+- expectedParticipationVersion;
 - a stable idempotency key.
 
 The client does not provide:
@@ -247,11 +257,13 @@ The client does not provide:
 - server time;
 - XP amount;
 - notification recipients;
-- version after the mutation.
+- participationVersion after the mutation;
+- Event version as a Student concurrency token.
 
 The server derives all of those facts from trusted context, current database
 rows, authoritative policy, and the transaction clock. The successful response
-returns the canonical current state and version produced by the transaction.
+returns the canonical current state and participationVersion produced by the
+transaction.
 
 ## 8. Idempotency and version contract
 
@@ -268,22 +280,79 @@ The idempotency identity must bind at least:
 - stable idempotency key.
 
 The stored request fingerprint must include every material input, including
-requested state and the expected version where it participates in the command.
+requested state and expectedParticipationVersion, plus the existing
+Tenant/Membership/Event/operation identity.
 Replaying the same key and same material request returns the original canonical
 result without a second state change, second XP award, or second notification
 enqueue. Reusing a key for a materially different request returns
 IDEMPOTENCY_CONFLICT.
 
-Every state-changing request uses the current expected-version contract. A
-successful change advances the governed version exactly once. A same-state
-replay must not advance it. A stale request returns VERSION_CONFLICT and does
-not mutate the participation row, Event row, XP state, or notification state.
+The current RSVP row owns a positive participation version. Conceptually,
+event_rsvps.version is at least 1 and means RSVP/current-participation version;
+it is not the Event version. The command token is exactly
+expectedParticipationVersion:
+
+- 0 is a command sentinel meaning that no current RSVP row is expected; it is
+  never persisted as a participation version;
+- a first successful none-to-going or none-to-interested mutation creates
+  participationVersion 1;
+- every successful state-changing mutation of an existing row advances
+  participationVersion from N to N + 1 exactly once;
+- a materially stale state-changing request whose expectedParticipationVersion
+  differs from the authoritative current version returns VERSION_CONFLICT with
+  no RSVP, Event, XP, notification, or outbox mutation;
+- a same-state request is a semantic no-op after authoritative row locking and
+  fresh GSC-14 evaluation. It returns the authoritative current state and
+  participationVersion, does not increment the version or updatedAt, and does
+  not manufacture a write merely to satisfy an older well-formed token;
+- malformed participation-version input remains INVALID_INPUT.
+
+The Event version remains internal to Event management and lifecycle
+concurrency. A Student RSVP command never asks the client to predict Event
+version. RSVP locks and rereads the Event row, so cancellation, postponement,
+republish, lifecycle, schedule, and fresh database-time checks still serialize
+through that row.
 
 The implementation must decide, through the approved persistence contract, how
 the retry record and current participation row are atomically claimed. It must
 not make two independent commits for idempotency and participation mutation.
 
-## 9. Transaction and lock boundary
+Durable request idempotency remains separate from same-state semantic
+idempotence. A same key plus the same fingerprint returns the original
+canonical result even if the current participation version has changed after
+that commit. A same key plus a materially different fingerprint returns
+IDEMPOTENCY_CONFLICT.
+
+## 9. Participation-version concurrency examples
+
+The runtime and PostgreSQL tests must implement these examples:
+
+### Two simultaneous first going requests
+
+Both requests use expectedParticipationVersion 0. One transaction inserts
+going with participationVersion 1. The other observes authoritative
+going/version 1 after the row conflict and returns that current state as the
+permitted same-state no-op. Exactly one current row exists.
+
+### Simultaneous first going and interested requests
+
+Both requests use expectedParticipationVersion 0. One inserts version 1. The
+other observes a materially different authoritative state and returns
+VERSION_CONFLICT. It does not silently overwrite the winner.
+
+### Two simultaneous identical state changes
+
+For going/version 3 to interested, both requests use expectedParticipationVersion
+3. The winner commits interested/version 4. The loser rereads interested/version
+4 and returns it as a same-state no-op. It does not write version 5.
+
+### Simultaneous different state changes
+
+One valid state change wins and increments once. A materially different stale
+loser returns VERSION_CONFLICT without a second overwrite. The same model
+applies to withdrawal and withdrawn reactivation.
+
+## 10. Transaction and lock boundary
 
 Eligibility, authorization, current state, time, idempotency, aggregate
 effect, and current-row mutation are one database transaction. There is no
@@ -318,7 +387,7 @@ RSVP itself must not call PMAFB because it is not event.manage. The transaction
 must still apply the same current authority and Tenant-scope facts that GSC-14
 requires.
 
-## 10. Lifecycle race contract
+## 11. Lifecycle race contract
 
 Cancellation and postponement serialize through the authoritative Event row.
 The following outcomes are mandatory:
@@ -340,7 +409,7 @@ No race test may rely on an arbitrary sleep. Real PostgreSQL row locks,
 barriers, backend PIDs, pg_stat_activity, pg_blocking_pids, or equivalent
 deterministic evidence must prove the blocking relationship.
 
-## 11. Time and schedule boundaries
+## 12. Time and schedule boundaries
 
 The authoritative RSVP close instant is Event startsAt. The transaction must
 also apply the existing derived-past rule and lifecycle state. A future
@@ -360,7 +429,7 @@ Required boundary tests for the future runtime include:
 The database clock used for the final decision must be observable in test
 fixtures and must not be supplied by the request.
 
-## 12. Read projections and privacy
+## 13. Read projections and privacy
 
 Student reads expose only the caller's own current participation state and the
 aggregate counts permitted by the approved Event read contract. They do not
@@ -387,7 +456,7 @@ Collection queries must apply Tenant filtering before pagination or aggregation.
 Detail reauthorization must run for every Event identifier. Empty optional
 filters must normalize to unset rather than broadening a query.
 
-## 13. Audit and minimization
+## 14. Audit and minimization
 
 GSC-8 does not require an audit row for every ordinary Student read or
 participation action. This checkpoint does not add a new audit vocabulary entry
@@ -403,7 +472,7 @@ full identity data, or a hidden attendee directory merely to support RSVP.
 Required future notification delivery must use the separately approved
 notification contract and must not be simulated by an audit insert.
 
-## 14. Tenant isolation and governance
+## 15. Tenant isolation and governance
 
 The future runtime must add narrow Tenant-surface registry entries for the RSVP
 commands, current-state reads, aggregate projections, idempotency record, and
@@ -443,7 +512,7 @@ Required negative tests include:
 - forged client authority and forged version;
 - cross-Tenant collection and aggregate queries.
 
-## 15. PostgreSQL evidence required for runtime authorization
+## 16. PostgreSQL evidence required for runtime authorization
 
 The later runtime checkpoint must include real PostgreSQL evidence, not only
 mocked repository tests. The minimum matrix is:
@@ -467,7 +536,7 @@ Every race must report committed versions, final lifecycle, current
 participation state, idempotency outcome, and side-effect counts. No required
 scenario may be marked PASS when it was skipped.
 
-## 16. Future persistence and migration discipline
+## 17. Future persistence and migration discipline
 
 This documentation checkpoint creates no schema and no migration. The current
 migration head remains 0019_high_harry_osborn.sql.
@@ -486,7 +555,7 @@ outbox, scheduler, or unrelated audited domain.
 Production migration application is outside this checkpoint and requires the
 separate deployment gate.
 
-## 17. Future implementation surface
+## 18. Future implementation surface
 
 The later implementation may add only the minimum surface for:
 
@@ -512,7 +581,7 @@ The implementation must not add:
 
 The existing trusted-context seam remains the only permitted identity input.
 
-## 18. Senior decision register
+## 19. Senior decision register
 
 The following decisions are fixed by existing authority for this checkpoint:
 
@@ -524,7 +593,7 @@ The following decisions are fixed by existing authority for this checkpoint:
 | EVT-RSVP-04 | one current row exists for a tuple | supplied |
 | EVT-RSVP-05 | going is a valid current state | supplied |
 | EVT-RSVP-06 | interested is a valid current state | supplied |
-| EVT-RSVP-07 | withdrawal is a valid action while actionable | supplied |
+| EVT-RSVP-07 | withdrawal and reactivation are valid actions while actionable | supplied |
 | EVT-RSVP-08 | same-state request is an idempotent no-op | supplied |
 | EVT-RSVP-09 | going and interested may replace one another | supplied |
 | EVT-RSVP-10 | RSVP closes at Event startsAt | supplied |
@@ -539,7 +608,7 @@ The following decisions are fixed by existing authority for this checkpoint:
 | EVT-RSVP-19 | GSC-14 order is mandatory | supplied |
 | EVT-RSVP-20 | trusted RequestContext is server-owned | supplied |
 | EVT-RSVP-21 | identitySubjectId is never client supplied | supplied |
-| EVT-RSVP-22 | stale expected version fails closed | supplied |
+| EVT-RSVP-22 | state-changing RSVP mutations use expectedParticipationVersion; Event version is not the Student RSVP command token | supplied |
 | EVT-RSVP-23 | GSC-7 durable retry semantics apply | supplied |
 | EVT-RSVP-24 | conflicting idempotency key is rejected | supplied |
 | EVT-RSVP-25 | one transaction covers decision and mutation | supplied |
@@ -551,17 +620,23 @@ The following decisions are fixed by existing authority for this checkpoint:
 | EVT-RSVP-31 | no new RSVP audit table is authorized | supplied |
 | EVT-RSVP-32 | no Auth implementation is authorized | supplied |
 | EVT-RSVP-33 | no module-enabled assumption from Tenant activity is allowed | blocker |
-| EVT-RSVP-34 | withdrawn-row reactivation needs an explicit approved rule | open implementation decision |
+| EVT-RSVP-34 | withdrawn to going/interested reactivation is allowed before startsAt, subject to complete fresh GSC-14 and Event actionability | supplied |
 | EVT-RSVP-35 | postponed/cancelled aggregate read retention must follow Event authority | implementation confirmation |
 | EVT-RSVP-36 | exact durable idempotency schema requires implementation review | implementation confirmation |
 | EVT-RSVP-37 | notification recipient derivation is future CH-NTF work | gated |
 | EVT-RSVP-38 | RSVP story is not complete until dependencies are evidenced | supplied |
+| EVT-RSVP-39 | expectedParticipationVersion 0 means no current row expected and is never persisted | supplied |
+| EVT-RSVP-40 | the first persisted participationVersion is 1 | supplied |
+| EVT-RSVP-41 | a successful state change advances participationVersion from N to N + 1 exactly once | supplied |
+| EVT-RSVP-42 | same-state no-op returns the authoritative current participationVersion without increment | supplied |
+| EVT-RSVP-43 | Event version remains internal lifecycle concurrency and is not the RSVP token | supplied |
+| EVT-RSVP-44 | GSC-14 uses exact canonical denial families in order, with the CH-EVT-004 cancellation INVALID_STATE override | supplied |
 
 Rows marked blocker, open implementation decision, or implementation
 confirmation must be resolved by explicit authority or fail-closed runtime
 behaviour before a later candidate can claim completion.
 
-## 19. Review blockers and approval conditions
+## 20. Review blockers and approval conditions
 
 Independent review must confirm at least:
 
@@ -584,7 +659,7 @@ Independent review must confirm at least:
 A reviewer returning FIX_REQUIRED must identify the exact finding. No runtime
 implementation or repair is authorized by this document.
 
-## 20. Later validation contract
+## 21. Later validation contract
 
 Before a later runtime candidate may be reviewed, it must run the applicable
 focused domain, application, repository, Event lifecycle, architecture,
@@ -616,7 +691,7 @@ The later candidate must report:
 - aggregate privacy evidence;
 - XP and notification dependency status.
 
-## 21. Explicit non-authorization
+## 22. Explicit non-authorization
 
 This checkpoint does not authorize:
 
