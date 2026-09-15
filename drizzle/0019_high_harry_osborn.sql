@@ -243,7 +243,7 @@ BEGIN
     EXISTS (SELECT 1 FROM public.event_lifecycle_history AS history
     WHERE history.tenant_id = event_row.tenant_id
       AND history.event_id = event_row.id
-    ) OR event_row.cancellation_retention_until IS NOT NULL));
+    ) OR event_row.cancellation_retention_until IS NOT NULL)));
 
   IF invalid_count <> 0 THEN
     RAISE EXCEPTION 'CH-EVT-004 history bootstrap postcondition failed';
