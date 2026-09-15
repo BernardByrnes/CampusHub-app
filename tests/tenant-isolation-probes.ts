@@ -26,7 +26,9 @@ import { ListFixturesService } from "@/application/sports/list-fixtures";
 import { ListResultsService } from "@/application/sports/list-results";
 import { ResultManagementService } from "@/application/sports/manage-results";
 import { EventManagementService } from "@/application/events/manage-events";
+import { OrganiserManagementService } from "@/application/organisers/manage-organisers";
 import { PostgresAuthorizedEventManagementExecutor } from "@/server/authorization/postgres-authorized-events";
+import { PostgresAuthorizedOrganiserManagementExecutor } from "@/server/authorization/postgres-authorized-organisers";
 import {
   getPublicationAudienceReadinessForTenant,
   validatePublicationAudienceConfirmationForTenant,
@@ -55,6 +57,7 @@ import {
   tenantAcademicYearConfig,
   events,
   eventAudienceCriteria,
+  organisers,
   tenants,
   type MembershipRow,
 } from "@/server/db/schema";
@@ -1962,6 +1965,61 @@ async function eventAuthorizationProbe(): Promise<void> {
   ).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
 }
 
+function organiserPersistenceProbe(): void {
+  expectTenantOwnedTable(organisers);
+  expectTenantCompositeIdentity(organisers);
+}
+
+async function organiserManagementProbe(): Promise<void> {
+  let gatewayCalled = false;
+  const service = new OrganiserManagementService({
+    capabilityAuthorizer: { authorize: async () => ({ allowed: true }) },
+    gateway: {
+      createOrganiser: async () => {
+        gatewayCalled = true;
+        return { ok: false as const, error: "PERSISTENCE_FAILED" as const };
+      },
+      updateOrganiser: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+    },
+    organisers: { listOrganisersForTenant: async () => [] },
+  });
+  await expect(
+    service.createOrganiser({
+      trustedContext: {
+        identitySubjectId: "organiser-probe",
+        tenantId: tenantAId,
+        membershipId: membershipAId,
+        tenantStatus: "active",
+        membershipStatus: "verified",
+        assuranceLevel: "L2",
+      },
+      requestedTenantId: tenantBId,
+      organiser: { name: "wrong tenant" },
+    }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  expect(gatewayCalled).toBe(false);
+}
+
+async function organiserAuthorizationProbe(): Promise<void> {
+  const executor = new PostgresAuthorizedOrganiserManagementExecutor({
+    database: {} as never,
+    auditEvents: {} as never,
+  });
+  await expect(
+    executor.updateOrganiser(
+      {
+        actor: { identitySubjectId: "organiser-probe", tenantId: tenantAId, membershipId: membershipAId },
+        context: { tenantStatus: "active", membershipStatus: "verified", assuranceLevel: "L2" },
+        capability: "publication.create" as never,
+        scope: { tenantId: tenantAId, module: "tenant", resource: "organiser" },
+      },
+      tenantAId,
+      publicationId,
+      { expectedVersion: 1, name: "invalid capability" },
+    ),
+  ).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+}
+
 export type TenantIsolationProbe = () => void | Promise<void>;
 
 export const tenantIsolationProbeRegistry: Readonly<
@@ -2156,6 +2214,11 @@ export const tenantIsolationProbeRegistry: Readonly<
   "events.discover": eventPersistenceProbe,
   "events.management": eventManagementProbe,
   "events.authorization": eventAuthorizationProbe,
+  "organisers.persistence": organiserPersistenceProbe,
+  "organisers.direct": organiserPersistenceProbe,
+  "organisers.collection": organiserPersistenceProbe,
+  "organisers.management": organiserManagementProbe,
+  "organisers.authorization": organiserAuthorizationProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,
   "publication.audience-definition-batch":
     publicationAudienceDefinitionBatchProbe,

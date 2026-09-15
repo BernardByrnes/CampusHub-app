@@ -13,6 +13,7 @@ import {
   type PublishEventInput,
   type UpdateEventInput,
 } from "@/domain/events/events";
+import { isOrganiser, type Organiser } from "@/domain/organisers/organisers";
 import {
   isEventAudienceDefinition,
   type EventAudienceDefinition,
@@ -29,6 +30,7 @@ import {
   events,
   programmes,
   residences,
+  organisers,
   tenantAcademicYearConfig,
   type EventAudienceCriteriaRow,
   type EventRow,
@@ -37,6 +39,7 @@ import {
 export type EventRecord = Readonly<{
   event: Event;
   audience: EventAudienceDefinition;
+  organiser: Organiser | null;
 }>;
 
 export type EventMutationError =
@@ -59,12 +62,14 @@ export type EventRepositoryTransactionDatabase = Pick<
 export type PreparedCreateEvent = Readonly<{
   eventId: string;
   audience: EventAudienceDefinition;
+  organiser: Organiser | null;
 }>;
 
 export type PreparedEventMutation = Readonly<{
   event: Event;
   currentAudience: EventAudienceDefinition;
   audience: EventAudienceDefinition;
+  organiser: Organiser | null;
 }>;
 
 export type EventListOptions = Readonly<{
@@ -90,6 +95,7 @@ function toEvent(row: EventRow): Event | null {
     startsAt: row.startsAt,
     endsAt: row.endsAt,
     campusId: row.campusId,
+    organiserId: row.organiserId ?? null,
     visibility: row.visibility,
     audienceMode: row.audienceMode,
     rsvpEnabled: row.rsvpEnabled,
@@ -98,6 +104,18 @@ function toEvent(row: EventRow): Event | null {
     updatedAt: row.updatedAt,
   };
   return isEvent(candidate) ? candidate : null;
+}
+
+function toOrganiser(row: typeof organisers.$inferSelect): Organiser | null {
+  const candidate = {
+    id: row.id,
+    tenantId: row.tenantId,
+    version: row.version,
+    name: row.name,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+  return isOrganiser(candidate) ? candidate : null;
 }
 
 function criteriaEmpty(row: EventAudienceCriteriaRow): boolean {
@@ -366,7 +384,39 @@ function validEventInput(input: CreateEventInput): boolean {
     venue !== null &&
     isValidDate(input.startsAt) &&
     (input.endsAt === null || (isValidDate(input.endsAt) && input.endsAt > input.startsAt)) &&
-    isUuid(input.campusId);
+    isUuid(input.campusId) &&
+    (input.organiserId === undefined || input.organiserId === null || isUuid(input.organiserId));
+}
+
+async function lockOrganiser(
+  database: Pick<CampusHubDatabase, "select">,
+  tenantId: string,
+  organiserId: string,
+): Promise<Organiser | null> {
+  if (!isUuid(tenantId) || !isUuid(organiserId)) return null;
+  const rows = await database
+    .select()
+    .from(organisers)
+    .where(and(eq(organisers.tenantId, tenantId), eq(organisers.id, organiserId)))
+    .orderBy(asc(organisers.id))
+    .for("update")
+    .limit(1);
+  return rows[0] === undefined ? null : toOrganiser(rows[0]);
+}
+
+async function loadOrganiser(
+  database: Pick<CampusHubDatabase, "select">,
+  tenantId: string,
+  organiserId: string | null,
+): Promise<Organiser | null> {
+  if (organiserId === null) return null;
+  if (!isUuid(tenantId) || !isUuid(organiserId)) return null;
+  const rows = await database
+    .select()
+    .from(organisers)
+    .where(and(eq(organisers.tenantId, tenantId), eq(organisers.id, organiserId)))
+    .limit(1);
+  return rows[0] === undefined ? null : toOrganiser(rows[0]);
 }
 
 async function loadAudience(
@@ -420,7 +470,7 @@ export class DrizzleEventRepository {
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || prepared.eventId !== eventId || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const { audience } = prepared;
+    const { audience, organiser } = prepared;
     try {
       const rows = await transaction.insert(events).values({
         id: eventId,
@@ -432,6 +482,7 @@ export class DrizzleEventRepository {
         startsAt: input.startsAt,
         endsAt: input.endsAt,
         campusId: input.campusId,
+        organiserId: input.organiserId ?? null,
         visibility: input.visibility,
         audienceMode: input.audienceMode,
         rsvpEnabled: input.rsvpEnabled,
@@ -443,7 +494,7 @@ export class DrizzleEventRepository {
       if (event === null) return { ok: false, error: "PERSISTENCE_FAILED" };
       const criteria = audienceToRows(audience);
       if (criteria.length > 0) await transaction.insert(eventAudienceCriteria).values(criteria);
-      return { ok: true, record: { event, audience }, changed: true };
+      return { ok: true, record: { event, audience, organiser }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
@@ -460,7 +511,11 @@ export class DrizzleEventRepository {
     if (audience === null || audience.mode !== input.audienceMode) return null;
     if (!(await lockActiveCampus(transaction, tenantId, input.campusId))) return null;
     if (!(await lockAndValidateAudienceTargets(transaction, audience))) return null;
-    return { eventId, audience };
+    const organiser = input.organiserId === undefined || input.organiserId === null
+      ? null
+      : await lockOrganiser(transaction, tenantId, input.organiserId);
+    if (input.organiserId !== undefined && input.organiserId !== null && organiser === null) return null;
+    return { eventId, audience, organiser };
   }
 
   public async prepareEventMutationInTransaction(
@@ -488,11 +543,18 @@ export class DrizzleEventRepository {
     if (operation === "publish" && audience.mode !== event.audienceMode) return "NOT_READY";
     if (!(await lockActiveCampus(transaction, tenantId, campusId))) return "NOT_READY";
     if (!(await lockAndValidateAudienceTargets(transaction, audience))) return "NOT_READY";
+    const organiserId = operation === "edit"
+      ? input?.organiserId ?? null
+      : event.organiserId;
+    const organiser = organiserId === null
+      ? null
+      : await lockOrganiser(transaction, tenantId, organiserId);
+    if (organiserId !== null && organiser === null) return "NOT_READY";
     const currentAudience = operation === "edit"
       ? await loadAudience(transaction, tenantId, event)
       : audience;
     if (currentAudience === null) return "NOT_READY";
-    return { event, currentAudience, audience };
+    return { event, currentAudience, audience, organiser };
   }
 
   public async findEventByIdForTenant(tenantId: string, eventId: string): Promise<EventRecord | null> {
@@ -501,7 +563,10 @@ export class DrizzleEventRepository {
     const event = rows[0] ? toEvent(rows[0]) : null;
     if (event === null) return null;
     const audience = await loadAudience(this.database, tenantId, event);
-    return audience === null ? null : { event, audience };
+    const organiser = await loadOrganiser(this.database, tenantId, event.organiserId);
+    return event.organiserId !== null && organiser === null
+      ? null
+      : audience === null ? null : { event, audience, organiser };
   }
 
   public async listEventsForTenant(tenantId: string, options: EventListOptions): Promise<readonly EventRecord[]> {
@@ -521,7 +586,10 @@ export class DrizzleEventRepository {
       const past = options.now.getTime() >= (event.endsAt ?? event.startsAt).getTime();
       if (!options.includePast && past) continue;
       const audience = await loadAudience(this.database, tenantId, event);
-      if (audience !== null) records.push({ event, audience });
+      const organiser = await loadOrganiser(this.database, tenantId, event.organiserId);
+      if (audience !== null && (event.organiserId === null || organiser !== null)) {
+        records.push({ event, audience, organiser });
+      }
     }
     return records;
   }
@@ -535,14 +603,14 @@ export class DrizzleEventRepository {
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const { event: existing, currentAudience, audience } = prepared;
+    const { event: existing, currentAudience, audience, organiser } = prepared;
     if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
       return { ok: false, error: "VERSION_CONFLICT" };
     }
     try {
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
       const material = isMaterialEventChange(existing, input);
-      if (!material && sameAudience(currentAudience, audience)) return { ok: true, record: { event: existing, audience: currentAudience }, changed: false };
+      if (!material && sameAudience(currentAudience, audience)) return { ok: true, record: { event: existing, audience: currentAudience, organiser }, changed: false };
       const updatedRows = await transaction.update(events).set({
         title: parseEventTitle(input.title)!,
         description: parseEventDescription(input.description)!,
@@ -550,6 +618,7 @@ export class DrizzleEventRepository {
         startsAt: input.startsAt,
         endsAt: input.endsAt,
         campusId: input.campusId,
+        organiserId: input.organiserId ?? null,
         visibility: input.visibility,
         audienceMode: input.audienceMode,
         rsvpEnabled: input.rsvpEnabled,
@@ -561,7 +630,7 @@ export class DrizzleEventRepository {
       await transaction.delete(eventAudienceCriteria).where(and(eq(eventAudienceCriteria.tenantId, tenantId), eq(eventAudienceCriteria.eventId, eventId)));
       const criteria = audienceToRows(audience);
       if (criteria.length > 0) await transaction.insert(eventAudienceCriteria).values(criteria);
-      return { ok: true, record: { event: updated, audience }, changed: true };
+      return { ok: true, record: { event: updated, audience, organiser }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
@@ -576,7 +645,7 @@ export class DrizzleEventRepository {
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const { event: existing, audience } = prepared;
+    const { event: existing, audience, organiser } = prepared;
     if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
       return { ok: false, error: "VERSION_CONFLICT" };
     }
@@ -584,7 +653,7 @@ export class DrizzleEventRepository {
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
       const updatedRows = await transaction.update(events).set({ lifecycle: "published", version: sql`${events.version} + 1`, updatedAt: occurredAt }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), eq(events.lifecycle, "draft"))).returning();
       const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
-      return updated === null ? { ok: false, error: "PERSISTENCE_FAILED" } : { ok: true, record: { event: updated, audience }, changed: true };
+      return updated === null ? { ok: false, error: "PERSISTENCE_FAILED" } : { ok: true, record: { event: updated, audience, organiser }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }

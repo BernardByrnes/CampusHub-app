@@ -10,6 +10,7 @@ export const CAPABILITIES = {
   PUBLICATION_RETRACT: "publication.retract",
   SPORT_MANAGE: "sport.manage",
   EVENT_MANAGE: "event.manage",
+  ORGANISER_MANAGE: "organiser.manage",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
@@ -22,6 +23,7 @@ export const CAPABILITY_VALUES = [
   CAPABILITIES.PUBLICATION_RETRACT,
   CAPABILITIES.SPORT_MANAGE,
   CAPABILITIES.EVENT_MANAGE,
+  CAPABILITIES.ORGANISER_MANAGE,
 ] as const satisfies readonly Capability[];
 
 /**

@@ -83,6 +83,9 @@ key, even if a future account model contains it.
 | `resultRevision.tenantId` | Result revision ownership | PostgreSQL UUID paired with `resultRevision.resultId` and `resultRevision.actorMembershipId` for same-Tenant FKs. | `CURRENT` |
 | `resultRevision.resultId` | Result revision relation | PostgreSQL UUID paired with `resultRevision.tenantId`; revision history never crosses a Tenant boundary. | `CURRENT` |
 | `resultRevision.actorMembershipId` | Result correction actor attribution | PostgreSQL UUID paired with `resultRevision.tenantId` for a same-Tenant Membership FK; student history redacts it. | `CURRENT` |
+| `organiser.id` | Organiser resource | PostgreSQL UUID primary key; stable across bounded name/version changes and owned by one Tenant. | `CURRENT` |
+| `organiser.tenantId` | Organiser ownership | PostgreSQL UUID FK to `tenant.id`; Organiser reads and mutations are Tenant-scoped. | `CURRENT` |
+| `event.organiserId` | Optional Event Organiser relation | Nullable PostgreSQL UUID paired with `event.tenantId` for a same-Tenant Organiser FK; Event-first creation remains permitted. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -127,11 +130,13 @@ key, even if a future account model contains it.
 | `result_revisions.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant Result correction actor FK | Composite actor constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `audit_events.tenant_id -> tenants.id` | Audit event ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; audit history is not deleted with a Tenant row. | `CURRENT` |
 | `audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant audit actor FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; actor attribution cannot cross Tenant boundaries. | `CURRENT` |
+| `organisers.tenant_id -> tenants.id` | Organiser ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `events.(tenant_id,organiser_id) -> organisers.(tenant_id,id)` | Same-Tenant Event Organiser FK | Nullable composite attribution constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
 `residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`,
-`sports`, `competitions`, `teams`, `fixtures`, `results`, `result_revisions`, and `audit_events`, with `tenants` as their
+`sports`, `competitions`, `teams`, `fixtures`, `results`, `result_revisions`, `organisers`, and `audit_events`, with `tenants` as their
 Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.

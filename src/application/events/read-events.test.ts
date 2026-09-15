@@ -32,6 +32,7 @@ function record(overrides: Partial<EventRecord["event"]> = {}): EventRecord {
       startsAt: new Date("2026-09-25T10:00:00.000Z"),
       endsAt: null,
       campusId: CAMPUS_ID,
+      organiserId: null,
       visibility: "PUBLIC",
       audienceMode: "entire_tenant",
       rsvpEnabled: false,
@@ -41,6 +42,7 @@ function record(overrides: Partial<EventRecord["event"]> = {}): EventRecord {
       ...overrides,
     },
     audience: { eventId: EVENT_ID, tenantId: TENANT_ID, mode: "entire_tenant", groups: [] },
+    organiser: null,
   };
 }
 

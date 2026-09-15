@@ -187,6 +187,28 @@ describe("audit event contracts", () => {
     );
   });
 
+  it("accepts only minimized Organiser lifecycle facts", () => {
+    const organizerEnvelope = normalizeAuditIntegrityEnvelope({
+      ...validEnvelope,
+      eventType: "organiser.created",
+      resourceType: "organiser",
+      resourceId: eventId,
+      eventFacts: { action: "created", version: 1 },
+    });
+    expect(organizerEnvelope).toMatchObject({
+      eventType: "organiser.created",
+      resourceType: "organiser",
+      eventFacts: { action: "created", version: 1 },
+    });
+    expect(normalizeAuditIntegrityEnvelope({
+      ...validEnvelope,
+      eventType: "organiser.changed",
+      resourceType: "organiser",
+      resourceId: eventId,
+      eventFacts: { action: "changed", version: 2, name: "leak" },
+    })).toBeNull();
+  });
+
   it("rejects envelope drift and non-canonical values", () => {
     expect(
       normalizeAuditIntegrityEnvelope({

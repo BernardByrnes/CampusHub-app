@@ -79,9 +79,18 @@ function parseAudience(value: unknown): unknown | null {
   return isRecord(value) ? value : null;
 }
 
+function parseOptionalOrganiserId(value: unknown): Readonly<{ valid: boolean; value: string | null }> {
+  return value === undefined || value === null
+    ? { valid: true, value: null }
+    : isUuid(value)
+      ? { valid: true, value }
+      : { valid: false, value: null };
+}
+
 function parseCreate(value: unknown): CreateEventInput | null {
-  if (!isRecord(value) || Object.keys(value).length !== 10 ||
-    !Object.keys(value).every((key) => ["title", "description", "venue", "startsAt", "endsAt", "campusId", "visibility", "audienceMode", "rsvpEnabled", "audience"].includes(key))) return null;
+  if (!isRecord(value) ||
+    !Object.keys(value).every((key) => ["title", "description", "venue", "startsAt", "endsAt", "campusId", "organiserId", "visibility", "audienceMode", "rsvpEnabled", "audience"].includes(key)) ||
+    Object.keys(value).length < 10 || Object.keys(value).length > 11) return null;
   const title = parseEventTitle(value.title);
   const description = parseEventDescription(value.description);
   const venue = parseEventVenue(value.venue);
@@ -90,7 +99,8 @@ function parseCreate(value: unknown): CreateEventInput | null {
   if (title === null || description === null || venue === null || startsAt === null || (value.endsAt !== null && endsAt === null) || !isUuid(value.campusId) || (value.visibility !== "PUBLIC" && value.visibility !== "MEMBERS" && value.visibility !== "VERIFIED_MEMBERS") || (value.audienceMode !== "entire_tenant" && value.audienceMode !== "targeted") || typeof value.rsvpEnabled !== "boolean") return null;
   if (endsAt !== null && endsAt.getTime() <= startsAt.getTime()) return null;
   const audience = parseAudience(value.audience);
-  return audience === null ? null : { title, description, venue, startsAt, endsAt, campusId: value.campusId, visibility: value.visibility, audienceMode: value.audienceMode, rsvpEnabled: value.rsvpEnabled, audience };
+  const organiserId = parseOptionalOrganiserId(value.organiserId);
+  return audience === null || !organiserId.valid ? null : { title, description, venue, startsAt, endsAt, campusId: value.campusId, organiserId: organiserId.value, visibility: value.visibility, audienceMode: value.audienceMode, rsvpEnabled: value.rsvpEnabled, audience };
 }
 
 function parseUpdate(value: unknown): UpdateEventInput | null {

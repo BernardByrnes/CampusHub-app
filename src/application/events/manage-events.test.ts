@@ -10,6 +10,7 @@ const TENANT_ID = "11111111-1111-4111-8111-111111111111";
 const MEMBERSHIP_ID = "22222222-2222-4222-8222-222222222222";
 const EVENT_ID = "33333333-3333-4333-8333-333333333333";
 const CAMPUS_ID = "44444444-4444-4444-8444-444444444444";
+const ORGANISER_ID = "55555555-5555-4555-8555-555555555555";
 const NOW = new Date("2026-09-20T10:00:00.000Z");
 
 const context: TrustedRequestContext = {
@@ -32,6 +33,7 @@ const eventRecord: EventRecord = {
     startsAt: NOW,
     endsAt: null,
     campusId: CAMPUS_ID,
+    organiserId: null,
     visibility: "MEMBERS",
     audienceMode: "entire_tenant",
     rsvpEnabled: false,
@@ -45,6 +47,7 @@ const eventRecord: EventRecord = {
     mode: "entire_tenant",
     groups: [],
   },
+  organiser: null,
 };
 
 function createInput() {
@@ -106,6 +109,13 @@ describe("EventManagementService", () => {
       edit: { ...createInput(), expectedVersion: 1 },
     })).resolves.toMatchObject({ outcome: "UPDATED" });
     expect(fixture.updateEvent).toHaveBeenCalledWith(expect.anything(), TENANT_ID, EVENT_ID, expect.objectContaining({ expectedVersion: 1 }));
+  });
+
+  it("accepts only the optional same-Tenant Organiser identity as an Event relation", async () => {
+    const fixture = service();
+    await expect(fixture.service.createEvent(command({ ...createInput(), organiserId: ORGANISER_ID }))).resolves.toMatchObject({ outcome: "CREATED" });
+    expect(fixture.createEvent).toHaveBeenCalledWith(expect.anything(), TENANT_ID, expect.objectContaining({ organiserId: ORGANISER_ID }));
+    await expect(fixture.service.createEvent(command({ ...createInput(), organiserId: "not-a-uuid" }))).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
   });
 
   it("rejects unknown or forged command fields before authorization", async () => {

@@ -32,6 +32,7 @@ import {
   eventLifecycleEnum,
   events,
   eventAudienceCriteria,
+  organisers,
 } from "./index";
 
 describe("Tenant, Membership, and Publication Drizzle schema", () => {
@@ -50,6 +51,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
     expect(getTableConfig(roleGrants).name).toBe("role_grants");
     expect(getTableConfig(events).name).toBe("events");
     expect(getTableConfig(eventAudienceCriteria).name).toBe("event_audience_criteria");
+    expect(getTableConfig(organisers).name).toBe("organisers");
   });
 
   it("declares closed lifecycle and assurance values at the database boundary", () => {
@@ -130,6 +132,7 @@ describe("Tenant, Membership, and Publication Drizzle schema", () => {
       "publication.retract",
       "sport.manage",
       "event.manage",
+      "organiser.manage",
     ]);
     expect(roleGrantModuleScopeEnum.enumValues).toContain("publication");
   });

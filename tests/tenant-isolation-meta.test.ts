@@ -51,6 +51,7 @@ function implementationPathForDatabaseObject(
     result_revisions: "src/server/db/schema/sports.ts",
     events: "src/server/db/schema/events.ts",
     event_audience_criteria: "src/server/db/schema/events.ts",
+    organisers: "src/server/db/schema/organisers.ts",
   };
 
   return (

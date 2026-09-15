@@ -26,6 +26,7 @@ export type Event = Readonly<{
   startsAt: Date;
   endsAt: Date | null;
   campusId: string;
+  organiserId: string | null;
   visibility: ResourceVisibility;
   audienceMode: PublicationAudienceMode;
   rsvpEnabled: boolean;
@@ -41,6 +42,7 @@ export type CreateEventInput = Readonly<{
   startsAt: Date;
   endsAt: Date | null;
   campusId: string;
+  organiserId?: string | null;
   visibility: ResourceVisibility;
   audienceMode: PublicationAudienceMode;
   rsvpEnabled: boolean;
@@ -124,6 +126,7 @@ export function isEvent(value: unknown): value is Event {
     (candidate.endsAt === null || endsAt instanceof Date) &&
     (endsAt === null || endsAt.getTime() > startsAt.getTime()) &&
     isUuid(candidate.campusId) &&
+    (candidate.organiserId === undefined || candidate.organiserId === null || isUuid(candidate.organiserId)) &&
     parseResourceVisibility(candidate.visibility) !== null &&
     parsePublicationAudienceMode(candidate.audienceMode) !== null &&
     typeof candidate.rsvpEnabled === "boolean" &&
@@ -141,7 +144,7 @@ export function isEventPast(event: Pick<Event, "startsAt" | "endsAt">, now: Date
 }
 
 export function isMaterialEventChange(
-  event: Pick<Event, "title" | "description" | "venue" | "startsAt" | "endsAt" | "campusId" | "visibility" | "audienceMode" | "rsvpEnabled">,
+  event: Pick<Event, "title" | "description" | "venue" | "startsAt" | "endsAt" | "campusId" | "organiserId" | "visibility" | "audienceMode" | "rsvpEnabled">,
   input: Omit<UpdateEventInput, "expectedVersion" | "audience"> & Readonly<{ audienceMode: PublicationAudienceMode; audience?: unknown }>,
 ): boolean {
   return event.title !== input.title ||
@@ -150,6 +153,7 @@ export function isMaterialEventChange(
     event.startsAt.getTime() !== input.startsAt.getTime() ||
     (event.endsAt?.getTime() ?? null) !== (input.endsAt?.getTime() ?? null) ||
     event.campusId !== input.campusId ||
+    (event.organiserId ?? null) !== (input.organiserId ?? null) ||
     event.visibility !== input.visibility ||
     event.audienceMode !== input.audienceMode ||
     event.rsvpEnabled !== input.rsvpEnabled;

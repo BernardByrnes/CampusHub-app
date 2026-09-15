@@ -233,6 +233,7 @@ describe("A4 User/Membership boundary", () => {
       "fixtures",
       "guild_terms",
       "memberships",
+      "organisers",
       "programmes",
       "publication_audience_criteria",
       "publications",
@@ -279,6 +280,7 @@ describe("A4 User/Membership boundary", () => {
       "fixtures",
       "guild_terms",
       "memberships",
+      "organisers",
       "programmes",
       "publication_audience_criteria",
       "publications",
@@ -349,6 +351,8 @@ describe("A4 User/Membership boundary", () => {
       "resultRevision.tenantId",
       "resultRevision.resultId",
       "resultRevision.actorMembershipId",
+      "organiser.id",
+      "organiser.tenantId",
       "RequestContext.tenantId",
       "RequestContext.membershipId",
       "Publication collection cursor.id",
@@ -390,6 +394,7 @@ describe("A4 User/Membership boundary", () => {
       "result_revisions.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
       "audit_events.tenant_id -> tenants.id",
       "audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
+      "organisers.tenant_id -> tenants.id",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

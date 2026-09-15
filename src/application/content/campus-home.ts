@@ -66,6 +66,8 @@ export type CampusHomeEventCard = Readonly<{
   venue: string;
   startsAt: Date;
   endsAt: Date | null;
+  organiserId: string | null;
+  organiserName: string | null;
 }>;
 
 export type CampusHomeFeedResult =
@@ -205,6 +207,8 @@ function mapEventToCard(event: EventReadProjection): CampusHomeEventCard {
     venue: event.venue,
     startsAt: event.startsAt,
     endsAt: event.endsAt,
+    organiserId: event.organiserId,
+    organiserName: event.organiserName,
   };
 }
 

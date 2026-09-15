@@ -30,6 +30,7 @@ import {
   publicationVisibilityEnum,
 } from "./publication";
 import { tenants } from "./tenant";
+import { organisers } from "./organisers";
 
 export const eventLifecycleEnum = pgEnum("event_lifecycle", EVENT_LIFECYCLES);
 
@@ -47,6 +48,7 @@ export const events = pgTable(
     startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
     campusId: uuid("campus_id").notNull(),
+    organiserId: uuid("organiser_id"),
     visibility: publicationVisibilityEnum("visibility").notNull().default("MEMBERS"),
     audienceMode: publicationAudienceModeEnum("audience_mode").notNull(),
     rsvpEnabled: boolean("rsvp_enabled").notNull().default(false),
@@ -71,6 +73,10 @@ export const events = pgTable(
       table.campusId,
       table.lifecycle,
     ),
+    index("events_tenant_organiser").on(
+      table.tenantId,
+      table.organiserId,
+    ),
     check("events_version_positive", sql`${table.version} >= 1`),
     check("events_title_nonempty", sql`char_length(btrim(${table.title})) > 0 AND char_length(${table.title}) <= 160`),
     check("events_description_nonempty", sql`char_length(btrim(${table.description})) > 0 AND char_length(${table.description}) <= 5000`),
@@ -80,6 +86,11 @@ export const events = pgTable(
       name: "events_campus_same_tenant_fk",
       columns: [table.tenantId, table.campusId],
       foreignColumns: [campuses.tenantId, campuses.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+    foreignKey({
+      name: "events_organiser_same_tenant_fk",
+      columns: [table.tenantId, table.organiserId],
+      foreignColumns: [organisers.tenantId, organisers.id],
     }).onDelete("restrict").onUpdate("cascade"),
   ],
 );

@@ -39,6 +39,8 @@ export const AUDIT_EVENT_TYPES = [
   "event.created",
   "event.changed",
   "event.published",
+  "organiser.created",
+  "organiser.changed",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -50,6 +52,7 @@ export const AUDIT_RESOURCE_TYPES = [
   "fixture",
   "result",
   "event",
+  "organiser",
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
 
@@ -87,6 +90,11 @@ export const EVENT_AUDIT_EVENT_TYPES = [
   "event.published",
 ] as const;
 export type EventAuditEventType = (typeof EVENT_AUDIT_EVENT_TYPES)[number];
+export const ORGANISER_AUDIT_EVENT_TYPES = [
+  "organiser.created",
+  "organiser.changed",
+] as const;
+export type OrganiserAuditEventType = (typeof ORGANISER_AUDIT_EVENT_TYPES)[number];
 export type SportsAuditResourceType = "sport" | "competition" | "team";
 
 export const AUDIT_INTEGRITY_FORMAT_VERSION = 1 as const;
@@ -152,6 +160,11 @@ export type EventAuditEventFacts = Readonly<{
   version: number;
 }>;
 
+export type OrganiserAuditEventFacts = Readonly<{
+  action: "created" | "changed";
+  version: number;
+}>;
+
 export type AuditEvent = Readonly<{
   id: string;
   tenantId: string;
@@ -167,7 +180,8 @@ export type AuditEvent = Readonly<{
     | SportsAuditEventFacts
     | FixtureAuditEventFacts
     | ResultAuditEventFacts
-    | EventAuditEventFacts;
+    | EventAuditEventFacts
+    | OrganiserAuditEventFacts;
   previousHash: string;
   currentHash: string;
   keyVersion: number;
@@ -192,7 +206,8 @@ export type AuditIntegrityEnvelopeV1 = Readonly<{
     | SportsAuditEventFacts
     | FixtureAuditEventFacts
     | ResultAuditEventFacts
-    | EventAuditEventFacts;
+    | EventAuditEventFacts
+    | OrganiserAuditEventFacts;
   previousHash: string;
   keyVersion: number;
 }>;
@@ -709,6 +724,45 @@ export function isEventAuditEventFacts(
   return normalizeEventAuditEventFacts(value, eventType) !== null;
 }
 
+function isOrganiserAuditEventType(
+  value: unknown,
+): value is OrganiserAuditEventType {
+  return typeof value === "string" &&
+    ORGANISER_AUDIT_EVENT_TYPES.includes(value as OrganiserAuditEventType);
+}
+
+export function normalizeOrganiserAuditEventFacts(
+  value: unknown,
+  eventType: OrganiserAuditEventType,
+): OrganiserAuditEventFacts | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["action", "version"]) ||
+    !isOrganiserAuditEventType(eventType) ||
+    !isPositiveInteger(value.version)
+  ) {
+    return null;
+  }
+
+  const [resource, expectedAction] = eventType.split(".");
+  if (
+    resource !== "organiser" ||
+    value.action !== expectedAction ||
+    (value.action !== "created" && value.action !== "changed")
+  ) {
+    return null;
+  }
+
+  return { action: value.action, version: value.version };
+}
+
+export function isOrganiserAuditEventFacts(
+  value: unknown,
+  eventType: OrganiserAuditEventType,
+): value is OrganiserAuditEventFacts {
+  return normalizeOrganiserAuditEventFacts(value, eventType) !== null;
+}
+
 export function normalizeAuditIntegrityEnvelope(
   value: unknown,
 ): AuditIntegrityEnvelopeV1 | null {
@@ -769,6 +823,12 @@ export function normalizeAuditIntegrityEnvelope(
             : isEventAuditEventType(value.eventType) &&
                 value.resourceType === "event"
               ? normalizeEventAuditEventFacts(value.eventFacts, value.eventType)
+              : isOrganiserAuditEventType(value.eventType) &&
+                  value.resourceType === "organiser"
+                ? normalizeOrganiserAuditEventFacts(
+                    value.eventFacts,
+                    value.eventType,
+                  )
               : null;
   if (eventFacts === null) {
     return null;

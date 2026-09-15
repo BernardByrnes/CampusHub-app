@@ -23,6 +23,8 @@ export type EventReadProjection = Readonly<{
   startsAt: Date;
   endsAt: Date | null;
   campusId: string;
+  organiserId: string | null;
+  organiserName: string | null;
   visibility: Event["visibility"];
   rsvpEnabled: boolean;
   lifecycle: "published";
@@ -74,6 +76,8 @@ function project(record: EventRecord, now: Date): EventReadProjection | null {
     startsAt: record.event.startsAt,
     endsAt: record.event.endsAt,
     campusId: record.event.campusId,
+    organiserId: record.event.organiserId,
+    organiserName: record.organiser?.name ?? null,
     visibility: record.event.visibility,
     rsvpEnabled: record.event.rsvpEnabled,
     lifecycle: "published",
