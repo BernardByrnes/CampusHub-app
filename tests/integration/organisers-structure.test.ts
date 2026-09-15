@@ -188,6 +188,24 @@ async function waitForLock(blockingBackendPid: number, tableName: string): Promi
   throw new Error(`Timed out waiting for a PostgreSQL ${tableName} row lock.`);
 }
 
+async function waitForLockWaiter(waitingBackendPid: number, tableName: string): Promise<void> {
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    const result = await getDatabase().execute(sql`
+      select activity.pid
+      from pg_stat_activity as activity
+      where activity.pid = ${waitingBackendPid}
+        and activity.state = 'active'
+        and activity.wait_event_type = 'Lock'
+        and cardinality(pg_blocking_pids(activity.pid)) > 0
+        and activity.query ilike ${`%${tableName}%`}
+    `);
+    if (result.rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for a PostgreSQL ${tableName} lock waiter.`);
+}
+
 async function waitForDatabaseTimeAtOrAfter(target: Date): Promise<void> {
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
@@ -386,7 +404,7 @@ describe("real PostgreSQL Organiser Core", () => {
         { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Must Not Commit" },
       );
       const eventBackendPid = await eventBackend.promise;
-      await waitForLock(eventBackendPid, "organisers");
+      await waitForLockWaiter(eventBackendPid, "organisers");
       const expiryRows = await getDatabase().execute(sql`
         update role_grants
         set expires_at = greatest(clock_timestamp() + interval '1 second', created_at + interval '1 second'),
