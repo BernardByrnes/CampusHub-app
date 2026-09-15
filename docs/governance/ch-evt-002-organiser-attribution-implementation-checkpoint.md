@@ -112,10 +112,10 @@ The implementation must not silently destroy historical attribution. Delete or
 archive semantics remain a separate Product/architecture decision if they are
 needed later.
 
-## 5. Recommended maintenance capability
+## 5. Approved maintenance capability
 
 The current foundation has `event.manage`, Publication capabilities, and
-`sport.manage`, but no Organiser-specific capability. The recommended new
+`sport.manage`, but no Organiser-specific capability. The approved new
 capability is:
 
 ```text
@@ -124,7 +124,8 @@ module scope: tenant
 resource: organiser
 ```
 
-This is a recommendation for senior review, not a capability implementation.
+This is an approved implementation decision, not a capability implementation
+in this documentation repair.
 
 Rationale:
 
@@ -141,10 +142,12 @@ Rationale:
 - An Organiser never grants publishing permission.
 
 The capability must be added only through the canonical persisted capability
-vocabulary and grant mechanism after approval. It must not be auto-granted,
-role-name authorized, or used as a shortcut for unresolved role seeding. A
-future provisioning decision must explain how an approved Guild Administrator
-grant receives it without reopening unrelated Auth or role-seeding work.
+vocabulary and grant mechanism. It is explicit capability authority only: it
+must not be auto-granted, authorized by the string `Guild Administrator`, or
+used as a shortcut for unresolved role seeding. Runtime tests may seed explicit
+valid `organiser.manage` grants through the existing grant mechanism. Production
+provisioning and role-bundle population remain explicit and must not derive
+authority from a role name.
 
 ## 6. Organiser mutation and PMAFB contract
 
@@ -238,25 +241,47 @@ For the current CH-EVT-001 lifecycle:
 - creating or editing the Organiser record itself uses `organiser.manage`;
 - an Organiser grants no Event publishing authority.
 
-The Event mutation preparation path must lock and validate the selected
-Organiser before the final Event PMAFB check, so a blocked Organiser resource
-cannot become a post-PMAFB dependency. The proposed deterministic order is:
+The Event mutation preparation path must preserve the already-approved
+CH-EVT-001 Event-first resource order. For an existing Event mutation, the
+selected Organiser is another dependent resource acquired after the Event row
+and the established Campus/audience preparation, but before the final Event
+PMAFB check. The deterministic order is:
 
 ```text
 Tenant → Membership → Guild Term → Role Grants
-→ selected same-Tenant Organiser row(s), ordered by ID
 → existing Event row, ordered by Tenant/ID
-→ re-read Tenant/resource/version/lifecycle facts
-→ final Event PMAFB and database-time check
-→ guarded Event update/insert
-→ event.changed/event.created audit
+→ Event version/lifecycle validation
+→ existing Event dependent resources in their established order
+→ selected same-Tenant Organiser row(s), ordered by ID, if supplied
+→ final authority re-read
+→ fresh PostgreSQL clock_timestamp()
+→ Event PMAFB
+→ immediate guarded Event update
+→ event.changed audit
 → commit
 ```
 
-Create has no Event row to lock. Removing an Organiser requires no Organiser
-row lock, but the Event version and lifecycle remain guarded. Any selected
-Organiser must exist, belong to the explicit Tenant, and remain valid through
-the same transaction.
+For Event create there is no Event row to lock. Create uses the existing
+Campus/audience preparation order first, then locks and validates the selected
+same-Tenant Organiser when supplied, followed by final authority/time checks,
+PMAFB, the Event insert, `event.created` audit, and commit:
+
+```text
+authority locks
+→ existing create resource preparation in its established order
+→ selected same-Tenant Organiser lock/validation, if supplied
+→ final authority re-read
+→ fresh PostgreSQL clock_timestamp()
+→ PMAFB
+→ Event insert
+→ event.created audit
+→ commit
+```
+
+Removing attribution requires no Organiser row lock because no Organiser is
+selected, but Event expected-version and lifecycle rules remain mandatory. Any
+selected Organiser must exist, belong to the explicit Tenant, and remain valid
+through the same transaction.
 
 ### 7.2 Student/read projection
 
@@ -430,6 +455,17 @@ Prove:
 - a selected Organiser lock is retained through Event mutation, audit, and
   commit.
 
+The evidence must include a deterministic Event-first regression in which an
+Event edit obtains the Event row first, validates its version/lifecycle, then
+waits on a selected Organiser row held by a second transaction. While the
+Organiser wait is active, the first transaction's authority must be expired or
+invalidated; after the wait resolves, final authority revalidation must reject
+the mutation before PMAFB, leaving the Event, version, and audit unchanged.
+The ordinary opposite serialization must also be covered: the Event obtains
+and validates its dependent Organiser before final PMAFB and commits safely.
+Both orderings require deterministic barriers/lock evidence, never arbitrary
+sleep-only proof.
+
 The tests must cover both relevant transaction orderings where a blocking
 relationship exists and must report backend/lock evidence rather than relying
 on arbitrary delays.
@@ -491,22 +527,28 @@ FULL CH-EVT-001 STORY COMPLETION NOT CLAIMED — ORGANISER/MEDIA DEPENDENCIES RE
 
 ## 17. Senior-review decision register
 
-The independent senior review should answer the following before any runtime
-implementation begins:
+The following implementation decisions are approved for the future bounded
+runtime checkpoint. They do not authorize runtime implementation in this
+documentation repair:
 
-| Question | Proposed answer for review |
+| Decision | Approved implementation boundary |
 | --- | --- |
-| Is `organiser.manage` with Tenant module scope the right maintenance authority? | Recommended: yes; confirm it is not auto-granted and is distinct from `event.manage` and Publication capabilities. |
-| Is Organiser Tenant-owned reference data rather than Event-owned data? | Recommended: yes; one reusable Tenant entity may be attributed by Event and Publication. |
-| Is zero/one same-Tenant Organiser on Event correct? | Recommended: yes; nullable relation with a same-Tenant composite FK. |
-| Should Publication attribution be implemented now? | Recommended: no; classify as a separate PMAFB integration gate because current Publication paths predate the shared PMAFB. |
-| Is optional logo correctly media-gated? | Recommended: yes; defer until an approved reusable media contract exists. |
-| Should delete/archive semantics be deferred? | Recommended: yes; Product does not currently supply a safe lifecycle, and historical attribution must not be destroyed. |
-| Are `organiser.created` and `organiser.changed` minimized correctly? | Recommended: yes; structural action/version facts only, atomic with mutation. |
-| Is the first runtime slice narrow enough? | Recommended: yes if it excludes Clubs, Publication PMAFB work, media, Auth, RSVP, XP, notifications, and lifecycle expansion. |
+| Maintenance capability | `organiser.manage` with module scope `tenant` is approved. |
+| Capability authority | It is explicit capability authority only; no automatic role-name authority or implicit grant. |
+| Organiser ownership | Organiser is Tenant-owned reference/attribution data. |
+| Event relation | Event has zero/one nullable same-Tenant Organiser relation. |
+| Event attribution authority | Attaching, changing, or removing attribution during Event draft mutation uses `event.manage`. |
+| Organiser metadata authority | Creating/editing Organiser metadata uses `organiser.manage`. |
+| Organiser lifecycle | Delete/archive remains deferred; the first runtime slice exposes no application delete/archive operation. |
+| Organiser audit | `organiser.created` and `organiser.changed` use minimized structural facts and commit atomically with the mutation. |
+| Publication attribution | Publication Organiser attribution remains separately gated behind Publication PMAFB integration. |
+| Optional logo | Optional Organiser logo remains media-gated. |
+| Runtime-slice status | The first Organiser Core runtime slice remains partial and does not claim full CH-EVT-002 completion. |
 
-The register is intentionally a review prompt. It does not close any open
-Product, security, privacy, media, Auth, or governance decision.
+Runtime fixtures may seed explicit valid `organiser.manage` grants through the
+existing grant mechanism. Production provisioning and role-bundle population
+remain explicit and must not derive authority from the string `Guild
+Administrator`.
 
 ## 18. Validation and non-authorization record
 
