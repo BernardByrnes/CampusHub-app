@@ -38,6 +38,7 @@ const eventRecord: EventRecord = {
     audienceMode: "entire_tenant",
     rsvpEnabled: false,
     lifecycle: "draft",
+    cancellationRetentionUntil: null,
     createdAt: NOW,
     updatedAt: NOW,
   },
@@ -48,6 +49,7 @@ const eventRecord: EventRecord = {
     groups: [],
   },
   organiser: null,
+  history: [],
 };
 
 function createInput() {
@@ -77,15 +79,21 @@ function service() {
   const createEvent = vi.fn(async () => ({ ok: true as const, record: eventRecord, changed: true }));
   const updateEvent = vi.fn(async () => ({ ok: true as const, record: eventRecord, changed: true }));
   const publishEvent = vi.fn(async () => ({ ok: true as const, record: { ...eventRecord, event: { ...eventRecord.event, lifecycle: "published" as const, version: 2 } }, changed: true }));
+  const postponeEvent = vi.fn(async () => ({ ok: true as const, record: eventRecord, changed: true }));
+  const republishEvent = vi.fn(async () => ({ ok: true as const, record: eventRecord, changed: true }));
+  const cancelEvent = vi.fn(async () => ({ ok: true as const, record: eventRecord, changed: true }));
   return {
     service: new EventManagementService({
       capabilityAuthorizer: { authorize },
-      gateway: { createEvent, updateEvent, publishEvent },
+      gateway: { createEvent, updateEvent, publishEvent, postponeEvent, republishEvent, cancelEvent },
     }),
     authorize,
     createEvent,
     updateEvent,
     publishEvent,
+    postponeEvent,
+    republishEvent,
+    cancelEvent,
   };
 }
 
@@ -128,5 +136,69 @@ describe("EventManagementService", () => {
       eventId: EVENT_ID,
       publish: { expectedVersion: 1, lifecycle: "published" },
     })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  });
+
+  it("parses and authorizes the bounded lifecycle transition commands", async () => {
+    const fixture = service();
+    await expect(fixture.service.postponeEvent({
+      trustedContext: context,
+      requestedTenantId: TENANT_ID,
+      eventId: EVENT_ID,
+      postpone: {
+        expectedVersion: 2,
+        startsAt: "2026-10-01T10:00:00.000Z",
+        endsAt: null,
+        reason: "  Venue unavailable  ",
+      },
+    })).resolves.toMatchObject({ outcome: "POSTPONED" });
+    expect(fixture.postponeEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT_ID,
+      EVENT_ID,
+      expect.objectContaining({ expectedVersion: 2, reason: "Venue unavailable" }),
+    );
+
+    await expect(fixture.service.republishEvent({
+      trustedContext: context,
+      requestedTenantId: TENANT_ID,
+      eventId: EVENT_ID,
+      republish: { expectedVersion: 3 },
+    })).resolves.toMatchObject({ outcome: "REPUBLISHED" });
+    await expect(fixture.service.cancelEvent({
+      trustedContext: context,
+      requestedTenantId: TENANT_ID,
+      eventId: EVENT_ID,
+      cancel: { expectedVersion: 4, reason: "  Cancelled by organiser  " },
+    })).resolves.toMatchObject({ outcome: "CANCELLED" });
+    expect(fixture.republishEvent).toHaveBeenCalledTimes(1);
+    expect(fixture.cancelEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      TENANT_ID,
+      EVENT_ID,
+      expect.objectContaining({ expectedVersion: 4, reason: "Cancelled by organiser" }),
+    );
+  });
+
+  it("rejects malformed lifecycle transition payloads before authorization", async () => {
+    const fixture = service();
+    await expect(fixture.service.postponeEvent({
+      trustedContext: context,
+      requestedTenantId: TENANT_ID,
+      eventId: EVENT_ID,
+      postpone: {
+        expectedVersion: 1,
+        startsAt: "2026-10-01T10:00:00.000Z",
+        endsAt: null,
+        reason: "",
+        forged: true,
+      },
+    })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    await expect(fixture.service.cancelEvent({
+      trustedContext: context,
+      requestedTenantId: TENANT_ID,
+      eventId: EVENT_ID,
+      cancel: { expectedVersion: 1, reason: "x", extra: "nope" },
+    })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+    expect(fixture.authorize).not.toHaveBeenCalled();
   });
 });

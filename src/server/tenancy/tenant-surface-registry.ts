@@ -121,7 +121,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0018_parched_maximus.sql",
+    implementationPath: "drizzle/0019_high_harry_osborn.sql",
   },
   "fixtures.services.factory": {
     category: "infrastructure",
@@ -402,6 +402,11 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/events.ts",
     exportName: "eventAudienceCriteria",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventLifecycleHistory",
     expectedAstForm: "CallExpression",
   },
   {
@@ -2716,8 +2721,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0018_parched_maximus.sql",
-    surface: "Reviewed Drizzle migration history through 0018",
+    implementationPath: "drizzle/0019_high_harry_osborn.sql",
+    surface: "Reviewed Drizzle migration history through 0019",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -2742,8 +2747,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0016_result_revision_guards.sql",
       "drizzle/0017_calm_menace.sql",
       "drizzle/0018_parched_maximus.sql",
+      "drizzle/0019_high_harry_osborn.sql",
     ],
-    migrationHead: "drizzle/0018_parched_maximus.sql",
+    migrationHead: "drizzle/0019_high_harry_osborn.sql",
   },
   {
     id: "organisers.persistence",
@@ -2857,6 +2863,17 @@ export const tenantSurfaceRegistry = [
     operation: "table:event_audience_criteria",
   },
   {
+    id: "event-history.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/events.ts",
+    surface: "event_lifecycle_history",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Lifecycle history is explicit Tenant-owned append-only Product history with same-Tenant Event identity, immutable transition facts, and sequence/version uniqueness.",
+    requiredNegativeTestIds: ["events.persistence"],
+    databaseObjectName: "event_lifecycle_history",
+    operation: "table:event_lifecycle_history",
+  },
+  {
     id: "events.repository",
     category: "repository",
     implementationPath: "src/server/repositories/event-repository.ts",
@@ -2865,7 +2882,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Every Event lookup and mutation requires explicit Tenant plus Event identity and audience writes share the caller transaction.",
     requiredNegativeTestIds: ["events.direct", "events.collection"],
   },
-  ...(["createEventInTransaction", "prepareCreateEventInTransaction", "findEventByIdForTenant", "listEventsForTenant", "prepareEventMutationInTransaction", "updateEventInTransaction", "publishEventInTransaction"] as const).map((operation) => ({
+  ...(["createEventInTransaction", "prepareCreateEventInTransaction", "findEventByIdForTenant", "listLifecycleHistoryForTenant", "listEventsForTenant", "prepareEventMutationInTransaction", "updateEventInTransaction", "appendLifecycleHistoryInTransaction", "publishEventInTransaction", "postponeEventInTransaction", "republishEventInTransaction", "cancelEventInTransaction"] as const).map((operation) => ({
     id: `events.repository-${operation}`,
     category: "repository" as const,
     implementationPath: "src/server/repositories/event-repository.ts",
@@ -2904,7 +2921,7 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["events.authorization"],
     operation: "PostgresPrivilegedMutationAuthority.run",
   },
-  ...(["createEvent", "updateEvent", "publishEvent"] as const).map((operation) => ({
+  ...(["createEvent", "updateEvent", "publishEvent", "postponeEvent", "republishEvent", "cancelEvent"] as const).map((operation) => ({
     id: `events.authorized-${operation}`,
     category: "application_service" as const,
     implementationPath: "src/server/authorization/postgres-authorized-events.ts",
@@ -2923,7 +2940,7 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Event management commands require the trusted RequestContext, exact Tenant scope, narrow fields, and event.manage.",
     requiredNegativeTestIds: ["events.management"],
   },
-  ...(["createEvent", "editEvent", "publishEvent"] as const).map((operation) => ({
+  ...(["createEvent", "editEvent", "publishEvent", "postponeEvent", "republishEvent", "cancelEvent"] as const).map((operation) => ({
     id: `events.management-${operation}`,
     category: "application_service" as const,
     implementationPath: "src/application/events/manage-events.ts",
@@ -2939,7 +2956,7 @@ export const tenantSurfaceRegistry = [
     implementationPath: "src/application/events/read-events.ts",
     surface: "ReadEventService",
     tenantScope: "TENANT_SCOPED",
-    isolationStrategy: "Event reads are bounded, published-only, derived-past aware, visibility-gated, and audience-evaluated under explicit Tenant scope.",
+    isolationStrategy: "Event reads are bounded, lifecycle-aware, derived-past aware, visibility-gated, and audience-evaluated under explicit Tenant scope.",
     requiredNegativeTestIds: ["events.direct", "events.collection"],
   },
   ...(["getEventForRead", "listEvents"] as const).map((operation) => ({

@@ -68,6 +68,9 @@ export type CampusHomeEventCard = Readonly<{
   endsAt: Date | null;
   organiserId: string | null;
   organiserName: string | null;
+  lifecycle: "published" | "postponed" | "cancelled";
+  postponedFrom: Date | null;
+  past: boolean;
 }>;
 
 export type CampusHomeFeedResult =
@@ -209,6 +212,9 @@ function mapEventToCard(event: EventReadProjection): CampusHomeEventCard {
     endsAt: event.endsAt,
     organiserId: event.organiserId,
     organiserName: event.organiserName,
+    lifecycle: event.lifecycle,
+    postponedFrom: event.postponedFrom,
+    past: event.past,
   };
 }
 
@@ -260,6 +266,7 @@ export class CampusHomeService {
           viewer: membershipViewer(input.context),
           tenantFacts: input.tenantFacts,
           now: input.now,
+          surface: "home",
           // Read a bounded candidate window before audience filtering so the
           // first ineligible Event does not hide the next eligible one.
           limit: 50,

@@ -57,6 +57,7 @@ import {
   tenantAcademicYearConfig,
   events,
   eventAudienceCriteria,
+  eventLifecycleHistory,
   organisers,
   tenants,
   type MembershipRow,
@@ -1899,6 +1900,18 @@ function eventPersistenceProbe(): void {
   expectTenantCompositeIdentity(events);
   expectForeignKey(events, ["tenant_id", "campus_id"], ["tenant_id", "id"]);
   expectForeignKey(events, ["tenant_id", "organiser_id"], ["tenant_id", "id"]);
+  expectTenantOwnedTable(eventLifecycleHistory);
+  const historyConfig = getTableConfig(eventLifecycleHistory as never);
+  const historyUniqueConstraintNames = historyConfig.uniqueConstraints.map(
+    (constraint) => constraint.name,
+  );
+  expect(historyUniqueConstraintNames).toContain(
+    "event_lifecycle_history_tenant_event_sequence_unique",
+  );
+  expect(historyUniqueConstraintNames).toContain(
+    "event_lifecycle_history_tenant_event_version_unique",
+  );
+  expectForeignKey(eventLifecycleHistory, ["tenant_id", "event_id"], ["tenant_id", "id"]);
 }
 
 function eventAudiencePersistenceProbe(): void {
@@ -1926,6 +1939,9 @@ async function eventManagementProbe(): Promise<void> {
       },
       updateEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
       publishEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+      postponeEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+      republishEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+      cancelEvent: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
     },
   });
   await expect(

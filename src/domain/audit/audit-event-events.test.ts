@@ -27,6 +27,14 @@ describe("Event audit contracts", () => {
       { action: "changed", lifecycle: "draft", version: 2, title: "leak" },
       "event.changed",
     )).toBeNull();
+    expect(normalizeEventAuditEventFacts(
+      { action: "postponed", lifecycle: "postponed", version: 3, historySequence: 2 },
+      "event.postponed",
+    )).toEqual({ action: "postponed", lifecycle: "postponed", version: 3, historySequence: 2 });
+    expect(normalizeEventAuditEventFacts(
+      { action: "cancelled", lifecycle: "cancelled", version: 4, historySequence: 3, reason: "leak" },
+      "event.cancelled",
+    )).toBeNull();
   });
 
   it("includes Event envelopes in the closed integrity contract", () => {

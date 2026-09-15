@@ -38,6 +38,7 @@ function organiser(overrides: Partial<Organiser> = {}): Organiser {
 function record(
   overrides: Partial<EventRecord["event"]> = {},
   attachedOrganiser: Organiser | null = null,
+  history: EventRecord["history"] = [],
 ): EventRecord {
   return {
     event: {
@@ -55,12 +56,14 @@ function record(
       audienceMode: "entire_tenant",
       rsvpEnabled: false,
       lifecycle: "published",
+      cancellationRetentionUntil: null,
       createdAt: NOW,
       updatedAt: NOW,
       ...overrides,
     },
     audience: { eventId: EVENT_ID, tenantId: TENANT_ID, mode: "entire_tenant", groups: [] },
     organiser: attachedOrganiser,
+    history,
   };
 }
 
@@ -82,6 +85,13 @@ describe("ReadEventService", () => {
     await expect(draft.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toEqual({ outcome: "NOT_FOUND" });
     const wrongTenant = await service(null).getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW });
     expect(wrongTenant).toEqual({ outcome: "NOT_FOUND" });
+    await expect(service(null).listEvents({
+      tenantId: TENANT_ID,
+      viewer: publicViewer,
+      tenantFacts: facts,
+      now: NOW,
+      surface: "unknown" as never,
+    })).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
   });
 
   it("exposes a bounded public projection and excludes derived-past items from collections", async () => {
@@ -89,6 +99,43 @@ describe("ReadEventService", () => {
     await expect(eventService.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toMatchObject({ outcome: "FOUND", event: { lifecycle: "published", past: true } });
     await expect(eventService.listEvents({ tenantId: TENANT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toEqual({ outcome: "OK", items: [] });
     await expect(eventService.listEvents({ tenantId: TENANT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW, includePast: true })).resolves.toMatchObject({ outcome: "OK", items: [{ id: EVENT_ID, past: true }] });
+  });
+
+  it("projects postponed and cancelled lifecycle state without exposing history reasons", async () => {
+    const postponedFrom = new Date("2026-09-25T10:00:00.000Z");
+    const postponed = service(record({
+      lifecycle: "postponed",
+      startsAt: new Date("2026-10-01T10:00:00.000Z"),
+      endsAt: null,
+      cancellationRetentionUntil: null,
+    }, null, [{
+        id: "66666666-6666-4666-8666-666666666666",
+        tenantId: TENANT_ID,
+        eventId: EVENT_ID,
+        sequence: 2,
+        eventVersion: 2,
+        fromLifecycle: "published",
+        toLifecycle: "postponed",
+        startsAt: new Date("2026-10-01T10:00:00.000Z"),
+        endsAt: null,
+        postponedFromStartsAt: postponedFrom,
+        reason: "private reason",
+        cancellationRetentionUntil: null,
+        occurredAt: NOW,
+      }]));
+    await expect(postponed.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toMatchObject({
+      outcome: "FOUND",
+      event: { lifecycle: "postponed", postponedFrom, past: false },
+    });
+
+    const cancelled = service(record({
+      lifecycle: "cancelled",
+      cancellationRetentionUntil: new Date("2026-09-20T11:00:00.000Z"),
+    }));
+    await expect(cancelled.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toMatchObject({
+      outcome: "FOUND",
+      event: { lifecycle: "cancelled", postponedFrom: null, past: false },
+    });
   });
 
   it("exposes same-Tenant Organiser attribution and rejects a foreign join", async () => {

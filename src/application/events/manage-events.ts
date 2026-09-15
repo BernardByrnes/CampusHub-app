@@ -9,11 +9,15 @@ import { isUuid } from "@/domain/identifiers/uuid";
 import {
   parseEventDescription,
   parseEventExpectedVersion,
+  parseEventReason,
   parseEventTimestamp,
   parseEventTitle,
   parseEventVenue,
   type CreateEventInput,
   type Event,
+  type CancelEventInput,
+  type PostponeEventInput,
+  type RepublishEventInput,
   type PublishEventInput,
   type UpdateEventInput,
 } from "@/domain/events/events";
@@ -32,18 +36,24 @@ export const EVENT_MANAGEMENT_DENIAL_CODES = [
 export type EventManagementDenialCode = (typeof EVENT_MANAGEMENT_DENIAL_CODES)[number];
 export type EventManagementDenied = Readonly<{ outcome: "DENIED"; code: EventManagementDenialCode }>;
 export type EventManagementResult =
-  | Readonly<{ outcome: "CREATED" | "UPDATED" | "PUBLISHED"; event: Event; audience: EventRecord["audience"] }>
+  | Readonly<{ outcome: "CREATED" | "UPDATED" | "PUBLISHED" | "POSTPONED" | "REPUBLISHED" | "CANCELLED"; event: Event; audience: EventRecord["audience"] }>
   | Readonly<{ outcome: "NOOP"; event: Event; audience: EventRecord["audience"] }>
   | EventManagementDenied;
 
 export type CreateEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; event: unknown }>;
 export type EditEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; eventId: string; edit: unknown }>;
 export type PublishEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; eventId: string; publish: unknown }>;
+export type PostponeEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; eventId: string; postpone: unknown }>;
+export type RepublishEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; eventId: string; republish: unknown }>;
+export type CancelEventCommand = Readonly<{ trustedContext: TrustedRequestContext; requestedTenantId: string; eventId: string; cancel: unknown }>;
 
 export type AuthorizedEventManagementGateway = Readonly<{
   createEvent(request: CapabilityAuthorizationRequest, tenantId: string, input: CreateEventInput): Promise<EventMutationResult>;
   updateEvent(request: CapabilityAuthorizationRequest, tenantId: string, eventId: string, input: UpdateEventInput): Promise<EventMutationResult>;
   publishEvent(request: CapabilityAuthorizationRequest, tenantId: string, eventId: string, input: PublishEventInput): Promise<EventMutationResult>;
+  postponeEvent(request: CapabilityAuthorizationRequest, tenantId: string, eventId: string, input: PostponeEventInput): Promise<EventMutationResult>;
+  republishEvent(request: CapabilityAuthorizationRequest, tenantId: string, eventId: string, input: RepublishEventInput): Promise<EventMutationResult>;
+  cancelEvent(request: CapabilityAuthorizationRequest, tenantId: string, eventId: string, input: CancelEventInput): Promise<EventMutationResult>;
 }>;
 
 export type EventManagementServiceDependencies = Readonly<{
@@ -119,6 +129,29 @@ function parsePublish(value: unknown): PublishEventInput | null {
   return expectedVersion === null ? null : { expectedVersion };
 }
 
+function parsePostpone(value: unknown): PostponeEventInput | null {
+  if (!isRecord(value) || Object.keys(value).length !== 4 || !Object.keys(value).every((key) => ["expectedVersion", "startsAt", "endsAt", "reason"].includes(key)) || !Object.prototype.hasOwnProperty.call(value, "endsAt")) return null;
+  const expectedVersion = parseEventExpectedVersion(value.expectedVersion);
+  const startsAt = parseEventTimestamp(value.startsAt);
+  const endsAt = value.endsAt === null ? null : parseEventTimestamp(value.endsAt);
+  const reason = parseEventReason(value.reason);
+  if (expectedVersion === null || startsAt === null || (value.endsAt !== null && endsAt === null) || reason === null || (endsAt !== null && endsAt.getTime() <= startsAt.getTime())) return null;
+  return { expectedVersion, startsAt, endsAt, reason };
+}
+
+function parseRepublish(value: unknown): RepublishEventInput | null {
+  if (!isRecord(value) || Object.keys(value).length !== 1) return null;
+  const expectedVersion = parseEventExpectedVersion(value.expectedVersion);
+  return expectedVersion === null ? null : { expectedVersion };
+}
+
+function parseCancel(value: unknown): CancelEventInput | null {
+  if (!isRecord(value) || Object.keys(value).length !== 2 || !Object.keys(value).every((key) => ["expectedVersion", "reason"].includes(key))) return null;
+  const expectedVersion = parseEventExpectedVersion(value.expectedVersion);
+  const reason = parseEventReason(value.reason);
+  return expectedVersion === null || reason === null ? null : { expectedVersion, reason };
+}
+
 function request(context: TrustedRequestContext, tenantId: string): CapabilityAuthorizationRequest {
   return {
     actor: { identitySubjectId: context.identitySubjectId, tenantId: context.tenantId, membershipId: context.membershipId },
@@ -132,7 +165,7 @@ function denied(code: EventManagementDenialCode): EventManagementDenied {
   return { outcome: "DENIED", code };
 }
 
-function map(result: EventMutationResult, outcome: "CREATED" | "UPDATED" | "PUBLISHED"): EventManagementResult {
+function map(result: EventMutationResult, outcome: "CREATED" | "UPDATED" | "PUBLISHED" | "POSTPONED" | "REPUBLISHED" | "CANCELLED"): EventManagementResult {
   if (!result.ok) return denied(result.error);
   return result.changed ? { outcome, event: result.record.event, audience: result.record.audience } : { outcome: "NOOP", event: result.record.event, audience: result.record.audience };
 }
@@ -180,6 +213,42 @@ export class EventManagementService {
     if (!(await this.authorized(command.trustedContext, command.requestedTenantId))) return denied("PERMISSION_DENIED");
     try {
       return map(await this.dependencies.gateway.publishEvent(request(command.trustedContext, command.requestedTenantId), command.requestedTenantId, command.eventId, input), "PUBLISHED");
+    } catch {
+      return denied("PERSISTENCE_FAILED");
+    }
+  }
+
+  public async postponeEvent(command: PostponeEventCommand): Promise<EventManagementResult> {
+    if (!scoped(command, ["trustedContext", "requestedTenantId", "eventId", "postpone"]) || !isUuid(command.eventId)) return denied("INVALID_INPUT");
+    const input = parsePostpone(command.postpone);
+    if (input === null) return denied("INVALID_INPUT");
+    if (!(await this.authorized(command.trustedContext, command.requestedTenantId))) return denied("PERMISSION_DENIED");
+    try {
+      return map(await this.dependencies.gateway.postponeEvent(request(command.trustedContext, command.requestedTenantId), command.requestedTenantId, command.eventId, input), "POSTPONED");
+    } catch {
+      return denied("PERSISTENCE_FAILED");
+    }
+  }
+
+  public async republishEvent(command: RepublishEventCommand): Promise<EventManagementResult> {
+    if (!scoped(command, ["trustedContext", "requestedTenantId", "eventId", "republish"]) || !isUuid(command.eventId)) return denied("INVALID_INPUT");
+    const input = parseRepublish(command.republish);
+    if (input === null) return denied("INVALID_INPUT");
+    if (!(await this.authorized(command.trustedContext, command.requestedTenantId))) return denied("PERMISSION_DENIED");
+    try {
+      return map(await this.dependencies.gateway.republishEvent(request(command.trustedContext, command.requestedTenantId), command.requestedTenantId, command.eventId, input), "REPUBLISHED");
+    } catch {
+      return denied("PERSISTENCE_FAILED");
+    }
+  }
+
+  public async cancelEvent(command: CancelEventCommand): Promise<EventManagementResult> {
+    if (!scoped(command, ["trustedContext", "requestedTenantId", "eventId", "cancel"]) || !isUuid(command.eventId)) return denied("INVALID_INPUT");
+    const input = parseCancel(command.cancel);
+    if (input === null) return denied("INVALID_INPUT");
+    if (!(await this.authorized(command.trustedContext, command.requestedTenantId))) return denied("PERMISSION_DENIED");
+    try {
+      return map(await this.dependencies.gateway.cancelEvent(request(command.trustedContext, command.requestedTenantId), command.requestedTenantId, command.eventId, input), "CANCELLED");
     } catch {
       return denied("PERSISTENCE_FAILED");
     }

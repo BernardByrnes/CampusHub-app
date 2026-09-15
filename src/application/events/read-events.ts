@@ -28,7 +28,8 @@ export type EventReadProjection = Readonly<{
   organiserName: string | null;
   visibility: Event["visibility"];
   rsvpEnabled: boolean;
-  lifecycle: "published";
+  lifecycle: "published" | "postponed" | "cancelled";
+  postponedFrom: Date | null;
   past: boolean;
 }>;
 
@@ -38,6 +39,7 @@ export type EventReadInput = Readonly<{
   viewer: ResourceReadViewer;
   tenantFacts: ResolvedTenantReadFacts;
   now: Date;
+  surface?: "home" | "discover";
   includePast?: boolean;
 }>;
 
@@ -50,6 +52,7 @@ export type EventCollectionInput = Readonly<{
   viewer: ResourceReadViewer;
   tenantFacts: ResolvedTenantReadFacts;
   now: Date;
+  surface?: "home" | "discover";
   campusId?: string;
   visibility?: Event["visibility"];
   limit?: number;
@@ -66,7 +69,7 @@ export type EventReadServiceDependencies = Readonly<{
 }>;
 
 function project(record: EventRecord, now: Date): EventReadProjection | null {
-  if (record.event.lifecycle !== "published") return null;
+  if (record.event.lifecycle === "draft" || (record.event.lifecycle === "cancelled" && record.event.cancellationRetentionUntil === null)) return null;
   if (record.event.organiserId === null) {
     if (record.organiser !== null) return null;
   } else if (
@@ -91,7 +94,10 @@ function project(record: EventRecord, now: Date): EventReadProjection | null {
     organiserName: record.organiser?.name ?? null,
     visibility: record.event.visibility,
     rsvpEnabled: record.event.rsvpEnabled,
-    lifecycle: "published",
+    lifecycle: record.event.lifecycle,
+    postponedFrom: record.event.lifecycle === "postponed"
+      ? record.history.filter((row) => row.fromLifecycle === "published" && row.toLifecycle === "postponed").at(-1)?.postponedFromStartsAt ?? null
+      : null,
     past: isEventPast(record.event, now),
   };
 }
@@ -115,7 +121,7 @@ async function allowed(
   input: EventReadInput | EventCollectionInput,
   dependencies: EventReadServiceDependencies,
 ): Promise<boolean> {
-  if (!isResourceReadViewer(input.viewer) || viewerTenant(input.viewer) !== input.tenantId || input.tenantFacts.tenantId !== input.tenantId || record.event.tenantId !== input.tenantId || record.event.lifecycle !== "published") return false;
+  if (!isResourceReadViewer(input.viewer) || viewerTenant(input.viewer) !== input.tenantId || input.tenantFacts.tenantId !== input.tenantId || record.event.tenantId !== input.tenantId || record.event.lifecycle === "draft") return false;
   if (record.event.organiserId === null) {
     if (record.organiser !== null) return false;
   } else if (
@@ -158,8 +164,8 @@ export class ReadEventService {
   }
 
   public async listEvents(input: EventCollectionInput): Promise<EventCollectionResult> {
-    if (!isUuid(input.tenantId) || !isResourceReadViewer(input.viewer) || viewerTenant(input.viewer) !== input.tenantId || input.tenantFacts.tenantId !== input.tenantId) return { outcome: "DENIED", code: "INVALID_INPUT" };
-    const options: EventListOptions = { now: input.now, campusId: input.campusId, visibility: input.visibility, limit: input.limit, includePast: input.includePast };
+    if (!isUuid(input.tenantId) || !isResourceReadViewer(input.viewer) || viewerTenant(input.viewer) !== input.tenantId || input.tenantFacts.tenantId !== input.tenantId || (input.surface !== undefined && input.surface !== "home" && input.surface !== "discover")) return { outcome: "DENIED", code: "INVALID_INPUT" };
+    const options: EventListOptions = { now: input.now, surface: input.surface, campusId: input.campusId, visibility: input.visibility, limit: input.limit, includePast: input.includePast };
     const records = await this.dependencies.events.listEventsForTenant(input.tenantId, options);
     const items: EventReadProjection[] = [];
     for (const record of records) {

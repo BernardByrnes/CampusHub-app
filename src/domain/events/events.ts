@@ -16,6 +16,8 @@ export const EVENT_LIFECYCLES = [
 ] as const;
 export type EventLifecycle = (typeof EVENT_LIFECYCLES)[number];
 
+export const EVENT_REASON_MAX_LENGTH = 500;
+
 export type Event = Readonly<{
   id: string;
   tenantId: string;
@@ -31,8 +33,25 @@ export type Event = Readonly<{
   audienceMode: PublicationAudienceMode;
   rsvpEnabled: boolean;
   lifecycle: EventLifecycle;
+  cancellationRetentionUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}>;
+
+export type EventLifecycleHistory = Readonly<{
+  id: string;
+  tenantId: string;
+  eventId: string;
+  sequence: number;
+  eventVersion: number;
+  fromLifecycle: EventLifecycle;
+  toLifecycle: EventLifecycle;
+  startsAt: Date;
+  endsAt: Date | null;
+  postponedFromStartsAt: Date | null;
+  reason: string | null;
+  cancellationRetentionUntil: Date | null;
+  occurredAt: Date;
 }>;
 
 export type CreateEventInput = Readonly<{
@@ -57,6 +76,22 @@ export type PublishEventInput = Readonly<{
   expectedVersion: number;
 }>;
 
+export type PostponeEventInput = Readonly<{
+  expectedVersion: number;
+  startsAt: Date;
+  endsAt: Date | null;
+  reason: string;
+}>;
+
+export type RepublishEventInput = Readonly<{
+  expectedVersion: number;
+}>;
+
+export type CancelEventInput = Readonly<{
+  expectedVersion: number;
+  reason: string;
+}>;
+
 export function parseEventLifecycle(value: unknown): EventLifecycle | null {
   return typeof value === "string" &&
     (EVENT_LIFECYCLES as readonly string[]).includes(value)
@@ -74,6 +109,10 @@ export function parseEventDescription(value: unknown): string | null {
 
 export function parseEventVenue(value: unknown): string | null {
   return parseBoundedText(value, 200);
+}
+
+export function parseEventReason(value: unknown): string | null {
+  return parseBoundedText(value, EVENT_REASON_MAX_LENGTH);
 }
 
 function parseBoundedText(value: unknown, maxLength: number): string | null {
@@ -114,6 +153,9 @@ export function isEvent(value: unknown): value is Event {
     : parseEventTimestamp(candidate.endsAt);
   const createdAt = parseEventTimestamp(candidate.createdAt);
   const updatedAt = parseEventTimestamp(candidate.updatedAt);
+  const cancellationRetentionUntil = candidate.cancellationRetentionUntil === null
+    ? null
+    : parseEventTimestamp(candidate.cancellationRetentionUntil);
   return (
     isUuid(candidate.id) &&
     isUuid(candidate.tenantId) &&
@@ -131,14 +173,27 @@ export function isEvent(value: unknown): value is Event {
     parsePublicationAudienceMode(candidate.audienceMode) !== null &&
     typeof candidate.rsvpEnabled === "boolean" &&
     parseEventLifecycle(candidate.lifecycle) !== null &&
+    Object.prototype.hasOwnProperty.call(candidate, "cancellationRetentionUntil") &&
+    (candidate.cancellationRetentionUntil === null || cancellationRetentionUntil instanceof Date) &&
+    (candidate.lifecycle === "cancelled"
+      ? cancellationRetentionUntil instanceof Date
+      : candidate.cancellationRetentionUntil === null) &&
     createdAt !== null &&
     updatedAt !== null
   );
 }
 
-export function isEventPast(event: Pick<Event, "startsAt" | "endsAt">, now: Date): boolean {
+export function isEventPast(
+  event: Pick<Event, "startsAt" | "endsAt" | "lifecycle" | "cancellationRetentionUntil">,
+  now: Date,
+): boolean {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
     return true;
+  }
+  if (event.lifecycle === "cancelled") {
+    return !(event.cancellationRetentionUntil instanceof Date) ||
+      Number.isNaN(event.cancellationRetentionUntil.getTime()) ||
+      now.getTime() >= event.cancellationRetentionUntil.getTime();
   }
   return now.getTime() >= (event.endsAt ?? event.startsAt).getTime();
 }

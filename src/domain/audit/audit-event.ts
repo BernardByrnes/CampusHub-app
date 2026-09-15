@@ -39,6 +39,9 @@ export const AUDIT_EVENT_TYPES = [
   "event.created",
   "event.changed",
   "event.published",
+  "event.postponed",
+  "event.republished",
+  "event.cancelled",
   "organiser.created",
   "organiser.changed",
 ] as const;
@@ -88,6 +91,9 @@ export const EVENT_AUDIT_EVENT_TYPES = [
   "event.created",
   "event.changed",
   "event.published",
+  "event.postponed",
+  "event.republished",
+  "event.cancelled",
 ] as const;
 export type EventAuditEventType = (typeof EVENT_AUDIT_EVENT_TYPES)[number];
 export const ORGANISER_AUDIT_EVENT_TYPES = [
@@ -154,11 +160,20 @@ export type ResultAuditEventFacts = Readonly<{
   correctionReason: string | null;
 }>;
 
-export type EventAuditEventFacts = Readonly<{
+export type EventCoreAuditEventFacts = Readonly<{
   action: "created" | "changed" | "published";
   lifecycle: EventLifecycle;
   version: number;
 }>;
+
+export type EventLifecycleAuditEventFacts = Readonly<{
+  action: "postponed" | "republished" | "cancelled";
+  lifecycle: "postponed" | "published" | "cancelled";
+  version: number;
+  historySequence: number;
+}>;
+
+export type EventAuditEventFacts = EventCoreAuditEventFacts | EventLifecycleAuditEventFacts;
 
 export type OrganiserAuditEventFacts = Readonly<{
   action: "created" | "changed";
@@ -691,7 +706,6 @@ export function normalizeEventAuditEventFacts(
 ): EventAuditEventFacts | null {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["action", "lifecycle", "version"]) ||
     !isEventAuditEventType(eventType) ||
     parseEventLifecycle(value.lifecycle) === null ||
     !isPositiveInteger(value.version)
@@ -704,8 +718,28 @@ export function normalizeEventAuditEventFacts(
     return null;
   }
 
-  const action = value.action as EventAuditEventFacts["action"];
+  const action = value.action;
   const lifecycle = value.lifecycle as EventLifecycle;
+  if (action === "postponed" || action === "republished" || action === "cancelled") {
+    if (
+      !hasOnlyKeys(value, ["action", "lifecycle", "version", "historySequence"]) ||
+      !isPositiveInteger(value.historySequence) ||
+      (action === "postponed" && lifecycle !== "postponed") ||
+      (action === "republished" && lifecycle !== "published") ||
+      (action === "cancelled" && lifecycle !== "cancelled")
+    ) {
+      return null;
+    }
+    return {
+      action,
+      lifecycle: lifecycle as EventLifecycleAuditEventFacts["lifecycle"],
+      version: value.version,
+      historySequence: value.historySequence,
+    };
+  }
+  if (!hasOnlyKeys(value, ["action", "lifecycle", "version"])) {
+    return null;
+  }
   if (
     (action === "created" && lifecycle !== "draft") ||
     (action === "changed" && lifecycle !== "draft") ||
@@ -714,7 +748,7 @@ export function normalizeEventAuditEventFacts(
     return null;
   }
 
-  return { action, lifecycle, version: value.version };
+  return { action: action as EventCoreAuditEventFacts["action"], lifecycle, version: value.version };
 }
 
 export function isEventAuditEventFacts(

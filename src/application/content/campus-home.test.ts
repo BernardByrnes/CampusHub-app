@@ -143,11 +143,13 @@ describe("CampusHomeService", () => {
       visibility: "MEMBERS",
       rsvpEnabled: false,
       lifecycle: "published",
+      postponedFrom: null,
       past: false,
     };
     const secondEvent = { ...firstEvent, id: "00000000-0000-4000-8000-000000000032", title: "Second event" };
     const listEvents = vi.fn(async (input: Parameters<ReadEventService["listEvents"]>[0]) => {
       expect(input.limit).toBe(50);
+      expect(input.surface).toBe("home");
       return { outcome: "OK" as const, items: [firstEvent, secondEvent] };
     });
     const { home } = createService([], new Map(), { listEvents });

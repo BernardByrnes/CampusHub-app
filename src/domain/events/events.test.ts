@@ -6,6 +6,7 @@ import {
   isMaterialEventChange,
   parseEventDescription,
   parseEventExpectedVersion,
+  parseEventReason,
   parseEventTitle,
   parseEventVenue,
 } from "./events";
@@ -31,6 +32,7 @@ function event(overrides: Partial<Record<string, unknown>> = {}): Event {
     audienceMode: "entire_tenant",
     rsvpEnabled: false,
     lifecycle: "draft",
+    cancellationRetentionUntil: null,
     createdAt: STARTS_AT,
     updatedAt: STARTS_AT,
     ...overrides,
@@ -62,6 +64,22 @@ describe("Event domain", () => {
     expect(isEventPast(ongoing as never, new Date("2026-09-20T11:00:00.000Z"))).toBe(true);
     expect(isEventPast(event() as never, new Date("2026-09-20T10:00:00.000Z"))).toBe(true);
     expect(ongoing.lifecycle).toBe("draft");
+  });
+
+  it("uses cancellation retention for cancelled Events and validates the reason contract", () => {
+    const retention = new Date("2026-09-20T12:00:00.000Z");
+    const cancelled = event({
+      lifecycle: "cancelled",
+      cancellationRetentionUntil: retention,
+    });
+    expect(isEvent(cancelled)).toBe(true);
+    expect(isEventPast(cancelled, new Date("2026-09-20T11:59:59.000Z"))).toBe(false);
+    expect(isEventPast(cancelled, retention)).toBe(true);
+    expect(isEvent(event({ lifecycle: "cancelled" }))).toBe(false);
+    expect(isEvent(event({ lifecycle: "published", cancellationRetentionUntil: retention }))).toBe(false);
+    expect(parseEventReason("  venue changed  ")).toBe("venue changed");
+    expect(parseEventReason(" ")).toBeNull();
+    expect(parseEventReason("x".repeat(501))).toBeNull();
   });
 
   it("detects material edits without treating audience identity as a mutable Event fact", () => {

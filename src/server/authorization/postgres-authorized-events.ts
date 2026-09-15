@@ -10,7 +10,14 @@ import {
   type EventAuditEventFacts,
   type EventAuditEventType,
 } from "@/domain/audit/audit-event";
-import type { CreateEventInput, PublishEventInput, UpdateEventInput } from "@/domain/events/events";
+import type {
+  CancelEventInput,
+  CreateEventInput,
+  PostponeEventInput,
+  PublishEventInput,
+  RepublishEventInput,
+  UpdateEventInput,
+} from "@/domain/events/events";
 import type { CampusHubDatabase } from "@/server/db/client";
 import {
   PostgresPrivilegedMutationAuthority,
@@ -75,6 +82,7 @@ function runtimeAuthorityIsSafe(
       and runtime_role.rolcreaterole = false
       and current_user = session_user
       and audit_table.relowner <> runtime_role.oid
+      and history_table.relowner <> runtime_role.oid
       and has_table_privilege(current_user, 'public.audit_events', 'SELECT')
       and has_table_privilege(current_user, 'public.audit_events', 'INSERT')
       and not has_table_privilege(current_user, 'public.audit_events', 'UPDATE')
@@ -82,6 +90,13 @@ function runtimeAuthorityIsSafe(
       and not has_table_privilege(current_user, 'public.audit_events', 'TRUNCATE')
       and not has_table_privilege(current_user, 'public.audit_events', 'TRIGGER')
       and not has_table_privilege(current_user, 'public.audit_events', 'REFERENCES')
+      and has_table_privilege(current_user, 'public.event_lifecycle_history', 'SELECT')
+      and has_table_privilege(current_user, 'public.event_lifecycle_history', 'INSERT')
+      and not has_table_privilege(current_user, 'public.event_lifecycle_history', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.event_lifecycle_history', 'DELETE')
+      and not has_table_privilege(current_user, 'public.event_lifecycle_history', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.event_lifecycle_history', 'TRIGGER')
+      and not has_table_privilege(current_user, 'public.event_lifecycle_history', 'REFERENCES')
       and not exists (
         select 1
         from effective_authority_closure as authority
@@ -91,11 +106,17 @@ function runtimeAuthorityIsSafe(
            or authority_role.rolcreaterole
            or authority_role.rolname = 'campushub_audit_owner'
            or authority_role.oid = audit_table.relowner
+           or authority_role.oid = history_table.relowner
            or has_table_privilege(authority_role.rolname, 'public.audit_events', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.audit_events', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.audit_events', 'TRUNCATE')
            or has_table_privilege(authority_role.rolname, 'public.audit_events', 'TRIGGER')
            or has_table_privilege(authority_role.rolname, 'public.audit_events', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.event_lifecycle_history', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.event_lifecycle_history', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.event_lifecycle_history', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.event_lifecycle_history', 'TRIGGER')
+           or has_table_privilege(authority_role.rolname, 'public.event_lifecycle_history', 'REFERENCES')
            or has_schema_privilege(authority_role.rolname, 'public', 'CREATE')
       )
       and not has_schema_privilege(current_user, 'public', 'CREATE')
@@ -107,6 +128,10 @@ function runtimeAuthorityIsSafe(
       on audit_table.relnamespace = audit_namespace.oid
      and audit_table.relname = 'audit_events'
      and audit_table.relkind = 'r'
+    join pg_class as history_table
+      on history_table.relnamespace = audit_namespace.oid
+     and history_table.relname = 'event_lifecycle_history'
+     and history_table.relkind = 'r'
     where runtime_role.rolname = current_user
   `).then((result) => (result.rows[0] as { allowed?: unknown } | undefined)?.allowed === true).catch(() => false);
 }
@@ -183,11 +208,18 @@ export class PostgresAuthorizedEventManagementExecutor {
             const result = await mutation(transaction, actorMembershipId, databaseTime);
             if (!result.ok) return result;
             if (result.changed) {
-              const facts: EventAuditEventFacts = {
-                action,
-                lifecycle: result.record.event.lifecycle,
-                version: result.record.event.version,
-              };
+              const facts: EventAuditEventFacts = action === "postponed" || action === "republished" || action === "cancelled"
+                ? {
+                    action,
+                    lifecycle: result.record.event.lifecycle as "published" | "postponed" | "cancelled",
+                    version: result.record.event.version,
+                    historySequence: result.record.history[result.record.history.length - 1]?.sequence ?? 0,
+                  }
+                : {
+                    action,
+                    lifecycle: result.record.event.lifecycle,
+                    version: result.record.event.version,
+                  };
               await this.dependencies.auditEvents.appendEventMutationInTransaction(transaction, {
                 tenantId: result.record.event.tenantId,
                 actorMembershipId,
@@ -289,6 +321,81 @@ export class PostgresAuthorizedEventManagementExecutor {
         ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
         : repository.publishEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
       "published",
+    );
+  }
+
+  public async postponeEvent(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    eventId: string,
+    input: PostponeEventInput,
+  ): Promise<EventMutationResult> {
+    const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    let prepared: PreparedEventMutation | undefined;
+    return this.execute(
+      request,
+      tenantId,
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "postpone", input);
+        if (typeof result === "string") return result;
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.postponeEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
+      "postponed",
+    );
+  }
+
+  public async republishEvent(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    eventId: string,
+    input: RepublishEventInput,
+  ): Promise<EventMutationResult> {
+    const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    let prepared: PreparedEventMutation | undefined;
+    return this.execute(
+      request,
+      tenantId,
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "republish", input);
+        if (typeof result === "string") return result;
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.republishEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
+      "republished",
+    );
+  }
+
+  public async cancelEvent(
+    request: CapabilityAuthorizationRequest,
+    tenantId: string,
+    eventId: string,
+    input: CancelEventInput,
+  ): Promise<EventMutationResult> {
+    const repository = this.dependencies.eventRepository ?? new DrizzleEventRepository();
+    let prepared: PreparedEventMutation | undefined;
+    return this.execute(
+      request,
+      tenantId,
+      this.dependencies.applicationName ?? `campushub-event-${eventId}`,
+      async (transaction) => {
+        const result = await repository.prepareEventMutationInTransaction(transaction, tenantId, eventId, input.expectedVersion, "cancel", input);
+        if (typeof result === "string") return result;
+        prepared = result;
+        return true;
+      },
+      (transaction, _actor, databaseTime) => prepared === undefined
+        ? Promise.resolve({ ok: false as const, error: "PERSISTENCE_FAILED" as const })
+        : repository.cancelEventInTransaction(transaction, tenantId, eventId, input, prepared, databaseTime),
+      "cancelled",
     );
   }
 }

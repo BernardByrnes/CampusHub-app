@@ -4,12 +4,18 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   isEvent,
+  isEventPast,
   isMaterialEventChange,
   parseEventDescription,
   parseEventTitle,
   parseEventVenue,
+  parseEventReason,
   type CreateEventInput,
   type Event,
+  type EventLifecycleHistory,
+  type PostponeEventInput,
+  type RepublishEventInput,
+  type CancelEventInput,
   type PublishEventInput,
   type UpdateEventInput,
 } from "@/domain/events/events";
@@ -31,15 +37,18 @@ import {
   programmes,
   residences,
   organisers,
+  eventLifecycleHistory,
   tenantAcademicYearConfig,
   type EventAudienceCriteriaRow,
   type EventRow,
+  type EventLifecycleHistoryRow,
 } from "@/server/db/schema";
 
 export type EventRecord = Readonly<{
   event: Event;
   audience: EventAudienceDefinition;
   organiser: Organiser | null;
+  history: readonly EventLifecycleHistory[];
 }>;
 
 export type EventMutationError =
@@ -70,14 +79,33 @@ export type PreparedEventMutation = Readonly<{
   currentAudience: EventAudienceDefinition;
   audience: EventAudienceDefinition;
   organiser: Organiser | null;
+  history: readonly EventLifecycleHistory[];
+  hasCommittedPostponement: boolean;
+  latestPostponedFromStartsAt: Date | null;
 }>;
 
 export type EventListOptions = Readonly<{
   now: Date;
+  surface?: "home" | "discover";
   campusId?: string;
   visibility?: "PUBLIC" | "MEMBERS" | "VERIFIED_MEMBERS";
   includePast?: boolean;
   limit?: number;
+}>;
+
+export type EventLifecycleHistoryAppendInput = Readonly<{
+  tenantId: string;
+  eventId: string;
+  sequence: number;
+  eventVersion: number;
+  fromLifecycle: EventLifecycleHistory["fromLifecycle"];
+  toLifecycle: EventLifecycleHistory["toLifecycle"];
+  startsAt: Date;
+  endsAt: Date | null;
+  postponedFromStartsAt: Date | null;
+  reason: string | null;
+  cancellationRetentionUntil: Date | null;
+  occurredAt: Date;
 }>;
 
 function isValidDate(value: unknown): value is Date {
@@ -100,10 +128,45 @@ function toEvent(row: EventRow): Event | null {
     audienceMode: row.audienceMode,
     rsvpEnabled: row.rsvpEnabled,
     lifecycle: row.lifecycle,
+    cancellationRetentionUntil: row.cancellationRetentionUntil,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
   return isEvent(candidate) ? candidate : null;
+}
+
+function toLifecycleHistory(row: EventLifecycleHistoryRow): EventLifecycleHistory | null {
+  if (
+    !isUuid(row.id) ||
+    !isUuid(row.tenantId) ||
+    !isUuid(row.eventId) ||
+    !Number.isSafeInteger(row.sequence) ||
+    row.sequence < 1 ||
+    !Number.isSafeInteger(row.eventVersion) ||
+    row.eventVersion < 1 ||
+    !isValidDate(row.startsAt) ||
+    (row.endsAt !== null && !isValidDate(row.endsAt)) ||
+    (row.postponedFromStartsAt !== null && !isValidDate(row.postponedFromStartsAt)) ||
+    (row.cancellationRetentionUntil !== null && !isValidDate(row.cancellationRetentionUntil)) ||
+    !isValidDate(row.occurredAt)
+  ) {
+    return null;
+  }
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    eventId: row.eventId,
+    sequence: row.sequence,
+    eventVersion: row.eventVersion,
+    fromLifecycle: row.fromLifecycle,
+    toLifecycle: row.toLifecycle,
+    startsAt: row.startsAt,
+    endsAt: row.endsAt,
+    postponedFromStartsAt: row.postponedFromStartsAt,
+    reason: row.reason,
+    cancellationRetentionUntil: row.cancellationRetentionUntil,
+    occurredAt: row.occurredAt,
+  };
 }
 
 function toOrganiser(row: typeof organisers.$inferSelect): Organiser | null {
@@ -458,6 +521,158 @@ function sameAudience(left: EventAudienceDefinition, right: EventAudienceDefinit
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
+async function loadLifecycleHistory(
+  database: Pick<CampusHubDatabase, "select">,
+  tenantId: string,
+  eventId: string,
+): Promise<readonly EventLifecycleHistory[] | null> {
+  const rows = await database
+    .select()
+    .from(eventLifecycleHistory)
+    .where(
+      and(
+        eq(eventLifecycleHistory.tenantId, tenantId),
+        eq(eventLifecycleHistory.eventId, eventId),
+      ),
+    )
+    .orderBy(asc(eventLifecycleHistory.sequence))
+    .for("update");
+  const mapped = rows.map(toLifecycleHistory);
+  return mapped.every((row): row is EventLifecycleHistory => row !== null)
+    ? mapped
+    : null;
+}
+
+function datesEqual(left: Date | null, right: Date | null): boolean {
+  return (left === null && right === null) ||
+    (left !== null && right !== null && left.getTime() === right.getTime());
+}
+
+function historyIsConsistent(
+  event: Event,
+  history: readonly EventLifecycleHistory[],
+): boolean {
+  if (event.lifecycle === "draft") return history.length === 0 && event.cancellationRetentionUntil === null;
+  if (history.length === 0) return false;
+
+  for (let index = 0; index < history.length; index += 1) {
+    const row = history[index]!;
+    const previous = index > 0 ? history[index - 1]! : null;
+    if (
+      row.tenantId !== event.tenantId ||
+      row.eventId !== event.id ||
+      row.sequence !== index + 1 ||
+      (previous !== null && row.eventVersion !== previous.eventVersion + 1) ||
+      row.endsAt !== null && row.endsAt.getTime() <= row.startsAt.getTime() ||
+      (row.reason !== null && parseEventReason(row.reason) !== row.reason)
+    ) return false;
+
+    if (index === 0) {
+      if (
+        row.fromLifecycle !== "draft" ||
+        row.toLifecycle !== "published" ||
+        row.postponedFromStartsAt !== null ||
+        row.reason !== null ||
+        row.cancellationRetentionUntil !== null
+      ) return false;
+    } else if (row.fromLifecycle !== previous!.toLifecycle) {
+      return false;
+    }
+
+    if (row.fromLifecycle === "published" && row.toLifecycle === "postponed") {
+      if (
+        previous === null ||
+        row.postponedFromStartsAt === null ||
+        !datesEqual(row.postponedFromStartsAt, previous.startsAt) ||
+        row.startsAt.getTime() <= previous.startsAt.getTime() ||
+        parseEventReason(row.reason) === null ||
+        row.cancellationRetentionUntil !== null
+      ) return false;
+    } else if (row.fromLifecycle === "postponed" && row.toLifecycle === "published") {
+      if (
+        previous === null ||
+        !datesEqual(row.startsAt, previous.startsAt) ||
+        !datesEqual(row.endsAt, previous.endsAt) ||
+        row.postponedFromStartsAt !== null ||
+        row.reason !== null ||
+        row.cancellationRetentionUntil !== null
+      ) return false;
+    } else if ((row.fromLifecycle === "published" || row.fromLifecycle === "postponed") && row.toLifecycle === "cancelled") {
+      if (
+        previous === null ||
+        !datesEqual(row.startsAt, previous.startsAt) ||
+        !datesEqual(row.endsAt, previous.endsAt) ||
+        row.postponedFromStartsAt !== null ||
+        parseEventReason(row.reason) === null ||
+        row.cancellationRetentionUntil === null
+      ) return false;
+      const hadPostponement = history
+        .slice(0, index)
+        .some((item) => item.fromLifecycle === "published" && item.toLifecycle === "postponed");
+      const expectedRetention = hadPostponement
+        ? row.fromLifecycle === "published"
+          ? row.startsAt
+          : latestPostponedFromStartsAt(history.slice(0, index))
+        : previous.endsAt ?? previous.startsAt;
+      if (expectedRetention === null || !datesEqual(row.cancellationRetentionUntil, expectedRetention)) return false;
+    } else if (!(row.fromLifecycle === "draft" && row.toLifecycle === "published")) {
+      return false;
+    }
+  }
+
+  const last = history[history.length - 1]!;
+  if (last.eventVersion !== event.version || last.toLifecycle !== event.lifecycle) return false;
+  if (event.cancellationRetentionUntil !== null && event.lifecycle !== "cancelled") return false;
+  if (event.lifecycle === "cancelled") {
+    return last.cancellationRetentionUntil !== null &&
+      datesEqual(event.cancellationRetentionUntil, last.cancellationRetentionUntil) &&
+      datesEqual(event.startsAt, last.startsAt) &&
+      datesEqual(event.endsAt, last.endsAt);
+  }
+  return event.cancellationRetentionUntil === null &&
+    datesEqual(event.startsAt, last.startsAt) &&
+    datesEqual(event.endsAt, last.endsAt);
+}
+
+function hasCommittedPostponement(history: readonly EventLifecycleHistory[]): boolean {
+  return history.some((row) => row.fromLifecycle === "published" && row.toLifecycle === "postponed");
+}
+
+function latestPostponedFromStartsAt(history: readonly EventLifecycleHistory[]): Date | null {
+  const rows = history.filter((row) => row.fromLifecycle === "published" && row.toLifecycle === "postponed");
+  return rows.length === 0 ? null : rows[rows.length - 1]!.postponedFromStartsAt;
+}
+
+function nextHistorySequence(history: readonly EventLifecycleHistory[]): number {
+  return history.length === 0 ? 1 : history[history.length - 1]!.sequence + 1;
+}
+
+function isPostponeInput(value: unknown): value is PostponeEventInput {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return Number.isSafeInteger(candidate.expectedVersion) &&
+    (candidate.expectedVersion as number) >= 1 &&
+    isValidDate(candidate.startsAt) &&
+    (candidate.endsAt === null || isValidDate(candidate.endsAt)) &&
+    parseEventReason(candidate.reason) === candidate.reason;
+}
+
+function isRepublishInput(value: unknown): value is RepublishEventInput {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return Object.keys(candidate).length === 1 &&
+    Number.isSafeInteger(candidate.expectedVersion) &&
+    (candidate.expectedVersion as number) >= 1;
+}
+
+function isCancelInput(value: unknown): value is CancelEventInput {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return Number.isSafeInteger(candidate.expectedVersion) &&
+    (candidate.expectedVersion as number) >= 1 &&
+    parseEventReason(candidate.reason) === candidate.reason;
+}
+
 export class DrizzleEventRepository {
   public constructor(private readonly database: CampusHubDatabase = db) {}
 
@@ -494,7 +709,7 @@ export class DrizzleEventRepository {
       if (event === null) return { ok: false, error: "PERSISTENCE_FAILED" };
       const criteria = audienceToRows(audience);
       if (criteria.length > 0) await transaction.insert(eventAudienceCriteria).values(criteria);
-      return { ok: true, record: { event, audience, organiser }, changed: true };
+      return { ok: true, record: { event, audience, organiser, history: [] }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
@@ -523,28 +738,67 @@ export class DrizzleEventRepository {
     tenantId: string,
     eventId: string,
     expectedVersion: number,
-    operation: "edit" | "publish",
-    input?: UpdateEventInput,
+    operation: "edit" | "publish" | "postpone" | "republish" | "cancel",
+    input?: UpdateEventInput | PostponeEventInput | RepublishEventInput | CancelEventInput,
   ): Promise<PreparedEventMutation | EventMutationError> {
     if (!isUuid(tenantId) || !isUuid(eventId)) return "PERMISSION_DENIED";
     const rows = await transaction.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).for("update").limit(1);
     const event = rows[0] ? toEvent(rows[0]) : null;
     if (event === null) return "NOT_FOUND";
     if (event.version !== expectedVersion) return "VERSION_CONFLICT";
-    if (event.lifecycle !== "draft") return "INVALID_STATE";
-    const campusId = operation === "edit" ? input?.campusId : event.campusId;
+    const history = await loadLifecycleHistory(transaction, tenantId, eventId);
+    if (history === null || !historyIsConsistent(event, history)) return "NOT_READY";
+
+    if (operation === "postpone") {
+      if (event.lifecycle !== "published" || !isPostponeInput(input)) return "INVALID_STATE";
+      if (input.startsAt.getTime() <= event.startsAt.getTime() || (input.endsAt !== null && input.endsAt.getTime() <= input.startsAt.getTime())) return "NOT_READY";
+      const audience = await loadAudience(transaction, tenantId, event);
+      const organiser = await loadOrganiser(transaction, tenantId, event.organiserId);
+      if (audience === null || (event.organiserId !== null && organiser === null)) return "NOT_READY";
+      return {
+        event,
+        currentAudience: audience,
+        audience,
+        organiser,
+        history,
+        hasCommittedPostponement: hasCommittedPostponement(history),
+        latestPostponedFromStartsAt: latestPostponedFromStartsAt(history),
+      };
+    }
+
+    if (operation === "cancel") {
+      if ((event.lifecycle !== "published" && event.lifecycle !== "postponed") || !isCancelInput(input)) return "INVALID_STATE";
+      const audience = await loadAudience(transaction, tenantId, event);
+      const organiser = await loadOrganiser(transaction, tenantId, event.organiserId);
+      if (audience === null || (event.organiserId !== null && organiser === null)) return "NOT_READY";
+      return {
+        event,
+        currentAudience: audience,
+        audience,
+        organiser,
+        history,
+        hasCommittedPostponement: hasCommittedPostponement(history),
+        latestPostponedFromStartsAt: latestPostponedFromStartsAt(history),
+      };
+    }
+
+    if (operation === "republish" && event.lifecycle !== "postponed") return "INVALID_STATE";
+    if (operation !== "edit" && operation !== "publish" && operation !== "republish") return "INVALID_STATE";
+    if (operation === "edit" && event.lifecycle !== "draft") return "INVALID_STATE";
+    if (operation === "publish" && event.lifecycle !== "draft") return "INVALID_STATE";
+    const campusId = operation === "edit" ? (input as UpdateEventInput | undefined)?.campusId : event.campusId;
     const audience = operation === "edit"
-      ? input === undefined || !validEventInput(input)
+      ? input === undefined || !validEventInput(input as UpdateEventInput)
         ? null
-        : bindServerOwnedAudience(input.audience, event.id, tenantId)
+        : bindServerOwnedAudience((input as UpdateEventInput).audience, event.id, tenantId)
       : await loadAudience(transaction, tenantId, event);
     if (campusId === undefined || audience === null) return "NOT_READY";
-    if (operation === "edit" && (input === undefined || input.audienceMode !== audience.mode)) return "NOT_READY";
-    if (operation === "publish" && audience.mode !== event.audienceMode) return "NOT_READY";
+    if (operation === "edit" && ((input as UpdateEventInput).audienceMode !== audience.mode)) return "NOT_READY";
+    if ((operation === "publish" || operation === "republish") && audience.mode !== event.audienceMode) return "NOT_READY";
     if (!(await lockActiveCampus(transaction, tenantId, campusId))) return "NOT_READY";
     if (!(await lockAndValidateAudienceTargets(transaction, audience))) return "NOT_READY";
     const organiserId = operation === "edit"
-      ? input?.organiserId ?? null
+      ? (input as UpdateEventInput).organiserId ?? null
       : event.organiserId;
     const organiser = organiserId === null
       ? null
@@ -554,7 +808,15 @@ export class DrizzleEventRepository {
       ? await loadAudience(transaction, tenantId, event)
       : audience;
     if (currentAudience === null) return "NOT_READY";
-    return { event, currentAudience, audience, organiser };
+    return {
+      event,
+      currentAudience,
+      audience,
+      organiser,
+      history,
+      hasCommittedPostponement: hasCommittedPostponement(history),
+      latestPostponedFromStartsAt: latestPostponedFromStartsAt(history),
+    };
   }
 
   public async findEventByIdForTenant(tenantId: string, eventId: string): Promise<EventRecord | null> {
@@ -564,18 +826,47 @@ export class DrizzleEventRepository {
     if (event === null) return null;
     const audience = await loadAudience(this.database, tenantId, event);
     const organiser = await loadOrganiser(this.database, tenantId, event.organiserId);
+    const history = await loadLifecycleHistory(this.database, tenantId, eventId);
     return event.organiserId !== null && organiser === null
       ? null
-      : audience === null ? null : { event, audience, organiser };
+      : audience === null || history === null || !historyIsConsistent(event, history)
+        ? null
+        : { event, audience, organiser, history };
+  }
+
+  public async listLifecycleHistoryForTenant(
+    tenantId: string,
+    eventId: string,
+  ): Promise<readonly EventLifecycleHistory[]> {
+    if (!isUuid(tenantId) || !isUuid(eventId)) return [];
+    const eventRows = await this.database
+      .select({ id: events.id })
+      .from(events)
+      .where(and(eq(events.tenantId, tenantId), eq(events.id, eventId)))
+      .limit(1);
+    if (eventRows.length !== 1) return [];
+    const rows = await this.database
+      .select()
+      .from(eventLifecycleHistory)
+      .where(and(eq(eventLifecycleHistory.tenantId, tenantId), eq(eventLifecycleHistory.eventId, eventId)))
+      .orderBy(asc(eventLifecycleHistory.sequence));
+    return rows.map(toLifecycleHistory).filter((row): row is EventLifecycleHistory => row !== null);
   }
 
   public async listEventsForTenant(tenantId: string, options: EventListOptions): Promise<readonly EventRecord[]> {
     if (!isUuid(tenantId) || !isValidDate(options.now)) return [];
-    const clauses = [eq(events.tenantId, tenantId), eq(events.lifecycle, "published" as const)];
+    if (options.surface !== undefined && options.surface !== "home" && options.surface !== "discover") return [];
+    const surface = options.surface ?? "home";
+    const lifecycles = surface === "discover"
+      ? ["published", "postponed"] as const
+      : ["published", "postponed", "cancelled"] as const;
+    const clauses = [eq(events.tenantId, tenantId), inArray(events.lifecycle, lifecycles)];
     if (options.campusId !== undefined) clauses.push(eq(events.campusId, options.campusId));
     if (options.visibility !== undefined) clauses.push(eq(events.visibility, options.visibility));
     if (!options.includePast) {
-      clauses.push(sql`coalesce(${events.endsAt}, ${events.startsAt}) > ${options.now}`);
+      clauses.push(surface === "discover"
+        ? sql`coalesce(${events.endsAt}, ${events.startsAt}) > ${options.now}`
+        : sql`case when ${events.lifecycle} = 'cancelled' then ${events.cancellationRetentionUntil} > ${options.now} else coalesce(${events.endsAt}, ${events.startsAt}) > ${options.now} end`);
     }
     const limit = Number.isSafeInteger(options.limit) && (options.limit ?? 0) >= 1 && (options.limit ?? 0) <= 100 ? options.limit! : 50;
     const rows = await this.database.select().from(events).where(and(...clauses)).orderBy(asc(events.startsAt), asc(events.id)).limit(limit);
@@ -583,12 +874,14 @@ export class DrizzleEventRepository {
     for (const row of rows) {
       const event = toEvent(row);
       if (event === null) continue;
-      const past = options.now.getTime() >= (event.endsAt ?? event.startsAt).getTime();
+      const history = await loadLifecycleHistory(this.database, tenantId, event.id);
+      if (history === null || !historyIsConsistent(event, history)) continue;
+      const past = isEventPast(event, options.now);
       if (!options.includePast && past) continue;
       const audience = await loadAudience(this.database, tenantId, event);
       const organiser = await loadOrganiser(this.database, tenantId, event.organiserId);
       if (audience !== null && (event.organiserId === null || organiser !== null)) {
-        records.push({ event, audience, organiser });
+        records.push({ event, audience, organiser, history });
       }
     }
     return records;
@@ -603,14 +896,14 @@ export class DrizzleEventRepository {
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const { event: existing, currentAudience, audience, organiser } = prepared;
+    const { event: existing, currentAudience, audience, organiser, history } = prepared;
     if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
       return { ok: false, error: "VERSION_CONFLICT" };
     }
     try {
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
       const material = isMaterialEventChange(existing, input);
-      if (!material && sameAudience(currentAudience, audience)) return { ok: true, record: { event: existing, audience: currentAudience, organiser }, changed: false };
+      if (!material && sameAudience(currentAudience, audience)) return { ok: true, record: { event: existing, audience: currentAudience, organiser, history }, changed: false };
       const updatedRows = await transaction.update(events).set({
         title: parseEventTitle(input.title)!,
         description: parseEventDescription(input.description)!,
@@ -630,7 +923,186 @@ export class DrizzleEventRepository {
       await transaction.delete(eventAudienceCriteria).where(and(eq(eventAudienceCriteria.tenantId, tenantId), eq(eventAudienceCriteria.eventId, eventId)));
       const criteria = audienceToRows(audience);
       if (criteria.length > 0) await transaction.insert(eventAudienceCriteria).values(criteria);
-      return { ok: true, record: { event: updated, audience, organiser }, changed: true };
+      return { ok: true, record: { event: updated, audience, organiser, history }, changed: true };
+    } catch {
+      return { ok: false, error: "PERSISTENCE_FAILED" };
+    }
+  }
+
+  public async appendLifecycleHistoryInTransaction(
+    transaction: EventRepositoryTransactionDatabase,
+    input: EventLifecycleHistoryAppendInput,
+  ): Promise<EventLifecycleHistory | null> {
+    if (
+      !isUuid(input.tenantId) ||
+      !isUuid(input.eventId) ||
+      !Number.isSafeInteger(input.sequence) ||
+      input.sequence < 1 ||
+      !Number.isSafeInteger(input.eventVersion) ||
+      input.eventVersion < 1 ||
+      !isValidDate(input.startsAt) ||
+      (input.endsAt !== null && !isValidDate(input.endsAt)) ||
+      (input.postponedFromStartsAt !== null && !isValidDate(input.postponedFromStartsAt)) ||
+      (input.cancellationRetentionUntil !== null && !isValidDate(input.cancellationRetentionUntil)) ||
+      !isValidDate(input.occurredAt)
+    ) return null;
+    try {
+      const rows = await transaction.insert(eventLifecycleHistory).values({
+        tenantId: input.tenantId,
+        eventId: input.eventId,
+        sequence: input.sequence,
+        eventVersion: input.eventVersion,
+        fromLifecycle: input.fromLifecycle,
+        toLifecycle: input.toLifecycle,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        postponedFromStartsAt: input.postponedFromStartsAt,
+        reason: input.reason,
+        cancellationRetentionUntil: input.cancellationRetentionUntil,
+        occurredAt: input.occurredAt,
+      }).returning();
+      const row = rows[0] ? toLifecycleHistory(rows[0]) : null;
+      return row !== null && row.tenantId === input.tenantId && row.eventId === input.eventId
+        ? row
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public async postponeEventInTransaction(
+    transaction: EventRepositoryTransactionDatabase,
+    tenantId: string,
+    eventId: string,
+    input: PostponeEventInput,
+    prepared: PreparedEventMutation,
+    occurredAt = new Date(),
+  ): Promise<EventMutationResult> {
+    if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt) || !isPostponeInput(input)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { event: existing, audience, organiser, history } = prepared;
+    if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) return { ok: false, error: "VERSION_CONFLICT" };
+    if (existing.lifecycle !== "published" || input.startsAt.getTime() <= existing.startsAt.getTime() || (input.endsAt !== null && input.endsAt.getTime() <= input.startsAt.getTime())) return { ok: false, error: "NOT_READY" };
+    try {
+      const updatedRows = await transaction.update(events).set({
+        lifecycle: "postponed",
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        cancellationRetentionUntil: null,
+        version: sql`${events.version} + 1`,
+        updatedAt: occurredAt,
+      }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), eq(events.lifecycle, "published"))).returning();
+      const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
+      if (updated === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const appended = await this.appendLifecycleHistoryInTransaction(transaction, {
+        tenantId,
+        eventId,
+        sequence: nextHistorySequence(history),
+        eventVersion: updated.version,
+        fromLifecycle: "published",
+        toLifecycle: "postponed",
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        postponedFromStartsAt: existing.startsAt,
+        reason: input.reason,
+        cancellationRetentionUntil: null,
+        occurredAt,
+      });
+      if (appended === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const nextHistory = [...history, appended];
+      if (!historyIsConsistent(updated, nextHistory)) return { ok: false, error: "PERSISTENCE_FAILED" };
+      return { ok: true, record: { event: updated, audience, organiser, history: nextHistory }, changed: true };
+    } catch {
+      return { ok: false, error: "PERSISTENCE_FAILED" };
+    }
+  }
+
+  public async republishEventInTransaction(
+    transaction: EventRepositoryTransactionDatabase,
+    tenantId: string,
+    eventId: string,
+    input: RepublishEventInput,
+    prepared: PreparedEventMutation,
+    occurredAt = new Date(),
+  ): Promise<EventMutationResult> {
+    if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt) || !isRepublishInput(input)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { event: existing, audience, organiser, history } = prepared;
+    if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) return { ok: false, error: "VERSION_CONFLICT" };
+    if (existing.lifecycle !== "postponed") return { ok: false, error: "INVALID_STATE" };
+    try {
+      const updatedRows = await transaction.update(events).set({
+        lifecycle: "published",
+        cancellationRetentionUntil: null,
+        version: sql`${events.version} + 1`,
+        updatedAt: occurredAt,
+      }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), eq(events.lifecycle, "postponed"))).returning();
+      const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
+      if (updated === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const appended = await this.appendLifecycleHistoryInTransaction(transaction, {
+        tenantId,
+        eventId,
+        sequence: nextHistorySequence(history),
+        eventVersion: updated.version,
+        fromLifecycle: "postponed",
+        toLifecycle: "published",
+        startsAt: updated.startsAt,
+        endsAt: updated.endsAt,
+        postponedFromStartsAt: null,
+        reason: null,
+        cancellationRetentionUntil: null,
+        occurredAt,
+      });
+      if (appended === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const nextHistory = [...history, appended];
+      if (!historyIsConsistent(updated, nextHistory)) return { ok: false, error: "PERSISTENCE_FAILED" };
+      return { ok: true, record: { event: updated, audience, organiser, history: nextHistory }, changed: true };
+    } catch {
+      return { ok: false, error: "PERSISTENCE_FAILED" };
+    }
+  }
+
+  public async cancelEventInTransaction(
+    transaction: EventRepositoryTransactionDatabase,
+    tenantId: string,
+    eventId: string,
+    input: CancelEventInput,
+    prepared: PreparedEventMutation,
+    occurredAt = new Date(),
+  ): Promise<EventMutationResult> {
+    if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt) || !isCancelInput(input)) return { ok: false, error: "PERSISTENCE_FAILED" };
+    const { event: existing, audience, organiser, history, hasCommittedPostponement, latestPostponedFromStartsAt } = prepared;
+    if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) return { ok: false, error: "VERSION_CONFLICT" };
+    if (existing.lifecycle !== "published" && existing.lifecycle !== "postponed") return { ok: false, error: "INVALID_STATE" };
+    const retention = hasCommittedPostponement
+      ? existing.lifecycle === "published" ? existing.startsAt : latestPostponedFromStartsAt
+      : existing.endsAt ?? existing.startsAt;
+    if (retention === null) return { ok: false, error: "NOT_READY" };
+    try {
+      const updatedRows = await transaction.update(events).set({
+        lifecycle: "cancelled",
+        cancellationRetentionUntil: retention,
+        version: sql`${events.version} + 1`,
+        updatedAt: occurredAt,
+      }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), inArray(events.lifecycle, ["published", "postponed"]))).returning();
+      const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
+      if (updated === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const appended = await this.appendLifecycleHistoryInTransaction(transaction, {
+        tenantId,
+        eventId,
+        sequence: nextHistorySequence(history),
+        eventVersion: updated.version,
+        fromLifecycle: existing.lifecycle,
+        toLifecycle: "cancelled",
+        startsAt: existing.startsAt,
+        endsAt: existing.endsAt,
+        postponedFromStartsAt: null,
+        reason: input.reason,
+        cancellationRetentionUntil: retention,
+        occurredAt,
+      });
+      if (appended === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const nextHistory = [...history, appended];
+      if (!historyIsConsistent(updated, nextHistory)) return { ok: false, error: "PERSISTENCE_FAILED" };
+      return { ok: true, record: { event: updated, audience, organiser, history: nextHistory }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }
@@ -645,7 +1117,7 @@ export class DrizzleEventRepository {
     occurredAt = new Date(),
   ): Promise<EventMutationResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isValidDate(occurredAt)) return { ok: false, error: "PERSISTENCE_FAILED" };
-    const { event: existing, audience, organiser } = prepared;
+    const { event: existing, audience, organiser, history } = prepared;
     if (existing.id !== eventId || existing.tenantId !== tenantId || existing.version !== input.expectedVersion) {
       return { ok: false, error: "VERSION_CONFLICT" };
     }
@@ -653,7 +1125,25 @@ export class DrizzleEventRepository {
       if (existing.lifecycle !== "draft") return { ok: false, error: "INVALID_STATE" };
       const updatedRows = await transaction.update(events).set({ lifecycle: "published", version: sql`${events.version} + 1`, updatedAt: occurredAt }).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId), eq(events.version, input.expectedVersion), eq(events.lifecycle, "draft"))).returning();
       const updated = updatedRows[0] ? toEvent(updatedRows[0]) : null;
-      return updated === null ? { ok: false, error: "PERSISTENCE_FAILED" } : { ok: true, record: { event: updated, audience, organiser }, changed: true };
+      if (updated === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const appended = await this.appendLifecycleHistoryInTransaction(transaction, {
+        tenantId,
+        eventId,
+        sequence: nextHistorySequence(history),
+        eventVersion: updated.version,
+        fromLifecycle: "draft",
+        toLifecycle: "published",
+        startsAt: updated.startsAt,
+        endsAt: updated.endsAt,
+        postponedFromStartsAt: null,
+        reason: null,
+        cancellationRetentionUntil: null,
+        occurredAt,
+      });
+      if (appended === null) return { ok: false, error: "PERSISTENCE_FAILED" };
+      const nextHistory = [...history, appended];
+      if (!historyIsConsistent(updated, nextHistory)) return { ok: false, error: "PERSISTENCE_FAILED" };
+      return { ok: true, record: { event: updated, audience, organiser, history: nextHistory }, changed: true };
     } catch {
       return { ok: false, error: "PERSISTENCE_FAILED" };
     }

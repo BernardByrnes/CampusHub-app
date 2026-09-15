@@ -53,6 +53,7 @@ export const events = pgTable(
     audienceMode: publicationAudienceModeEnum("audience_mode").notNull(),
     rsvpEnabled: boolean("rsvp_enabled").notNull().default(false),
     lifecycle: eventLifecycleEnum("lifecycle").notNull().default("draft"),
+    cancellationRetentionUntil: timestamp("cancellation_retention_until", { withTimezone: true, mode: "date" }),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
       .notNull()
       .defaultNow(),
@@ -183,3 +184,60 @@ export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
 export type EventAudienceCriteriaRow = typeof eventAudienceCriteria.$inferSelect;
 export type NewEventAudienceCriteriaRow = typeof eventAudienceCriteria.$inferInsert;
+
+export const eventLifecycleHistory = pgTable(
+  "event_lifecycle_history",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    eventId: uuid("event_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    eventVersion: integer("event_version").notNull(),
+    fromLifecycle: eventLifecycleEnum("from_lifecycle").notNull(),
+    toLifecycle: eventLifecycleEnum("to_lifecycle").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true, mode: "date" }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true, mode: "date" }),
+    postponedFromStartsAt: timestamp("postponed_from_starts_at", { withTimezone: true, mode: "date" }),
+    reason: text("reason"),
+    cancellationRetentionUntil: timestamp("cancellation_retention_until", { withTimezone: true, mode: "date" }),
+    occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "date" }).notNull(),
+  },
+  (table) => [
+    unique("event_lifecycle_history_tenant_event_sequence_unique").on(
+      table.tenantId,
+      table.eventId,
+      table.sequence,
+    ),
+    unique("event_lifecycle_history_tenant_event_version_unique").on(
+      table.tenantId,
+      table.eventId,
+      table.eventVersion,
+    ),
+    index("event_lifecycle_history_tenant_event_sequence").on(
+      table.tenantId,
+      table.eventId,
+      table.sequence,
+    ),
+    index("event_lifecycle_history_tenant_occurred_at").on(
+      table.tenantId,
+      table.occurredAt,
+    ),
+    check("event_lifecycle_history_sequence_positive", sql`${table.sequence} >= 1`),
+    check("event_lifecycle_history_event_version_positive", sql`${table.eventVersion} >= 1`),
+    check("event_lifecycle_history_schedule_order", sql`${table.endsAt} IS NULL OR ${table.endsAt} > ${table.startsAt}`),
+    check("event_lifecycle_history_transition_shape", sql`(
+      (${table.fromLifecycle} = 'draft' AND ${table.toLifecycle} = 'published' AND ${table.postponedFromStartsAt} IS NULL AND ${table.reason} IS NULL AND ${table.cancellationRetentionUntil} IS NULL)
+      OR (${table.fromLifecycle} = 'published' AND ${table.toLifecycle} = 'postponed' AND ${table.postponedFromStartsAt} IS NOT NULL AND ${table.reason} IS NOT NULL AND char_length(btrim(${table.reason})) > 0 AND char_length(${table.reason}) <= 500 AND ${table.cancellationRetentionUntil} IS NULL)
+      OR (${table.fromLifecycle} = 'postponed' AND ${table.toLifecycle} = 'published' AND ${table.postponedFromStartsAt} IS NULL AND ${table.reason} IS NULL AND ${table.cancellationRetentionUntil} IS NULL)
+      OR (${table.fromLifecycle} IN ('published', 'postponed') AND ${table.toLifecycle} = 'cancelled' AND ${table.postponedFromStartsAt} IS NULL AND ${table.reason} IS NOT NULL AND char_length(btrim(${table.reason})) > 0 AND char_length(${table.reason}) <= 500 AND ${table.cancellationRetentionUntil} IS NOT NULL)
+    )`),
+    foreignKey({
+      name: "event_lifecycle_history_event_same_tenant_fk",
+      columns: [table.tenantId, table.eventId],
+      foreignColumns: [events.tenantId, events.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+  ],
+);
+
+export type EventLifecycleHistoryRow = typeof eventLifecycleHistory.$inferSelect;
+export type NewEventLifecycleHistoryRow = typeof eventLifecycleHistory.$inferInsert;
