@@ -550,12 +550,34 @@ describe("real PostgreSQL Organiser Core", () => {
     );
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const expiredAt = new Date(Date.now() - 1_000);
+    let expiredAt: Date;
     if (graphKey === "organiserGrantId") {
-      await getDatabase().update(roleGrants).set({ expiresAt: expiredAt, updatedAt: expiredAt }).where(eq(roleGrants.id, graph[graphKey]));
+      const expiryRows = await getDatabase().execute(sql`
+        update role_grants
+        set expires_at = case
+          when created_at < clock_timestamp() then clock_timestamp() - interval '1 millisecond'
+          else created_at + interval '1 millisecond'
+        end,
+            updated_at = clock_timestamp()
+        where id = ${graph[graphKey]}
+        returning expires_at
+      `);
+      const raw = (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at;
+      if (!(raw instanceof Date)) throw new Error("Expected the database grant expiry.");
+      expiredAt = raw;
     } else {
-      await getDatabase().update(guildTerms).set({ endsAt: expiredAt, updatedAt: expiredAt }).where(eq(guildTerms.id, graph[graphKey]));
+      const expiryRows = await getDatabase().execute(sql`
+        update guild_terms
+        set ends_at = clock_timestamp() - interval '1 millisecond',
+            updated_at = clock_timestamp()
+        where id = ${graph[graphKey]}
+        returning ends_at
+      `);
+      const raw = (expiryRows.rows[0] as { ends_at?: unknown } | undefined)?.ends_at;
+      if (!(raw instanceof Date)) throw new Error("Expected the database term expiry.");
+      expiredAt = raw;
     }
+    await waitForDatabaseTimeAtOrAfter(expiredAt);
     await expect(
       organiserExecutor().updateOrganiser(
         request(graph, CAPABILITIES.ORGANISER_MANAGE),
