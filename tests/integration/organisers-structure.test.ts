@@ -379,6 +379,14 @@ describe("real PostgreSQL Organiser Core", () => {
     try {
       await organiserClient.query("begin");
       await organiserClient.query("select id from organisers where tenant_id = $1 and id = $2 for update", [graph.tenantId, created.organiser.id]);
+      const eventAttempt = eventExecutor(undefined, (pid) => eventBackend.resolve(pid)).updateEvent(
+        request(graph, CAPABILITIES.EVENT_MANAGE),
+        graph.tenantId,
+        event.record.event.id,
+        { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Must Not Commit" },
+      );
+      const eventBackendPid = await eventBackend.promise;
+      await waitForLock(eventBackendPid, "organisers");
       const expiryRows = await getDatabase().execute(sql`
         update role_grants
         set expires_at = greatest(clock_timestamp() + interval '1 second', created_at + interval '1 second'),
@@ -390,15 +398,6 @@ describe("real PostgreSQL Organiser Core", () => {
         (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at,
         "short-lived Event grant expiry",
       );
-
-      const eventAttempt = eventExecutor(undefined, (pid) => eventBackend.resolve(pid)).updateEvent(
-        request(graph, CAPABILITIES.EVENT_MANAGE),
-        graph.tenantId,
-        event.record.event.id,
-        { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Must Not Commit" },
-      );
-      const eventBackendPid = await eventBackend.promise;
-      await waitForLock(eventBackendPid, "organisers");
       await waitForDatabaseTimeAtOrAfter(expiresAt);
       await organiserClient.query("commit");
       organiserFinished = true;
