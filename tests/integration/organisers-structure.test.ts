@@ -23,6 +23,7 @@ import { DrizzleTenantRepository } from "@/server/repositories/tenant-repository
 import {
   auditEvents,
   campuses,
+  events,
   guildTerms,
   memberships,
   organisers,
@@ -123,6 +124,7 @@ function authorizer() {
 
 function organiserExecutor(
   beforeFinalAuthorityCheck?: () => Promise<void>,
+  onTransactionStarted?: (backendPid: number) => void | Promise<void>,
   auditEventsOverride?: Pick<DrizzleAuditEventRepository, "appendOrganiserMutationInTransaction">,
 ) {
   const audit = auditEventsOverride ?? auditRepository();
@@ -132,17 +134,19 @@ function organiserExecutor(
     organiserRepository: new DrizzleOrganiserRepository(getDatabase()),
     runtimeDatabaseAuthorityVerifier: async () => true,
     beforeFinalAuthorityCheck,
+    onTransactionStarted,
   });
 }
 
 function eventExecutor(
   beforeFinalAuthorityCheck?: () => Promise<void>,
   onTransactionStarted?: (backendPid: number) => void | Promise<void>,
+  auditEventsOverride?: Pick<DrizzleAuditEventRepository, "appendEventMutationInTransaction">,
 ) {
   return new PostgresAuthorizedEventManagementExecutor({
     database: getDatabase(),
     authorizer: authorizer(),
-    auditEvents: auditRepository(),
+    auditEvents: auditEventsOverride ?? auditRepository(),
     eventRepository: new DrizzleEventRepository(getDatabase()),
     runtimeDatabaseAuthorityVerifier: async () => true,
     beforeFinalAuthorityCheck,
@@ -184,11 +188,44 @@ async function waitForLock(blockingBackendPid: number, tableName: string): Promi
   throw new Error(`Timed out waiting for a PostgreSQL ${tableName} row lock.`);
 }
 
+async function waitForDatabaseTimeAtOrAfter(target: Date): Promise<void> {
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    const result = await getDatabase().execute(sql`select clock_timestamp() as database_time`);
+    const raw = (result.rows[0] as { database_time?: unknown } | undefined)?.database_time;
+    const current = raw instanceof Date ? raw : new Date(String(raw));
+    if (!Number.isNaN(current.getTime()) && current.getTime() >= target.getTime()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for PostgreSQL clock expiry.");
+}
+
 async function lockAndRevoke(client: PoolClient, table: string, id: string): Promise<void> {
   await client.query("BEGIN");
   await client.query(`select id from "${table}" where id = $1 for update`, [id]);
   if (table === "role_grants") {
     await client.query("update role_grants set revoked_at = clock_timestamp(), updated_at = clock_timestamp() where id = $1", [id]);
+  }
+}
+
+async function lockAndInvalidate(client: PoolClient, table: string, id: string): Promise<void> {
+  await client.query("BEGIN");
+  await client.query(`select id from "${table}" where id = $1 for update`, [id]);
+  switch (table) {
+    case "tenants":
+      await client.query("update tenants set status = 'suspended', updated_at = clock_timestamp() where id = $1", [id]);
+      break;
+    case "memberships":
+      await client.query("update memberships set lifecycle = 'suspended', updated_at = clock_timestamp() where id = $1", [id]);
+      break;
+    case "guild_terms":
+      await client.query("update guild_terms set status = 'closed', updated_at = clock_timestamp() where id = $1", [id]);
+      break;
+    case "role_grants":
+      await client.query("update role_grants set revoked_at = clock_timestamp(), updated_at = clock_timestamp() where id = $1", [id]);
+      break;
+    default:
+      throw new Error(`Unsupported authority invalidation table: ${table}`);
   }
 }
 
@@ -220,6 +257,13 @@ describe("real PostgreSQL Organiser Core", () => {
     const created = await organiserExecutor().createOrganiser(organiserRequest, graph.tenantId, { name: " Student Affairs " });
     expect(created).toMatchObject({ ok: true, changed: true, organiser: { version: 1, name: "Student Affairs", tenantId: graph.tenantId } });
     if (!created.ok) return;
+    await expect(
+      getDatabase().insert(organisers).values({
+        id: randomUUID(),
+        tenantId: graph.tenantId,
+        name: " Padded database row ",
+      }),
+    ).rejects.toBeTruthy();
     expect(await new DrizzleOrganiserRepository(getDatabase()).findOrganiserByIdForTenant(other.tenantId, created.organiser.id)).toBeNull();
     const auditRows = await getDatabase().select({ eventType: auditEvents.eventType, resourceVersion: auditEvents.resourceVersion }).from(auditEvents).where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, created.organiser.id)));
     expect(auditRows).toEqual([{ eventType: "organiser.created", resourceVersion: 1 }]);
@@ -235,16 +279,86 @@ describe("real PostgreSQL Organiser Core", () => {
     expect(detached).toMatchObject({ ok: true, record: { event: { version: 2, organiserId: null }, organiser: null } });
   });
 
+  it("fails closed for foreign and nonexistent Event Organiser attachments", async () => {
+    const graph = await createGraph();
+    const foreign = await createGraph();
+    const foreignOrganiser = await organiserExecutor().createOrganiser(
+      request(foreign, CAPABILITIES.ORGANISER_MANAGE),
+      foreign.tenantId,
+      { name: "Foreign Organiser" },
+    );
+    expect(foreignOrganiser.ok).toBe(true);
+    if (!foreignOrganiser.ok) return;
+
+    await expect(
+      eventExecutor().createEvent(
+        request(graph, CAPABILITIES.EVENT_MANAGE),
+        graph.tenantId,
+        eventInput(graph, foreignOrganiser.organiser.id),
+      ),
+    ).resolves.toEqual({ ok: false, error: "NOT_READY" });
+
+    await expect(
+      eventExecutor().createEvent(
+        request(graph, CAPABILITIES.EVENT_MANAGE),
+        graph.tenantId,
+        eventInput(graph, randomUUID()),
+      ),
+    ).resolves.toEqual({ ok: false, error: "NOT_READY" });
+  });
+
+  it("rolls back Event attribution and its audit when the Event audit append fails", async () => {
+    const graph = await createGraph();
+    const organiser = await organiserExecutor().createOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      { name: "Rollback Organiser" },
+    );
+    expect(organiser.ok).toBe(true);
+    if (!organiser.ok) return;
+    const event = await eventExecutor().createEvent(
+      request(graph, CAPABILITIES.EVENT_MANAGE),
+      graph.tenantId,
+      eventInput(graph),
+    );
+    expect(event.ok).toBe(true);
+    if (!event.ok) return;
+
+    const failingAudit = {
+      appendEventMutationInTransaction: async () => {
+        throw new Error("event audit failure");
+      },
+    };
+    await expect(
+      eventExecutor(undefined, undefined, failingAudit).updateEvent(
+        request(graph, CAPABILITIES.EVENT_MANAGE),
+        graph.tenantId,
+        event.record.event.id,
+        { ...eventInput(graph, organiser.organiser.id), expectedVersion: 1 },
+      ),
+    ).resolves.toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
+
+    const row = (await getDatabase().select({
+      version: events.version,
+      organiserId: events.organiserId,
+    }).from(events).where(and(eq(events.tenantId, graph.tenantId), eq(events.id, event.record.event.id))))[0];
+    expect(row).toEqual({ version: 1, organiserId: null });
+    const auditRows = await getDatabase().select({ eventType: auditEvents.eventType })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, event.record.event.id)));
+    expect(auditRows).toEqual([{ eventType: "event.created" }]);
+  });
+
   it("rolls back Organiser creation when the atomic audit append fails", async () => {
     const graph = await createGraph();
     const failingAudit = { appendOrganiserMutationInTransaction: async () => { throw new Error("audit failure"); } };
-    const result = await organiserExecutor(undefined, failingAudit).createOrganiser(request(graph, CAPABILITIES.ORGANISER_MANAGE), graph.tenantId, { name: "Must Roll Back" });
+    const result = await organiserExecutor(undefined, undefined, failingAudit).createOrganiser(request(graph, CAPABILITIES.ORGANISER_MANAGE), graph.tenantId, { name: "Must Roll Back" });
     expect(result).toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
     const rows = await getDatabase().select({ count: sql<number>`count(*)::int` }).from(organisers).where(eq(organisers.tenantId, graph.tenantId));
     expect(Number(rows[0]?.count ?? 0)).toBe(0);
   });
 
-  it("makes an Event-first Organiser lock visible and waits for the Event transaction", async () => {
+  it("rejects an Event-first mutation after Organiser wait when authority expires", async () => {
     const graph = await createGraph();
     const created = await organiserExecutor().createOrganiser(request(graph, CAPABILITIES.ORGANISER_MANAGE), graph.tenantId, { name: "Event Organiser" });
     expect(created.ok).toBe(true);
@@ -253,21 +367,90 @@ describe("real PostgreSQL Organiser Core", () => {
     expect(event.ok).toBe(true);
     if (!event.ok) return;
 
+    const eventBackend = deferred<number>();
+    const organiserClient = await getPool().connect();
+    let organiserFinished = false;
+    try {
+      await organiserClient.query("begin");
+      await organiserClient.query("select id from organisers where tenant_id = $1 and id = $2 for update", [graph.tenantId, created.organiser.id]);
+      const expiryRows = await getDatabase().execute(sql`
+        update role_grants
+        set expires_at = clock_timestamp() + interval '1 second'
+        where id = ${graph.eventGrantId}
+        returning expires_at
+      `);
+      const expiresAt = (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at;
+      if (!(expiresAt instanceof Date)) throw new Error("Expected the short-lived Event grant expiry.");
+
+      const eventAttempt = eventExecutor(undefined, (pid) => eventBackend.resolve(pid)).updateEvent(
+        request(graph, CAPABILITIES.EVENT_MANAGE),
+        graph.tenantId,
+        event.record.event.id,
+        { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Must Not Commit" },
+      );
+      const eventBackendPid = await eventBackend.promise;
+      await waitForLock(eventBackendPid, "organisers");
+      await waitForDatabaseTimeAtOrAfter(expiresAt);
+      await organiserClient.query("commit");
+      organiserFinished = true;
+      await expect(eventAttempt).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+      const row = (await getDatabase().select({
+        title: events.title,
+        version: events.version,
+        organiserId: events.organiserId,
+      }).from(events).where(and(eq(events.tenantId, graph.tenantId), eq(events.id, event.record.event.id))))[0];
+      expect(row).toEqual({ title: "Organiser Event", version: 1, organiserId: created.organiser.id });
+      const auditRows = await getDatabase().select({ eventType: auditEvents.eventType })
+        .from(auditEvents)
+        .where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, event.record.event.id)));
+      expect(auditRows).toEqual([{ eventType: "event.created" }]);
+    } finally {
+      if (!organiserFinished) await finish(organiserClient, false);
+      else organiserClient.release();
+    }
+  });
+
+  it("commits an Event attribution while a conflicting Organiser edit waits", async () => {
+    const graph = await createGraph();
+    const created = await organiserExecutor().createOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      { name: "Event Organiser" },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const event = await eventExecutor().createEvent(
+      request(graph, CAPABILITIES.EVENT_MANAGE),
+      graph.tenantId,
+      eventInput(graph),
+    );
+    expect(event.ok).toBe(true);
+    if (!event.ok) return;
+
     const entered = deferred<void>();
     const release = deferred<void>();
     const eventBackend = deferred<number>();
-    const first = eventExecutor(async () => { entered.resolve(); await release.promise; }, (pid) => eventBackend.resolve(pid));
-    const eventAttempt = first.updateEvent(request(graph, CAPABILITIES.EVENT_MANAGE), graph.tenantId, event.record.event.id, { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Event-first update" });
+    const first = eventExecutor(
+      async () => { entered.resolve(); await release.promise; },
+      (pid) => eventBackend.resolve(pid),
+    );
+    const eventAttempt = first.updateEvent(
+      request(graph, CAPABILITIES.EVENT_MANAGE),
+      graph.tenantId,
+      event.record.event.id,
+      { ...eventInput(graph, created.organiser.id), expectedVersion: 1, title: "Event-first update" },
+    );
     await entered.promise;
     const eventBackendPid = await eventBackend.promise;
 
     const organiserClient = await getPool().connect();
     let organiserFinished = false;
     try {
-      const organiserAttempt = organiserClient.query("begin").then(() => organiserClient.query("select id from organisers where tenant_id = $1 and id = $2 for update", [graph.tenantId, created.organiser.id]));
+      const organiserAttempt = organiserClient.query("begin")
+        .then(() => organiserClient.query("select id from organisers where tenant_id = $1 and id = $2 for update", [graph.tenantId, created.organiser.id]));
       await waitForLock(eventBackendPid, "organisers");
       release.resolve();
-      await expect(eventAttempt).resolves.toMatchObject({ ok: true, record: { event: { version: 2 } } });
+      await expect(eventAttempt).resolves.toMatchObject({ ok: true, record: { event: { version: 2, organiserId: created.organiser.id } } });
       await organiserAttempt;
       await organiserClient.query("update organisers set name = 'After Event', version = version + 1, updated_at = clock_timestamp() where id = $1", [created.organiser.id]);
       await organiserClient.query("commit");
@@ -279,6 +462,109 @@ describe("real PostgreSQL Organiser Core", () => {
       if (!organiserFinished) await finish(organiserClient, false);
       else organiserClient.release();
     }
+  });
+
+  it("serializes concurrent Organiser edits with one version winner", async () => {
+    const graph = await createGraph();
+    const created = await organiserExecutor().createOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      { name: "Concurrent Organiser" },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const firstBackend = deferred<number>();
+    const first = organiserExecutor(
+      async () => { entered.resolve(); await release.promise; },
+      (pid) => firstBackend.resolve(pid),
+    );
+    const firstAttempt = first.updateOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      created.organiser.id,
+      { expectedVersion: 1, name: "First Winner" },
+    );
+    await entered.promise;
+    const firstPid = await firstBackend.promise;
+    const secondAttempt = organiserExecutor().updateOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      created.organiser.id,
+      { expectedVersion: 1, name: "Second Loser" },
+    );
+    await waitForLock(firstPid, "tenants");
+    release.resolve();
+    await expect(firstAttempt).resolves.toMatchObject({ ok: true, changed: true, organiser: { version: 2, name: "First Winner" } });
+    await expect(secondAttempt).resolves.toEqual({ ok: false, error: "VERSION_CONFLICT" });
+  });
+
+  it.each([
+    ["Tenant suspension", "tenants" as const, "tenantId" as const],
+    ["Membership invalidation", "memberships" as const, "membershipId" as const],
+    ["Guild Term closure", "guild_terms" as const, "guildTermId" as const],
+    ["grant revocation", "role_grants" as const, "organiserGrantId" as const],
+  ])("fails closed when %s occurs before Organiser PMAFB", async (_label, table, graphKey) => {
+    const graph = await createGraph();
+    const created = await organiserExecutor().createOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      { name: "Authority Invalidation Target" },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const invalidator = await getPool().connect();
+    let invalidatorFinished = false;
+    try {
+      const authorityId = graph[graphKey];
+      await lockAndInvalidate(invalidator, table, authorityId);
+      const invalidatorBackendPid = await backendPid(invalidator);
+      const attempt = organiserExecutor().updateOrganiser(
+        request(graph, CAPABILITIES.ORGANISER_MANAGE),
+        graph.tenantId,
+        created.organiser.id,
+        { expectedVersion: 1, name: "Must Be Denied" },
+      );
+      await waitForLock(invalidatorBackendPid, table);
+      await finish(invalidator, true);
+      invalidatorFinished = true;
+      await expect(attempt).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+      const row = (await getDatabase().select({ version: organisers.version, name: organisers.name }).from(organisers).where(eq(organisers.id, created.organiser.id)))[0];
+      expect(row).toEqual({ version: 1, name: "Authority Invalidation Target" });
+    } finally {
+      if (!invalidatorFinished) await finish(invalidator, false);
+    }
+  });
+
+  it.each([
+    ["grant", "organiserGrantId" as const],
+    ["term", "guildTermId" as const],
+  ])("rejects %s expiry before Organiser PMAFB", async (_label, graphKey) => {
+    const graph = await createGraph();
+    const created = await organiserExecutor().createOrganiser(
+      request(graph, CAPABILITIES.ORGANISER_MANAGE),
+      graph.tenantId,
+      { name: "Expiry Target" },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const expiredAt = new Date(Date.now() - 1_000);
+    if (graphKey === "organiserGrantId") {
+      await getDatabase().update(roleGrants).set({ expiresAt: expiredAt, updatedAt: expiredAt }).where(eq(roleGrants.id, graph[graphKey]));
+    } else {
+      await getDatabase().update(guildTerms).set({ endsAt: expiredAt, updatedAt: expiredAt }).where(eq(guildTerms.id, graph[graphKey]));
+    }
+    await expect(
+      organiserExecutor().updateOrganiser(
+        request(graph, CAPABILITIES.ORGANISER_MANAGE),
+        graph.tenantId,
+        created.organiser.id,
+        { expectedVersion: 1, name: "Must Be Denied" },
+      ),
+    ).resolves.toEqual({ ok: false, error: "PERMISSION_DENIED" });
+    const row = (await getDatabase().select({ version: organisers.version, name: organisers.name }).from(organisers).where(eq(organisers.id, created.organiser.id)))[0];
+    expect(row).toEqual({ version: 1, name: "Expiry Target" });
   });
 
   it("fails closed when role authority is revoked before the Organiser transaction reaches final authority", async () => {

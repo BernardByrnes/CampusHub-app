@@ -138,8 +138,8 @@ describe("CampusHomeService", () => {
       startsAt: new Date("2026-01-20T10:00:00.000Z"),
       endsAt: new Date("2026-01-20T12:00:00.000Z"),
       campusId: "00000000-0000-4000-8000-000000000041",
-      organiserId: null,
-      organiserName: null,
+      organiserId: "00000000-0000-4000-8000-000000000051",
+      organiserName: "Student Affairs",
       visibility: "MEMBERS",
       rsvpEnabled: false,
       lifecycle: "published",
@@ -156,7 +156,7 @@ describe("CampusHomeService", () => {
 
     expect(result).toMatchObject({
       outcome: "READY",
-      events: [{ id: firstEvent.id, title: firstEvent.title, venue: firstEvent.venue }],
+      events: [{ id: firstEvent.id, title: firstEvent.title, venue: firstEvent.venue, organiserId: firstEvent.organiserId, organiserName: firstEvent.organiserName }],
     });
     expect(listEvents).toHaveBeenCalledOnce();
   });

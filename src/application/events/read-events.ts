@@ -10,6 +10,7 @@ import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication
 import { isUuid } from "@/domain/identifiers/uuid";
 import { evaluateEventAudience } from "@/domain/events/event-audience";
 import { isEventPast, type Event } from "@/domain/events/events";
+import { isOrganiser } from "@/domain/organisers/organisers";
 import type { EventRecord, DrizzleEventRepository, EventListOptions } from "@/server/repositories/event-repository";
 import type { DrizzleMembershipRepository } from "@/server/repositories/membership-repository";
 
@@ -66,6 +67,16 @@ export type EventReadServiceDependencies = Readonly<{
 
 function project(record: EventRecord, now: Date): EventReadProjection | null {
   if (record.event.lifecycle !== "published") return null;
+  if (record.event.organiserId === null) {
+    if (record.organiser !== null) return null;
+  } else if (
+    record.organiser === null ||
+    !isOrganiser(record.organiser) ||
+    record.organiser.id !== record.event.organiserId ||
+    record.organiser.tenantId !== record.event.tenantId
+  ) {
+    return null;
+  }
   return {
     id: record.event.id,
     tenantId: record.event.tenantId,
@@ -105,6 +116,16 @@ async function allowed(
   dependencies: EventReadServiceDependencies,
 ): Promise<boolean> {
   if (!isResourceReadViewer(input.viewer) || viewerTenant(input.viewer) !== input.tenantId || input.tenantFacts.tenantId !== input.tenantId || record.event.tenantId !== input.tenantId || record.event.lifecycle !== "published") return false;
+  if (record.event.organiserId === null) {
+    if (record.organiser !== null) return false;
+  } else if (
+    record.organiser === null ||
+    !isOrganiser(record.organiser) ||
+    record.organiser.id !== record.event.organiserId ||
+    record.organiser.tenantId !== input.tenantId
+  ) {
+    return false;
+  }
   const past = isEventPast(record.event, input.now);
   if (past && !input.includePast) return false;
   const base = {

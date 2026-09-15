@@ -44,5 +44,13 @@ describe("Organiser domain", () => {
       createdAt: NOW,
       updatedAt: "not-a-date",
     })).toBe(false);
+    expect(isOrganiser({
+      id: ORGANISER_ID,
+      tenantId: TENANT_ID,
+      version: 1,
+      name: " Student Affairs ",
+      createdAt: NOW,
+      updatedAt: NOW,
+    })).toBe(false);
   });
 });

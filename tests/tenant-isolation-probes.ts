@@ -1898,6 +1898,7 @@ function eventPersistenceProbe(): void {
   expectTenantOwnedTable(events);
   expectTenantCompositeIdentity(events);
   expectForeignKey(events, ["tenant_id", "campus_id"], ["tenant_id", "id"]);
+  expectForeignKey(events, ["tenant_id", "organiser_id"], ["tenant_id", "id"]);
 }
 
 function eventAudiencePersistenceProbe(): void {
@@ -1968,6 +1969,42 @@ async function eventAuthorizationProbe(): Promise<void> {
 function organiserPersistenceProbe(): void {
   expectTenantOwnedTable(organisers);
   expectTenantCompositeIdentity(organisers);
+}
+
+async function organiserReadIsolationProbe(): Promise<void> {
+  const observedTenantIds: string[] = [];
+  const service = new OrganiserManagementService({
+    capabilityAuthorizer: {
+      authorize: async (request) => ({
+        allowed: request.scope.tenantId === tenantAId,
+      }),
+    },
+    gateway: {
+      createOrganiser: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+      updateOrganiser: async () => ({ ok: false as const, error: "PERSISTENCE_FAILED" as const }),
+    },
+    organisers: {
+      listOrganisersForTenant: async (tenantId) => {
+        observedTenantIds.push(tenantId);
+        return [];
+      },
+    },
+  });
+  const trustedContext = {
+    identitySubjectId: "organiser-read-probe",
+    tenantId: tenantAId,
+    membershipId: membershipAId,
+    tenantStatus: "active" as const,
+    membershipStatus: "verified" as const,
+    assuranceLevel: "L2" as const,
+  };
+  await expect(
+    service.listOrganisers({ trustedContext, requestedTenantId: tenantBId, limit: 1 }),
+  ).resolves.toEqual({ outcome: "DENIED", code: "INVALID_INPUT" });
+  await expect(
+    service.listOrganisers({ trustedContext, requestedTenantId: tenantAId, limit: 1 }),
+  ).resolves.toEqual({ outcome: "LISTED", organisers: [] });
+  expect(observedTenantIds).toEqual([tenantAId]);
 }
 
 async function organiserManagementProbe(): Promise<void> {
@@ -2215,8 +2252,8 @@ export const tenantIsolationProbeRegistry: Readonly<
   "events.management": eventManagementProbe,
   "events.authorization": eventAuthorizationProbe,
   "organisers.persistence": organiserPersistenceProbe,
-  "organisers.direct": organiserPersistenceProbe,
-  "organisers.collection": organiserPersistenceProbe,
+  "organisers.direct": organiserReadIsolationProbe,
+  "organisers.collection": organiserReadIsolationProbe,
   "organisers.management": organiserManagementProbe,
   "organisers.authorization": organiserAuthorizationProbe,
   "publication.audience-definition": publicationAudienceDefinitionProbe,

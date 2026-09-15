@@ -1602,7 +1602,7 @@
         },
         "organisers_name_nonempty": {
           "name": "organisers_name_nonempty",
-          "value": "char_length(btrim(\"organisers\".\"name\")) > 0 AND char_length(\"organisers\".\"name\") <= 120"
+          "value": "\"organisers\".\"name\" = btrim(\"organisers\".\"name\") AND char_length(\"organisers\".\"name\") > 0 AND char_length(\"organisers\".\"name\") <= 120"
         }
       },
       "isRLSEnabled": false

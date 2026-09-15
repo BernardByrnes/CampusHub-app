@@ -8,7 +8,7 @@ CREATE TABLE "organisers" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "organisers_tenant_id_id_unique" UNIQUE("tenant_id","id"),
 	CONSTRAINT "organisers_version_positive" CHECK ("organisers"."version" >= 1),
-	CONSTRAINT "organisers_name_nonempty" CHECK (char_length(btrim("organisers"."name")) > 0 AND char_length("organisers"."name") <= 120)
+	CONSTRAINT "organisers_name_nonempty" CHECK ("organisers"."name" = btrim("organisers"."name") AND char_length("organisers"."name") > 0 AND char_length("organisers"."name") <= 120)
 );
 --> statement-breakpoint
 ALTER TABLE "audit_events" DROP CONSTRAINT "audit_events_event_type_closed";--> statement-breakpoint

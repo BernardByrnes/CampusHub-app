@@ -395,6 +395,7 @@ describe("A4 User/Membership boundary", () => {
       "audit_events.tenant_id -> tenants.id",
       "audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
       "organisers.tenant_id -> tenants.id",
+      "events.(tenant_id,organiser_id) -> organisers.(tenant_id,id)",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

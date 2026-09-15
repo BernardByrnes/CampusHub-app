@@ -49,10 +49,12 @@ function isValidDate(value: unknown): value is Date {
 export function isOrganiser(value: unknown): value is Organiser {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
+  const canonicalName = parseOrganiserName(candidate.name);
   return isUuid(candidate.id) &&
     isUuid(candidate.tenantId) &&
     parseOrganiserExpectedVersion(candidate.version) !== null &&
-    parseOrganiserName(candidate.name) !== null &&
+    canonicalName !== null &&
+    candidate.name === canonicalName &&
     isValidDate(candidate.createdAt) &&
     isValidDate(candidate.updatedAt);
 }

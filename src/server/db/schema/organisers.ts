@@ -34,7 +34,7 @@ export const organisers = pgTable(
     check("organisers_version_positive", sql`${table.version} >= 1`),
     check(
       "organisers_name_nonempty",
-      sql`char_length(btrim(${table.name})) > 0 AND char_length(${table.name}) <= 120`,
+      sql`${table.name} = btrim(${table.name}) AND char_length(${table.name}) > 0 AND char_length(${table.name}) <= 120`,
     ),
   ],
 );
