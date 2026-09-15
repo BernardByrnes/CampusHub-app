@@ -369,7 +369,7 @@ describe("real PostgreSQL Organiser Core", () => {
     const created = await organiserExecutor().createOrganiser(request(graph, CAPABILITIES.ORGANISER_MANAGE), graph.tenantId, { name: "Event Organiser" });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const event = await eventExecutor().createEvent(request(graph, CAPABILITIES.EVENT_MANAGE), graph.tenantId, eventInput(graph, created.organiser.id));
+    const event = await eventExecutor().createEvent(request(graph, CAPABILITIES.EVENT_MANAGE), graph.tenantId, eventInput(graph));
     expect(event.ok).toBe(true);
     if (!event.ok) return;
 
@@ -407,7 +407,7 @@ describe("real PostgreSQL Organiser Core", () => {
         version: events.version,
         organiserId: events.organiserId,
       }).from(events).where(and(eq(events.tenantId, graph.tenantId), eq(events.id, event.record.event.id))))[0];
-      expect(row).toEqual({ title: "Organiser Event", version: 1, organiserId: created.organiser.id });
+      expect(row).toEqual({ title: "Organiser Event", version: 1, organiserId: null });
       const auditRows = await getDatabase().select({ eventType: auditEvents.eventType })
         .from(auditEvents)
         .where(and(eq(auditEvents.tenantId, graph.tenantId), eq(auditEvents.resourceId, event.record.event.id)));
