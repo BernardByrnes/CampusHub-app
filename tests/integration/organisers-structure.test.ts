@@ -200,6 +200,12 @@ async function waitForDatabaseTimeAtOrAfter(target: Date): Promise<void> {
   throw new Error("Timed out waiting for PostgreSQL clock expiry.");
 }
 
+function requireDatabaseDate(raw: unknown, label: string): Date {
+  const value = raw instanceof Date ? raw : new Date(String(raw));
+  if (Number.isNaN(value.getTime())) throw new Error(`Expected the database ${label}.`);
+  return value;
+}
+
 async function lockAndRevoke(client: PoolClient, table: string, id: string): Promise<void> {
   await client.query("BEGIN");
   await client.query(`select id from "${table}" where id = $1 for update`, [id]);
@@ -380,8 +386,10 @@ describe("real PostgreSQL Organiser Core", () => {
         where id = ${graph.eventGrantId}
         returning expires_at
       `);
-      const expiresAt = (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at;
-      if (!(expiresAt instanceof Date)) throw new Error("Expected the short-lived Event grant expiry.");
+      const expiresAt = requireDatabaseDate(
+        (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at,
+        "short-lived Event grant expiry",
+      );
 
       const eventAttempt = eventExecutor(undefined, (pid) => eventBackend.resolve(pid)).updateEvent(
         request(graph, CAPABILITIES.EVENT_MANAGE),
@@ -563,8 +571,7 @@ describe("real PostgreSQL Organiser Core", () => {
         returning expires_at
       `);
       const raw = (expiryRows.rows[0] as { expires_at?: unknown } | undefined)?.expires_at;
-      if (!(raw instanceof Date)) throw new Error("Expected the database grant expiry.");
-      expiredAt = raw;
+      expiredAt = requireDatabaseDate(raw, "grant expiry");
     } else {
       const expiryRows = await getDatabase().execute(sql`
         update guild_terms
@@ -574,8 +581,7 @@ describe("real PostgreSQL Organiser Core", () => {
         returning ends_at
       `);
       const raw = (expiryRows.rows[0] as { ends_at?: unknown } | undefined)?.ends_at;
-      if (!(raw instanceof Date)) throw new Error("Expected the database term expiry.");
-      expiredAt = raw;
+      expiredAt = requireDatabaseDate(raw, "term expiry");
     }
     await waitForDatabaseTimeAtOrAfter(expiredAt);
     await expect(
