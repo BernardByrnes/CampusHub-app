@@ -54,7 +54,7 @@ jobs:
           CAMPUSHUB_DB_INTEGRATION: '1'
         run: |
           echo "sports-results-events-organiser PostgreSQL evidence: SHA=$(git rev-parse HEAD) CAMPUSHUB_DB_INTEGRATION=${CAMPUSHUB_DB_INTEGRATION}"
-          npm run test:integration -- tests/integration/capability-authority-race.test.ts tests/integration/sports-structure.test.ts tests/integration/fixtures-structure.test.ts tests/integration/results-structure.test.ts tests/integration/events-structure.test.ts tests/integration/organisers-structure.test.ts
+          npm run test:integration -- tests/integration/capability-authority-race.test.ts tests/integration/sports-structure.test.ts tests/integration/fixtures-structure.test.ts tests/integration/results-structure.test.ts tests/integration/events-structure.test.ts tests/integration/event-lifecycle-migration.test.ts tests/integration/organisers-structure.test.ts
 
       - name: Unit and governance tests
         run: npm run test:unit

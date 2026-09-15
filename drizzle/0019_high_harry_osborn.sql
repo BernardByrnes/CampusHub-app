@@ -24,15 +24,26 @@ BEGIN
     SELECT count(*)::integer
     INTO matching_publication_count
     FROM public.audit_events AS audit
-    WHERE audit.tenant_id = event_row.tenant_id
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+          AND length(audit.event_facts->>'version') <= 10
+          AND (
+            length(audit.event_facts->>'version') < 10
+            OR audit.event_facts->>'version' <= '2147483647'
+          )
+        THEN (audit.event_facts->>'version')::integer
+        ELSE NULL
+      END AS normalized_version
+    ) AS normalized
+    WHERE audit.tenant_id IS NOT DISTINCT FROM event_row.tenant_id
       AND audit.event_type = 'event.published'
       AND audit.resource_type = 'event'
       AND audit.resource_id = event_row.id
-      AND audit.resource_version = event_row.version
-      AND audit.event_facts->>'action' = 'published'
-      AND audit.event_facts->>'lifecycle' = 'published'
-      AND audit.event_facts->>'version' ~ '^[0-9]+$'
-      AND (audit.event_facts->>'version')::integer = event_row.version;
+      AND audit.resource_version IS NOT DISTINCT FROM event_row.version
+      AND audit.event_facts->>'action' IS NOT DISTINCT FROM 'published'
+      AND audit.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
+      AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version;
 
     IF matching_publication_count <> 1 THEN
       RAISE EXCEPTION 'CH-EVT-004 requires exactly one matching event.published audit fact for Event %', event_row.id;
@@ -41,16 +52,27 @@ BEGIN
     SELECT count(*)::integer
     INTO contradictory_publication_count
     FROM public.audit_events AS audit
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+          AND length(audit.event_facts->>'version') <= 10
+          AND (
+            length(audit.event_facts->>'version') < 10
+            OR audit.event_facts->>'version' <= '2147483647'
+          )
+        THEN (audit.event_facts->>'version')::integer
+        ELSE NULL
+      END AS normalized_version
+    ) AS normalized
     WHERE audit.event_type = 'event.published'
       AND audit.resource_type = 'event'
       AND audit.resource_id = event_row.id
       AND (
-        audit.tenant_id <> event_row.tenant_id
-        OR audit.resource_version <> event_row.version
-        OR audit.event_facts->>'action' <> 'published'
-        OR audit.event_facts->>'lifecycle' <> 'published'
-        OR audit.event_facts->>'version' !~ '^[0-9]+$'
-        OR (audit.event_facts->>'version')::integer <> event_row.version
+        audit.tenant_id IS DISTINCT FROM event_row.tenant_id
+        OR audit.resource_version IS DISTINCT FROM event_row.version
+        OR audit.event_facts->>'action' IS DISTINCT FROM 'published'
+        OR audit.event_facts->>'lifecycle' IS DISTINCT FROM 'published'
+        OR normalized.normalized_version IS DISTINCT FROM event_row.version
       );
 
     IF contradictory_publication_count <> 0 THEN
@@ -150,16 +172,27 @@ SELECT
   audit_row.occurred_at
 FROM public.events AS event_row
 JOIN public.audit_events AS audit_row
-  ON audit_row.tenant_id = event_row.tenant_id
+  ON audit_row.tenant_id IS NOT DISTINCT FROM event_row.tenant_id
  AND audit_row.event_type = 'event.published'
  AND audit_row.resource_type = 'event'
  AND audit_row.resource_id = event_row.id
- AND audit_row.resource_version = event_row.version
- AND audit_row.event_facts->>'action' = 'published'
- AND audit_row.event_facts->>'lifecycle' = 'published'
- AND audit_row.event_facts->>'version' ~ '^[0-9]+$'
- AND (audit_row.event_facts->>'version')::integer = event_row.version
-WHERE event_row.lifecycle = 'published';--> statement-breakpoint
+ AND audit_row.resource_version IS NOT DISTINCT FROM event_row.version
+ AND audit_row.event_facts->>'action' IS NOT DISTINCT FROM 'published'
+ AND audit_row.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
+CROSS JOIN LATERAL (
+  SELECT CASE
+    WHEN audit_row.event_facts->>'version' ~ '^[0-9]+$'
+      AND length(audit_row.event_facts->>'version') <= 10
+      AND (
+        length(audit_row.event_facts->>'version') < 10
+        OR audit_row.event_facts->>'version' <= '2147483647'
+      )
+    THEN (audit_row.event_facts->>'version')::integer
+    ELSE NULL
+  END AS normalized_version
+) AS normalized
+WHERE event_row.lifecycle = 'published'
+  AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version;--> statement-breakpoint
 
 -- CH-EVT-004 migration phase 4: verify complete bootstrap before success.
 DO $$
@@ -170,15 +203,51 @@ BEGIN
   INTO invalid_count
   FROM public.events AS event_row
   WHERE (event_row.lifecycle = 'published' AND (
-    SELECT count(*) FROM public.event_lifecycle_history AS history
+    (SELECT count(*) FROM public.event_lifecycle_history AS history
+     WHERE history.tenant_id = event_row.tenant_id
+       AND history.event_id = event_row.id) <> 1
+    OR NOT EXISTS (
+      SELECT 1
+      FROM public.event_lifecycle_history AS history
+      JOIN public.audit_events AS audit
+        ON audit.tenant_id IS NOT DISTINCT FROM event_row.tenant_id
+       AND audit.event_type = 'event.published'
+       AND audit.resource_type = 'event'
+       AND audit.resource_id = event_row.id
+       AND audit.resource_version IS NOT DISTINCT FROM event_row.version
+       AND audit.event_facts->>'action' IS NOT DISTINCT FROM 'published'
+       AND audit.event_facts->>'lifecycle' IS NOT DISTINCT FROM 'published'
+       AND audit.occurred_at = history.occurred_at
+      CROSS JOIN LATERAL (
+        SELECT CASE
+          WHEN audit.event_facts->>'version' ~ '^[0-9]+$'
+            AND length(audit.event_facts->>'version') <= 10
+            AND (
+              length(audit.event_facts->>'version') < 10
+              OR audit.event_facts->>'version' <= '2147483647'
+            )
+          THEN (audit.event_facts->>'version')::integer
+          ELSE NULL
+        END AS normalized_version
+      ) AS normalized
+      WHERE history.tenant_id = event_row.tenant_id
+        AND history.event_id = event_row.id
+        AND history.sequence = 1
+        AND history.event_version = event_row.version
+        AND history.from_lifecycle = 'draft'
+        AND history.to_lifecycle = 'published'
+        AND history.starts_at = event_row.starts_at
+        AND history.ends_at IS NOT DISTINCT FROM event_row.ends_at
+        AND history.postponed_from_starts_at IS NULL
+        AND history.reason IS NULL
+        AND history.cancellation_retention_until IS NULL
+        AND normalized.normalized_version IS NOT DISTINCT FROM event_row.version
+    )
+  ) OR (event_row.lifecycle = 'draft' AND (
+    EXISTS (SELECT 1 FROM public.event_lifecycle_history AS history
     WHERE history.tenant_id = event_row.tenant_id
       AND history.event_id = event_row.id
-  ) <> 1)
-     OR (event_row.lifecycle = 'draft' AND EXISTS (
-    SELECT 1 FROM public.event_lifecycle_history AS history
-    WHERE history.tenant_id = event_row.tenant_id
-      AND history.event_id = event_row.id
-  ));
+    ) OR event_row.cancellation_retention_until IS NOT NULL));
 
   IF invalid_count <> 0 THEN
     RAISE EXCEPTION 'CH-EVT-004 history bootstrap postcondition failed';
@@ -193,6 +262,20 @@ BEGIN
     WHERE event_row.id IS NULL
   ) THEN
     RAISE EXCEPTION 'CH-EVT-004 history contains a foreign or missing Event relation';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.event_lifecycle_history AS history
+    GROUP BY history.tenant_id, history.event_id, history.sequence
+    HAVING count(*) <> 1
+  ) OR EXISTS (
+    SELECT 1
+    FROM public.event_lifecycle_history AS history
+    GROUP BY history.tenant_id, history.event_id, history.event_version
+    HAVING count(*) <> 1
+  ) THEN
+    RAISE EXCEPTION 'CH-EVT-004 history contains duplicate sequence or Event-version keys';
   END IF;
 END;
 $$;--> statement-breakpoint

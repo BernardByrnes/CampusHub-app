@@ -526,6 +526,10 @@ async function loadLifecycleHistory(
   tenantId: string,
   eventId: string,
 ): Promise<readonly EventLifecycleHistory[] | null> {
+  // The Event row is the per-Event lifecycle mutex. Every mutation locks it
+  // before reading and appending history, so immutable history itself must be
+  // read without FOR UPDATE; the runtime role intentionally has no UPDATE
+  // privilege on this append-only table.
   const rows = await database
     .select()
     .from(eventLifecycleHistory)
@@ -535,8 +539,7 @@ async function loadLifecycleHistory(
         eq(eventLifecycleHistory.eventId, eventId),
       ),
     )
-    .orderBy(asc(eventLifecycleHistory.sequence))
-    .for("update");
+    .orderBy(asc(eventLifecycleHistory.sequence));
   const mapped = rows.map(toLifecycleHistory);
   return mapped.every((row): row is EventLifecycleHistory => row !== null)
     ? mapped

@@ -10,6 +10,7 @@ import { CAPABILITIES } from "@/domain/authorization/capability";
 import { StaticAuditIntegrityKeyProvider } from "@/domain/audit/audit-integrity-key-provider";
 import type { CreateEventInput, UpdateEventInput } from "@/domain/events/events";
 import type { CampusHubDatabase } from "@/server/db/client";
+import * as tables from "@/server/db/schema";
 import { PostgresCapabilityAuthorizer } from "@/server/authorization/postgres-capability-authorizer";
 import { PostgresAuthorizedEventManagementExecutor } from "@/server/authorization/postgres-authorized-events";
 import { DrizzleAuditEventRepository } from "@/server/repositories/audit-event-repository";
@@ -40,6 +41,7 @@ const databaseUrl = process.env.DATABASE_URL;
 if (typeof databaseUrl !== "string" || databaseUrl.trim().length === 0) {
   throw new Error("DATABASE_URL was not loaded for Event integration tests.");
 }
+const configuredDatabaseUrl = databaseUrl;
 
 const NOW = new Date("2026-09-20T10:00:00.000Z");
 const TERM_END = new Date("2027-01-01T00:00:00.000Z");
@@ -112,12 +114,13 @@ function services(
   runtimeDatabaseAuthorityVerifier: (database: Pick<CampusHubDatabase, "execute">) => Promise<boolean> = async () => true,
   applicationName?: string,
   onTransactionStarted?: (backendPid: number) => void | Promise<void>,
+  targetDatabase: CampusHubDatabase = getDatabase(),
 ) {
-  const repository = new DrizzleEventRepository(getDatabase());
-  const membershipsRepository = new DrizzleMembershipRepository();
-  const tenantsRepository = new DrizzleTenantRepository();
-  const guildTermsRepository = new DrizzleGuildTermRepository();
-  const roleGrantsRepository = new DrizzleRoleGrantRepository();
+  const repository = new DrizzleEventRepository(targetDatabase);
+  const membershipsRepository = new DrizzleMembershipRepository(targetDatabase);
+  const tenantsRepository = new DrizzleTenantRepository(targetDatabase);
+  const guildTermsRepository = new DrizzleGuildTermRepository(targetDatabase);
+  const roleGrantsRepository = new DrizzleRoleGrantRepository(targetDatabase);
   const authorizer = new PostgresCapabilityAuthorizer({
     tenants: tenantsRepository,
     memberships: membershipsRepository,
@@ -126,12 +129,12 @@ function services(
     clock: { now: () => NOW },
   });
   const auditRepository = auditEventsOverride ?? new DrizzleAuditEventRepository({
-    database: getDatabase(),
+    database: targetDatabase,
     keyProvider: new StaticAuditIntegrityKeyProvider(1, new Map([[1, auditKey]])),
     eventIdFactory: randomUUID,
   });
   return new PostgresAuthorizedEventManagementExecutor({
-    database: getDatabase(),
+    database: targetDatabase,
     authorizer,
     auditEvents: auditRepository,
     eventRepository: repository,
@@ -157,6 +160,54 @@ async function identitySubjectId(graph: Awaited<ReturnType<typeof createGraph>>)
   const value = rows[0]?.identitySubjectId;
   if (value === undefined) throw new Error("Membership identity was not found.");
   return value;
+}
+
+type RestrictedEventRuntime = Readonly<{
+  database: CampusHubDatabase;
+  pool: Pool;
+  roleName: string;
+}>;
+
+async function createRestrictedEventRuntime(): Promise<RestrictedEventRuntime> {
+  const adminPool = getPool();
+  const roleName = `campushub_event_runtime_${randomUUID().replaceAll("-", "")}`;
+  const password = randomUUID().replaceAll("-", "");
+  const quotedRole = `"${roleName}"`;
+  await adminPool.query(`create role ${quotedRole} login password '${password}'`);
+  try {
+    await adminPool.query(`grant usage on schema public to ${quotedRole}`);
+    await adminPool.query(`revoke create on schema public from ${quotedRole}`);
+    await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
+    await adminPool.query(
+      `grant select, update on "tenants", "campuses", "memberships", "guild_terms", "role_grants", "events", "event_audience_criteria", "organisers" to ${quotedRole}`,
+    );
+    const connectionUrl = new URL(configuredDatabaseUrl);
+    connectionUrl.username = roleName;
+    connectionUrl.password = password;
+    const restrictedPool = new Pool({ connectionString: connectionUrl.toString(), max: 1 });
+    await restrictedPool.query("select 1");
+    return {
+      database: drizzle({ client: restrictedPool, schema: tables }) as CampusHubDatabase,
+      pool: restrictedPool,
+      roleName,
+    };
+  } catch (error) {
+    await adminPool.query(`revoke "campushub_runtime" from ${quotedRole}`).catch(() => undefined);
+    await adminPool.query(`revoke all privileges on schema public from ${quotedRole}`).catch(() => undefined);
+    await adminPool.query(`revoke all privileges on all tables in schema public from ${quotedRole}`).catch(() => undefined);
+    await adminPool.query(`drop role ${quotedRole}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function destroyRestrictedEventRuntime(runtime: RestrictedEventRuntime): Promise<void> {
+  await runtime.pool.end();
+  const adminPool = getPool();
+  const quotedRole = `"${runtime.roleName}"`;
+  await adminPool.query(`revoke "campushub_runtime" from ${quotedRole}`).catch(() => undefined);
+  await adminPool.query(`revoke all privileges on schema public from ${quotedRole}`).catch(() => undefined);
+  await adminPool.query(`revoke all privileges on all tables in schema public from ${quotedRole}`).catch(() => undefined);
+  await adminPool.query(`drop role ${quotedRole}`);
 }
 
 function input(graph: Awaited<ReturnType<typeof createGraph>>): CreateEventInput {
@@ -1366,6 +1417,62 @@ describe("real PostgreSQL Event Core", () => {
         await client.query("ROLLBACK").catch(() => undefined);
         client.release();
       }
+    }
+  });
+
+  it("proves the restricted runtime can read and append history without UPDATE privilege", async () => {
+    const graph = await createGraph();
+    const draft = await createDraft(graph);
+    const runtime = await createRestrictedEventRuntime();
+    try {
+      const privilegeRows = await runtime.pool.query<{
+        canSelect: boolean;
+        canInsert: boolean;
+        canUpdate: boolean;
+        canDelete: boolean;
+        canTruncate: boolean;
+      }>(`
+        select
+          has_table_privilege(current_user, 'public.event_lifecycle_history', 'SELECT') as "canSelect",
+          has_table_privilege(current_user, 'public.event_lifecycle_history', 'INSERT') as "canInsert",
+          has_table_privilege(current_user, 'public.event_lifecycle_history', 'UPDATE') as "canUpdate",
+          has_table_privilege(current_user, 'public.event_lifecycle_history', 'DELETE') as "canDelete",
+          has_table_privilege(current_user, 'public.event_lifecycle_history', 'TRUNCATE') as "canTruncate"
+      `);
+      expect(privilegeRows.rows[0]).toEqual({
+        canSelect: true,
+        canInsert: true,
+        canUpdate: false,
+        canDelete: false,
+        canTruncate: false,
+      });
+      await expect(
+        runtime.pool.query('select * from "event_lifecycle_history" where event_id = $1 for update', [draft.eventId]),
+      ).rejects.toThrow();
+
+      const published = await services(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `campushub-event-restricted-runtime-${randomUUID()}`,
+        undefined,
+        runtime.database,
+      ).publishEvent(draft.actor, graph.tenantId, draft.eventId, { expectedVersion: 1 });
+      expect(published).toMatchObject({ ok: true, changed: true, record: { event: { version: 2, lifecycle: "published" } } });
+
+      await expect(
+        runtime.pool.query('select count(*)::int as count from "event_lifecycle_history" where tenant_id = $1 and event_id = $2', [graph.tenantId, draft.eventId]),
+      ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+      await expect(
+        runtime.pool.query('update "event_lifecycle_history" set reason = \'tampered\' where tenant_id = $1 and event_id = $2', [graph.tenantId, draft.eventId]),
+      ).rejects.toThrow();
+      await expect(
+        runtime.pool.query('delete from "event_lifecycle_history" where tenant_id = $1 and event_id = $2', [graph.tenantId, draft.eventId]),
+      ).rejects.toThrow();
+      await expect(runtime.pool.query('truncate "event_lifecycle_history"')).rejects.toThrow();
+    } finally {
+      await destroyRestrictedEventRuntime(runtime);
     }
   });
 });
