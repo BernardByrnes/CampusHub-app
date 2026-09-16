@@ -190,6 +190,128 @@ async function waitForBlocked(blockingPid: number, lockQueryFragment: string): P
   throw new Error(`Timed out waiting for PostgreSQL lock evidence: ${lockQueryFragment}`);
 }
 
+async function waitForBlockedBy(waitingPid: number, blockingPid: number, lockQueryFragment: string): Promise<number[]> {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await getPool().query<{ blockers: number[] }>(
+      `select pg_blocking_pids(activity.pid) as blockers
+         from pg_stat_activity as activity
+        where activity.pid = $1
+          and activity.wait_event_type = 'Lock'
+          and $2 = any(pg_blocking_pids(activity.pid))
+          and activity.query ilike $3`,
+      [waitingPid, blockingPid, `%${lockQueryFragment}%`],
+    );
+    const blockers = result.rows[0]?.blockers;
+    if (blockers !== undefined) return blockers;
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_DELAY_MS));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL PID ${waitingPid} to block on PID ${blockingPid}: ${lockQueryFragment}`);
+}
+
+function sqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+type RsvpWriteBarrier = Readonly<{
+  ownerPid: number;
+  tableName: string;
+  release: () => Promise<void>;
+  cleanup: () => Promise<void>;
+}>;
+
+async function createRsvpWriteBarrier(graph: Graph): Promise<RsvpWriteBarrier> {
+  const barrierClient = await getPool().connect();
+  const suffix = randomUUID().replaceAll("-", "");
+  const tableName = `evt003_rsvp_barrier_${suffix}`;
+  const functionName = `evt003_rsvp_barrier_trigger_${suffix}`;
+  const triggerName = `evt003_rsvp_barrier_${suffix}`;
+  const barrierKey = randomUUID();
+  const table = `public.${sqlIdentifier(tableName)}`;
+  const functionNameSql = `public.${sqlIdentifier(functionName)}`;
+  const trigger = sqlIdentifier(triggerName);
+  let transactionHeld = false;
+  let released = false;
+
+  try {
+    await barrierClient.query(`create table ${table} (barrier_key text primary key, released boolean not null default false)`);
+    await barrierClient.query(`insert into ${table} (barrier_key) values ($1)`, [barrierKey]);
+    await barrierClient.query(`
+      create function ${functionNameSql}()
+      returns trigger
+      language plpgsql
+      as $function$
+      declare
+        barrier_released boolean;
+      begin
+        if new.tenant_id::text = tg_argv[2]
+           and new.event_id::text = tg_argv[3]
+           and new.membership_id::text = tg_argv[4] then
+          execute format('select released from %I where barrier_key = $1 for update', tg_argv[0])
+             into barrier_released
+            using tg_argv[1];
+          if barrier_released is distinct from true then
+            raise exception 'RSVP test barrier did not release';
+          end if;
+        end if;
+        return new;
+      end;
+      $function$
+    `);
+    await barrierClient.query(`
+      create trigger ${trigger}
+      after insert or update on public."event_rsvps"
+      for each row
+      execute function ${functionNameSql}(
+        ${sqlLiteral(tableName)},
+        ${sqlLiteral(barrierKey)},
+        ${sqlLiteral(graph.tenantId)},
+        ${sqlLiteral(graph.eventId)},
+        ${sqlLiteral(graph.membershipId)}
+      )
+    `);
+    await barrierClient.query("begin");
+    await barrierClient.query(`select barrier_key from ${table} where barrier_key = $1 for update`, [barrierKey]);
+    const ownerPid = await backendPid(barrierClient);
+    transactionHeld = true;
+
+    return {
+      ownerPid,
+      tableName,
+      release: async () => {
+        if (!transactionHeld || released) return;
+        await barrierClient.query(`update ${table} set released = true where barrier_key = $1`, [barrierKey]);
+        await barrierClient.query("commit");
+        released = true;
+        transactionHeld = false;
+      },
+      cleanup: async () => {
+        if (transactionHeld && !released) {
+          await barrierClient.query(`update ${table} set released = true where barrier_key = $1`, [barrierKey]);
+          await barrierClient.query("commit");
+          transactionHeld = false;
+          released = true;
+        }
+        await barrierClient.query(`drop trigger if exists ${trigger} on public."event_rsvps"`);
+        await barrierClient.query(`drop function if exists ${functionNameSql}()`);
+        await barrierClient.query(`drop table if exists ${table}`);
+        barrierClient.release();
+      },
+    };
+  } catch (error) {
+    await barrierClient.query("rollback").catch(() => undefined);
+    await barrierClient.query(`drop trigger if exists ${trigger} on public."event_rsvps"`).catch(() => undefined);
+    await barrierClient.query(`drop function if exists ${functionNameSql}()`).catch(() => undefined);
+    await barrierClient.query(`drop table if exists ${table}`).catch(() => undefined);
+    barrierClient.release();
+    throw error;
+  }
+}
+
 async function waitForDatabaseTime(target: Date): Promise<void> {
   const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -418,46 +540,144 @@ describe("real PostgreSQL Event RSVP Core", () => {
     }
   });
 
-  it("RSVP-PG-01/03 serializes two valid materially different first RSVP writes at the Tenant/Event/Membership row", async () => {
+  it("RSVP-PG-01 proves the first-row uniqueness race is real PostgreSQL blocking", async () => {
     const graph = await createGraph();
-    const results = await Promise.all([
-      change(graph, "going", 0, "race-going"),
-      change(graph, "interested", 0, "race-interested"),
-    ]);
-    expect(results.filter((result) => result.ok)).toHaveLength(1);
-    expect(results.filter((result) => !result.ok)).toEqual([{ ok: false, error: "VERSION_CONFLICT" }]);
-    const rows = await getDatabase().select().from(eventRsvps).where(and(
-      eq(eventRsvps.tenantId, graph.tenantId),
-      eq(eventRsvps.eventId, graph.eventId),
-      eq(eventRsvps.membershipId, graph.membershipId),
-    ));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.version).toBe(1);
+    const barrier = await createRsvpWriteBarrier(graph);
+    let firstPromise: ReturnType<typeof change> | undefined;
+    let secondPromise: ReturnType<typeof change> | undefined;
+    try {
+      const firstStarted = deferred<number>();
+      const firstRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { firstStarted.resolve(pid); },
+      });
+      firstPromise = change(graph, "going", 0, "race-going", getDatabase(), firstRepository);
+      const firstPid = await firstStarted.promise;
+      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+
+      const secondStarted = deferred<number>();
+      const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { secondStarted.resolve(pid); },
+      });
+      secondPromise = change(graph, "interested", 0, "race-interested", getDatabase(), secondRepository);
+      const secondPid = await secondStarted.promise;
+      expect(secondPid).not.toBe(firstPid);
+      const blockers = await waitForBlockedBy(secondPid, firstPid, "event_rsvps");
+      expect(blockers).toContain(firstPid);
+
+      await barrier.release();
+      const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+      expect(firstResult).toEqual({ ok: true, value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true } });
+      expect(secondResult).toEqual({ ok: false, error: "VERSION_CONFLICT" });
+      const rows = await getDatabase().select().from(eventRsvps).where(and(
+        eq(eventRsvps.tenantId, graph.tenantId),
+        eq(eventRsvps.eventId, graph.eventId),
+        eq(eventRsvps.membershipId, graph.membershipId),
+      ));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "going", version: 1 });
+    } finally {
+      await barrier.release().catch(() => undefined);
+      await Promise.allSettled([firstPromise, secondPromise].filter((promise): promise is ReturnType<typeof change> => promise !== undefined));
+      await barrier.cleanup();
+    }
   });
 
-  it("RSVP-PG-02 serializes concurrent same-state requests to one CHANGED and one NOOP", async () => {
+  it("RSVP-PG-02 proves same-state concurrent updates block and resolve to CHANGED plus NOOP", async () => {
     const graph = await createGraph();
     await expect(change(graph, "going", 0, "same-state-seed")).resolves.toMatchObject({
       ok: true,
       value: { state: "going", participationVersion: 1 },
     });
-    const results = await Promise.all([
-      change(graph, "interested", 1, "same-state-a"),
-      change(graph, "interested", 1, "same-state-b"),
-    ]);
-    expect(results.filter((result) => result.ok && result.value.outcome === "CHANGED")).toHaveLength(1);
-    expect(results.filter((result) => result.ok && result.value.outcome === "NOOP")).toHaveLength(1);
-    expect(results).toEqual(expect.arrayContaining([
-      { ok: true, value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true } },
-      { ok: true, value: { outcome: "NOOP", state: "interested", participationVersion: 2, changed: false } },
-    ]));
-    const rows = await getDatabase().select().from(eventRsvps).where(and(
-      eq(eventRsvps.tenantId, graph.tenantId),
-      eq(eventRsvps.eventId, graph.eventId),
-      eq(eventRsvps.membershipId, graph.membershipId),
-    ));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ state: "interested", version: 2 });
+    const barrier = await createRsvpWriteBarrier(graph);
+    let firstPromise: ReturnType<typeof change> | undefined;
+    let secondPromise: ReturnType<typeof change> | undefined;
+    try {
+      const firstStarted = deferred<number>();
+      const firstRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { firstStarted.resolve(pid); },
+      });
+      firstPromise = change(graph, "interested", 1, "same-state-a", getDatabase(), firstRepository);
+      const firstPid = await firstStarted.promise;
+      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+
+      const secondStarted = deferred<number>();
+      const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { secondStarted.resolve(pid); },
+      });
+      secondPromise = change(graph, "interested", 1, "same-state-b", getDatabase(), secondRepository);
+      const secondPid = await secondStarted.promise;
+      expect(secondPid).not.toBe(firstPid);
+      const blockers = await waitForBlockedBy(secondPid, firstPid, "event_rsvps");
+      expect(blockers).toContain(firstPid);
+
+      await barrier.release();
+      const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+      expect(firstResult).toEqual({ ok: true, value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true } });
+      expect(secondResult).toEqual({ ok: true, value: { outcome: "NOOP", state: "interested", participationVersion: 2, changed: false } });
+      const rows = await getDatabase().select().from(eventRsvps).where(and(
+        eq(eventRsvps.tenantId, graph.tenantId),
+        eq(eventRsvps.eventId, graph.eventId),
+        eq(eventRsvps.membershipId, graph.membershipId),
+      ));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "interested", version: 2 });
+    } finally {
+      await barrier.release().catch(() => undefined);
+      await Promise.allSettled([firstPromise, secondPromise].filter((promise): promise is ReturnType<typeof change> => promise !== undefined));
+      await barrier.cleanup();
+    }
+  });
+
+  it("RSVP-PG-03 proves materially different existing-row intents block and stale loser conflicts", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "different-state-seed")).resolves.toMatchObject({
+      ok: true,
+      value: { state: "going", participationVersion: 1 },
+    });
+    const barrier = await createRsvpWriteBarrier(graph);
+    let firstPromise: ReturnType<typeof change> | undefined;
+    let secondPromise: ReturnType<typeof change> | undefined;
+    try {
+      const firstStarted = deferred<number>();
+      const firstRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { firstStarted.resolve(pid); },
+      });
+      firstPromise = change(graph, "interested", 1, "different-state-a", getDatabase(), firstRepository);
+      const firstPid = await firstStarted.promise;
+      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+
+      const secondStarted = deferred<number>();
+      const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+        runtimeDatabaseAuthorityVerifier: async () => true,
+        onTransactionStarted: async (pid) => { secondStarted.resolve(pid); },
+      });
+      secondPromise = change(graph, "withdrawn", 1, "different-state-b", getDatabase(), secondRepository);
+      const secondPid = await secondStarted.promise;
+      expect(secondPid).not.toBe(firstPid);
+      const blockers = await waitForBlockedBy(secondPid, firstPid, "event_rsvps");
+      expect(blockers).toContain(firstPid);
+
+      await barrier.release();
+      const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+      expect(firstResult).toEqual({ ok: true, value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true } });
+      expect(secondResult).toEqual({ ok: false, error: "VERSION_CONFLICT" });
+      const rows = await getDatabase().select().from(eventRsvps).where(and(
+        eq(eventRsvps.tenantId, graph.tenantId),
+        eq(eventRsvps.eventId, graph.eventId),
+        eq(eventRsvps.membershipId, graph.membershipId),
+      ));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "interested", version: 2 });
+    } finally {
+      await barrier.release().catch(() => undefined);
+      await Promise.allSettled([firstPromise, secondPromise].filter((promise): promise is ReturnType<typeof change> => promise !== undefined));
+      await barrier.cleanup();
+    }
   });
 
   it("RSVP-PG-09 rejects foreign Event, foreign Membership, and wrong identity without a write", async () => {
@@ -909,13 +1129,43 @@ describe("real PostgreSQL Event RSVP Core", () => {
     await expect(change(graph, "interested", 0, "atomic-seed")).resolves.toEqual({ ok: false, error: "IDEMPOTENCY_CONFLICT" });
     await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(1);
 
+    const updateGraph = await createGraph();
+    await expect(change(updateGraph, "going", 0, "atomic-update-seed")).resolves.toMatchObject({ ok: true });
+    const beforeUpdate = (await getDatabase().select().from(eventRsvps).where(and(
+      eq(eventRsvps.tenantId, updateGraph.tenantId),
+      eq(eventRsvps.eventId, updateGraph.eventId),
+      eq(eventRsvps.membershipId, updateGraph.membershipId),
+    )))[0];
+    if (beforeUpdate === undefined) throw new Error("Atomicity update fixture was unavailable.");
+
+    const insertGraph = await createGraph();
     const runtime = await createRestrictedRuntime({ withApprovedRuntimeRole: false });
     try {
       await getPool().query(`revoke update on "event_rsvp_idempotency" from "${runtime.roleName}"`);
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, { runtimeDatabaseAuthorityVerifier: async () => true });
-      await expect(change(graph, "going", 0, "finalization-failure", runtime.database, runtimeRepository)).resolves.toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
-      await expect(getDatabase().select().from(eventRsvps).where(and(eq(eventRsvps.tenantId, graph.tenantId), eq(eventRsvps.eventId, graph.eventId), eq(eventRsvps.membershipId, graph.membershipId)))).resolves.toHaveLength(1);
-      await expect(getDatabase().select().from(eventRsvpIdempotency).where(and(eq(eventRsvpIdempotency.tenantId, graph.tenantId), eq(eventRsvpIdempotency.idempotencyKey, "finalization-failure")))).resolves.toHaveLength(0);
+      await expect(change(updateGraph, "interested", 1, "finalization-update-failure", runtime.database, runtimeRepository)).resolves.toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
+      const afterUpdate = (await getDatabase().select().from(eventRsvps).where(and(
+        eq(eventRsvps.tenantId, updateGraph.tenantId),
+        eq(eventRsvps.eventId, updateGraph.eventId),
+        eq(eventRsvps.membershipId, updateGraph.membershipId),
+      )))[0];
+      expect(afterUpdate).toMatchObject({ state: "going", version: 1 });
+      expect(afterUpdate?.updatedAt.toISOString()).toBe(beforeUpdate.updatedAt.toISOString());
+      await expect(getDatabase().select().from(eventRsvpIdempotency).where(and(
+        eq(eventRsvpIdempotency.tenantId, updateGraph.tenantId),
+        eq(eventRsvpIdempotency.idempotencyKey, "finalization-update-failure"),
+      ))).resolves.toHaveLength(0);
+
+      await expect(change(insertGraph, "going", 0, "finalization-insert-failure", runtime.database, runtimeRepository)).resolves.toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
+      await expect(getDatabase().select().from(eventRsvps).where(and(
+        eq(eventRsvps.tenantId, insertGraph.tenantId),
+        eq(eventRsvps.eventId, insertGraph.eventId),
+        eq(eventRsvps.membershipId, insertGraph.membershipId),
+      ))).resolves.toHaveLength(0);
+      await expect(getDatabase().select().from(eventRsvpIdempotency).where(and(
+        eq(eventRsvpIdempotency.tenantId, insertGraph.tenantId),
+        eq(eventRsvpIdempotency.idempotencyKey, "finalization-insert-failure"),
+      ))).resolves.toHaveLength(0);
     } finally {
       await destroyRestrictedRuntime(runtime);
     }
