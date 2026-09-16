@@ -80,9 +80,27 @@ ALTER TABLE "event_rsvp_idempotency" OWNER TO "campushub_data_owner";--> stateme
 
 REVOKE ALL ON TABLE "tenant_module_states", "event_rsvps", "event_rsvp_idempotency" FROM PUBLIC;--> statement-breakpoint
 GRANT SELECT ON TABLE "tenant_module_states" TO "campushub_runtime";--> statement-breakpoint
+GRANT UPDATE ("updated_at") ON TABLE "tenant_module_states" TO "campushub_runtime";--> statement-breakpoint
 GRANT SELECT, INSERT, UPDATE ON TABLE "event_rsvps", "event_rsvp_idempotency" TO "campushub_runtime";--> statement-breakpoint
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "tenant_module_states" FROM "campushub_runtime";--> statement-breakpoint
+REVOKE INSERT, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "tenant_module_states" FROM "campushub_runtime";--> statement-breakpoint
 REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "event_rsvps", "event_rsvp_idempotency" FROM "campushub_runtime";--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "public"."tenant_module_states_reject_runtime_update"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF pg_has_role(current_user, 'campushub_runtime', 'USAGE') THEN
+    RAISE EXCEPTION 'tenant_module_states is not runtime-mutable'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE TRIGGER "tenant_module_states_reject_runtime_update"
+BEFORE UPDATE ON "tenant_module_states"
+FOR EACH ROW
+EXECUTE FUNCTION "public"."tenant_module_states_reject_runtime_update"();--> statement-breakpoint
 
 INSERT INTO "tenant_module_states" ("tenant_id", "module", "enabled", "version")
 SELECT "id", 'event', true, 1

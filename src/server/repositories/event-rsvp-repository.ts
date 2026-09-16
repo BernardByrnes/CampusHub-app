@@ -42,7 +42,6 @@ export type EventRsvpRepositoryOptions = Readonly<{
   runtimeDatabaseAuthorityVerifier?: (
     database: Pick<CampusHubDatabase, "execute">,
   ) => Promise<boolean>;
-  onPersistenceError?: (error: unknown) => void;
   onTransactionStarted?: (backendPid: number) => void | Promise<void>;
   beforeFinalClockCheck?: () => Promise<void>;
 }>;
@@ -260,7 +259,10 @@ function runtimeRsvpAuthorityIsSafe(
            or authority_role.rolname = 'campushub_data_owner'
            or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner)
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'INSERT')
-           or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'UPDATE')
+           or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'tenant_id', 'UPDATE')
+           or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'module', 'UPDATE')
+           or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'enabled', 'UPDATE')
+           or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'version', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'TRUNCATE')
            or has_table_privilege(authority_role.rolname, 'public.event_rsvps', 'DELETE')
@@ -270,7 +272,10 @@ function runtimeRsvpAuthorityIsSafe(
       )
       and has_table_privilege(current_user, 'public.tenant_module_states', 'SELECT')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'INSERT')
-      and not has_table_privilege(current_user, 'public.tenant_module_states', 'UPDATE')
+      and not has_column_privilege(current_user, 'public.tenant_module_states', 'tenant_id', 'UPDATE')
+      and not has_column_privilege(current_user, 'public.tenant_module_states', 'module', 'UPDATE')
+      and not has_column_privilege(current_user, 'public.tenant_module_states', 'enabled', 'UPDATE')
+      and not has_column_privilege(current_user, 'public.tenant_module_states', 'version', 'UPDATE')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'DELETE')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'TRUNCATE')
       and has_table_privilege(current_user, 'public.event_rsvps', 'SELECT')
@@ -337,7 +342,7 @@ export class DrizzleEventRsvpRepository {
     const tenant = tenantRows[0] ?? null;
 
     const moduleRows = await transaction
-      .select({ enabled: tenantModuleStates.enabled })
+      .select({ enabled: tenantModuleStates.enabled, updatedAt: tenantModuleStates.updatedAt })
       .from(tenantModuleStates)
       .where(and(eq(tenantModuleStates.tenantId, tenantId), eq(tenantModuleStates.module, "event")))
       .for("share")
@@ -580,7 +585,6 @@ export class DrizzleEventRsvpRepository {
       });
     } catch (error) {
       if (isRsvpTransactionAbort(error)) return error.result;
-      this.options.onPersistenceError?.(error);
       return failed("PERSISTENCE_FAILED");
     }
   }

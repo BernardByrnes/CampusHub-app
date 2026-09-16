@@ -207,6 +207,9 @@ async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
       `grant select on "tenant_module_states" to ${quotedRole}`,
     );
     await adminPool.query(
+      `grant update ("updated_at") on "tenant_module_states" to ${quotedRole}`,
+    );
+    await adminPool.query(
       `grant select, insert, update on "event_rsvps", "event_rsvp_idempotency" to ${quotedRole}`,
     );
     const connectionUrl = new URL(configuredDatabaseUrl);
@@ -323,6 +326,8 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_update: boolean;
         rsvp_delete: boolean;
         idempotency_delete: boolean;
+        module_enabled_update: boolean;
+        module_updated_at_update: boolean;
       }>(`
         select
           has_table_privilege('campushub_runtime', 'public.tenant_module_states', 'SELECT') as module_select,
@@ -331,7 +336,9 @@ describe("real PostgreSQL Event RSVP Core", () => {
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'INSERT') as rsvp_insert,
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'UPDATE') as rsvp_update,
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'DELETE') as rsvp_delete,
-          has_table_privilege('campushub_runtime', 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete
+          has_table_privilege('campushub_runtime', 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete,
+          has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
+          has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update
       `);
       expect(privilegeRows.rows[0]).toEqual({
         module_select: true,
@@ -341,30 +348,20 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_update: true,
         rsvp_delete: false,
         idempotency_delete: false,
+        module_enabled_update: false,
+        module_updated_at_update: true,
       });
-      const persistenceErrors: string[] = [];
-      const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {
-        onPersistenceError: (error: unknown) => {
-          const candidate = error as { code?: unknown; message?: unknown };
-          persistenceErrors.push(JSON.stringify({ code: candidate.code, message: candidate.message }));
-        },
-      });
-      const restrictedResult = await change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository);
-      if (!restrictedResult.ok) {
-        const bypassRepository = new DrizzleEventRsvpRepository(runtime.database, {
-          runtimeDatabaseAuthorityVerifier: async () => true,
-          onPersistenceError: (error: unknown) => {
-            const candidate = error as { code?: unknown; message?: unknown };
-            persistenceErrors.push(JSON.stringify({ bypassCode: candidate.code, bypassMessage: candidate.message }));
-          },
-        });
-        const bypassResult = await change(graph, "going", 0, "restricted-runtime-bypass", runtime.database, bypassRepository);
-        throw new Error(`Restricted RSVP diagnostic: ${JSON.stringify({ restrictedResult, bypassResult, persistenceErrors })}`);
-      }
-      expect(restrictedResult).toEqual({
+      const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
+      await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
         ok: true,
         value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
       });
+      await expect(
+        runtime.pool.query(
+          'update "tenant_module_states" set enabled = false where tenant_id = $1 and module = \'event\'',
+          [graph.tenantId],
+        ),
+      ).rejects.toThrow();
     } finally {
       await destroyRestrictedRuntime(runtime);
     }
