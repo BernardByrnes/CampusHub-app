@@ -334,7 +334,15 @@ describe("real PostgreSQL Event RSVP Core", () => {
         idempotency_delete: false,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
-      await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
+      const restrictedResult = await change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository);
+      if (!restrictedResult.ok) {
+        const bypassRepository = new DrizzleEventRsvpRepository(runtime.database, {
+          runtimeDatabaseAuthorityVerifier: async () => true,
+        });
+        const bypassResult = await change(graph, "going", 0, "restricted-runtime-bypass", runtime.database, bypassRepository);
+        throw new Error(`Restricted RSVP diagnostic: ${JSON.stringify({ restrictedResult, bypassResult })}`);
+      }
+      expect(restrictedResult).toEqual({
         ok: true,
         value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
       });
