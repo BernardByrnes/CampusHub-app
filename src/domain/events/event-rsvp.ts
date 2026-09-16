@@ -16,9 +16,19 @@ import {
   tenantHasFullFunctionality,
 } from "@/domain/tenancy/tenant";
 
-import { isEventAudienceDefinition, evaluateEventAudience } from "./event-audience";
+import {
+  isEventAudienceDefinition,
+  type EventAudienceDefinition,
+  type PublicationAudienceGroup,
+  type PublicationResidenceTarget,
+} from "./event-audience";
 import { isEventPast, type Event } from "./events";
-import { isMembershipAudienceFacts } from "@/domain/membership/membership-audience";
+import {
+  isMembershipAudienceFacts,
+  type MembershipAudienceAttribute,
+  type MembershipAudienceFacts,
+  type MembershipResidenceAudienceFact,
+} from "@/domain/membership/membership-audience";
 
 export const EVENT_RSVP_STATES = [
   "going",
@@ -75,11 +85,13 @@ export type EventRsvpAudienceEvaluation =
 export type EventParticipationEvaluationInput = Readonly<{
   tenantStatus: unknown;
   moduleEnabled: unknown;
+  moduleVersion: unknown;
   event: Pick<
     Event,
     "tenantId" | "lifecycle" | "startsAt" | "endsAt" | "rsvpEnabled" | "audienceMode" | "visibility" | "cancellationRetentionUntil"
   > | null;
   membershipLifecycle: unknown;
+  membershipBindingValid: boolean;
   assuranceLevel: unknown;
   audience: unknown;
   membershipFacts: unknown;
@@ -118,6 +130,76 @@ export function parseEventRsvpCommand(value: unknown): EventRsvpCommand | null {
   };
 }
 
+type EventAudienceFactResult = "MATCH" | "MISMATCH" | "MISSING";
+
+function provenanceAvailable(
+  provenance: string,
+  policy: "authoritative_only" | "allow_self_declared",
+): boolean {
+  return provenance !== "optional" &&
+    (policy === "allow_self_declared" || provenance !== "self_declared");
+}
+
+function evaluateAudienceAttribute<T>(
+  attribute: MembershipAudienceAttribute<T> | undefined,
+  values: readonly T[],
+  policy: "authoritative_only" | "allow_self_declared",
+): EventAudienceFactResult {
+  if (
+    attribute === undefined ||
+    attribute.value === null ||
+    !provenanceAvailable(attribute.provenance, policy)
+  ) return "MISSING";
+  return values.includes(attribute.value) ? "MATCH" : "MISMATCH";
+}
+
+function evaluateResidenceTarget(
+  residence: MembershipResidenceAudienceFact,
+  target: PublicationResidenceTarget,
+  policy: "authoritative_only" | "allow_self_declared",
+): boolean {
+  if (!provenanceAvailable(residence.provenance, policy) || residence.state === "unknown") return false;
+  if (target.kind === "any_resident") return residence.state === "resident";
+  if (target.kind === "non_resident") return residence.state === "non_resident";
+  return residence.state === "resident" && residence.residenceId === target.residenceId;
+}
+
+function evaluateAudienceGroup(
+  group: PublicationAudienceGroup,
+  facts: MembershipAudienceFacts,
+): EventAudienceFactResult {
+  switch (group.dimension) {
+    case "campus":
+      return evaluateAudienceAttribute(facts.campus, group.campusIds, group.provenancePolicy);
+    case "academic_division":
+      return evaluateAudienceAttribute(facts.academicDivision, group.academicDivisionIds, group.provenancePolicy);
+    case "programme":
+      return evaluateAudienceAttribute(facts.programme, group.programmeIds, group.provenancePolicy);
+    case "academic_year":
+      return evaluateAudienceAttribute(facts.academicYear, group.academicYears, group.provenancePolicy);
+    case "residence":
+      if (facts.residence.state === "unknown" || !provenanceAvailable(facts.residence.provenance, group.provenancePolicy)) return "MISSING";
+      return group.residenceTargets.some((target) => evaluateResidenceTarget(facts.residence, target, group.provenancePolicy))
+        ? "MATCH"
+        : "MISMATCH";
+  }
+}
+
+function evaluateTargetedAudience(
+  audience: EventAudienceDefinition,
+  facts: MembershipAudienceFacts,
+): EventRsvpAudienceEvaluation {
+  let missing = false;
+  for (const group of audience.groups) {
+    const result = evaluateAudienceGroup(group, facts);
+    if (result === "MISMATCH") return { eligible: false, reason: "AUDIENCE_INELIGIBLE" };
+    if (result === "MISSING") missing = true;
+  }
+  return missing
+    ? { eligible: false, reason: "PREREQUISITE_MISSING" }
+    : { eligible: true };
+}
+
 export function evaluateEventAudienceForParticipation(
   audience: unknown,
   membershipFacts: unknown,
@@ -133,11 +215,10 @@ export function evaluateEventAudienceForParticipation(
   if (!isMembershipAudienceFacts(membershipFacts)) {
     return { eligible: false, reason: "PREREQUISITE_MISSING" };
   }
-
-  const decision = evaluateEventAudience(audience, membershipFacts);
-  return decision.eligible
-    ? { eligible: true }
-    : { eligible: false, reason: "AUDIENCE_INELIGIBLE" };
+  if (membershipFacts.tenantId !== audience.tenantId) {
+    return { eligible: false, reason: "PREREQUISITE_MISSING" };
+  }
+  return evaluateTargetedAudience(audience, membershipFacts);
 }
 
 export function requiredEventRsvpAssurance(
@@ -159,6 +240,9 @@ export function evaluateEventParticipation(
   if (input.moduleEnabled !== true) {
     return { allowed: false, code: "MODULE_DISABLED" };
   }
+  if (typeof input.moduleVersion !== "number" || !Number.isSafeInteger(input.moduleVersion) || input.moduleVersion < 1) {
+    return { allowed: false, code: "MODULE_DISABLED" };
+  }
 
   const event = input.event;
   if (event === null || event.tenantId.length === 0) {
@@ -176,6 +260,13 @@ export function evaluateEventParticipation(
     isEventPast(event, input.now)
   ) {
     return { allowed: false, code: "RESOURCE_NOT_ACTIVE" };
+  }
+
+  // The locked Membership row is authoritative for identity binding. Keep
+  // this semantic step after Tenant/module/Event precedence even though the
+  // physical lock order is Tenant -> module -> Membership -> Event.
+  if (input.membershipBindingValid !== true) {
+    return { allowed: false, code: "TENANT_SCOPE_NOT_FOUND" };
   }
 
   const membershipLifecycle = parseMembershipLifecycle(input.membershipLifecycle);

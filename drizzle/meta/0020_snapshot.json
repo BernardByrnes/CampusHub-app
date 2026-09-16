@@ -1,5 +1,5 @@
 {
-  "id": "42d18327-94a1-4726-ae5d-3690b9f2e0b5",
+  "id": "e3dfa7b6-c7a4-478b-9fd9-428a7d2a7dd8",
   "prevId": "bd335d2f-0f9f-444f-8f31-f5122291d3e8",
   "version": "7",
   "dialect": "postgresql",
@@ -4024,6 +4024,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "completed_outcome": {
+          "name": "completed_outcome",
+          "type": "event_rsvp_outcome",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
         "completed_state": {
           "name": "completed_state",
           "type": "event_rsvp_state",
@@ -4034,6 +4041,12 @@
         "completed_participation_version": {
           "name": "completed_participation_version",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_changed": {
+          "name": "completed_changed",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         },
@@ -4166,7 +4179,7 @@
         },
         "event_rsvp_idempotency_completion_shape": {
           "name": "event_rsvp_idempotency_completion_shape",
-          "value": "(\n        (\"event_rsvp_idempotency\".\"completed_state\" IS NULL AND \"event_rsvp_idempotency\".\"completed_participation_version\" IS NULL AND \"event_rsvp_idempotency\".\"completed_at\" IS NULL)\n        OR (\"event_rsvp_idempotency\".\"completed_state\" IS NOT NULL AND \"event_rsvp_idempotency\".\"completed_participation_version\" >= 1 AND \"event_rsvp_idempotency\".\"completed_at\" IS NOT NULL)\n      )"
+          "value": "(\n        (\"event_rsvp_idempotency\".\"completed_outcome\" IS NULL AND \"event_rsvp_idempotency\".\"completed_state\" IS NULL AND \"event_rsvp_idempotency\".\"completed_participation_version\" IS NULL AND \"event_rsvp_idempotency\".\"completed_changed\" IS NULL AND \"event_rsvp_idempotency\".\"completed_at\" IS NULL)\n        OR (\n          \"event_rsvp_idempotency\".\"completed_outcome\" IS NOT NULL AND\n          \"event_rsvp_idempotency\".\"completed_state\" IS NOT NULL AND\n          \"event_rsvp_idempotency\".\"completed_participation_version\" IS NOT NULL AND\n          \"event_rsvp_idempotency\".\"completed_participation_version\" >= 1 AND\n          \"event_rsvp_idempotency\".\"completed_changed\" IS NOT NULL AND\n          \"event_rsvp_idempotency\".\"completed_at\" IS NOT NULL AND\n          (\n            (\"event_rsvp_idempotency\".\"completed_outcome\" = 'CHANGED' AND \"event_rsvp_idempotency\".\"completed_changed\" = true)\n            OR (\"event_rsvp_idempotency\".\"completed_outcome\" = 'NOOP' AND \"event_rsvp_idempotency\".\"completed_changed\" = false)\n          )\n        )\n      )"
         }
       },
       "isRLSEnabled": false
@@ -5093,6 +5106,14 @@
       "schema": "public",
       "values": [
         "participation"
+      ]
+    },
+    "public.event_rsvp_outcome": {
+      "name": "event_rsvp_outcome",
+      "schema": "public",
+      "values": [
+        "CHANGED",
+        "NOOP"
       ]
     },
     "public.event_rsvp_state": {

@@ -437,6 +437,11 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   },
   {
     implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventRsvpOutcomeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
     exportName: "eventRsvps",
     expectedAstForm: "CallExpression",
   },

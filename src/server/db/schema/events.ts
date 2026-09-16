@@ -46,6 +46,11 @@ export const eventRsvpOperationFamilyEnum = pgEnum(
   ["participation"] as const,
 );
 
+export const eventRsvpOutcomeEnum = pgEnum("event_rsvp_outcome", [
+  "CHANGED",
+  "NOOP",
+] as const);
+
 export const events = pgTable(
   "events",
   {
@@ -316,8 +321,10 @@ export const eventRsvpIdempotency = pgTable(
     idempotencyKey: text("idempotency_key").notNull(),
     requestedState: eventRsvpStateEnum("requested_state").notNull(),
     expectedParticipationVersion: integer("expected_participation_version").notNull(),
+    completedOutcome: eventRsvpOutcomeEnum("completed_outcome"),
     completedState: eventRsvpStateEnum("completed_state"),
     completedParticipationVersion: integer("completed_participation_version"),
+    completedChanged: boolean("completed_changed"),
     completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
       .notNull()
@@ -354,8 +361,19 @@ export const eventRsvpIdempotency = pgTable(
     check(
       "event_rsvp_idempotency_completion_shape",
       sql`(
-        (${table.completedState} IS NULL AND ${table.completedParticipationVersion} IS NULL AND ${table.completedAt} IS NULL)
-        OR (${table.completedState} IS NOT NULL AND ${table.completedParticipationVersion} >= 1 AND ${table.completedAt} IS NOT NULL)
+        (${table.completedOutcome} IS NULL AND ${table.completedState} IS NULL AND ${table.completedParticipationVersion} IS NULL AND ${table.completedChanged} IS NULL AND ${table.completedAt} IS NULL)
+        OR (
+          ${table.completedOutcome} IS NOT NULL AND
+          ${table.completedState} IS NOT NULL AND
+          ${table.completedParticipationVersion} IS NOT NULL AND
+          ${table.completedParticipationVersion} >= 1 AND
+          ${table.completedChanged} IS NOT NULL AND
+          ${table.completedAt} IS NOT NULL AND
+          (
+            (${table.completedOutcome} = 'CHANGED' AND ${table.completedChanged} = true)
+            OR (${table.completedOutcome} = 'NOOP' AND ${table.completedChanged} = false)
+          )
+        )
       )`,
     ),
     foreignKey({

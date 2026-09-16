@@ -14,6 +14,8 @@ import {
 } from "@/domain/events/event-rsvp";
 import { isEventAudienceDefinition, type EventAudienceDefinition } from "@/domain/events/event-audience";
 import { isEvent } from "@/domain/events/events";
+import { authorizeEventDetailRead } from "@/domain/events/event-detail-read-policy";
+import { isOrganiser, type Organiser } from "@/domain/organisers/organisers";
 import { parsePublicationAudienceProvenancePolicy } from "@/domain/authorization/publication-audience";
 import { isMembershipAudienceFacts, parseMembershipResidenceState, parseProfileFieldProvenance, type MembershipAudienceFacts } from "@/domain/membership/membership-audience";
 import type { Event } from "@/domain/events/events";
@@ -25,6 +27,7 @@ import {
   eventRsvps,
   events,
   memberships,
+  organisers,
   tenantModuleStates,
   tenants,
   type EventAudienceCriteriaRow,
@@ -60,7 +63,9 @@ type RsvpContext = Readonly<{
   tenant: TenantRow | null;
   tenantStatus: unknown;
   moduleEnabled: boolean | null;
+  moduleVersion: number | null;
   membership: MembershipRow | null;
+  membershipBindingValid: boolean;
   event: Event | null;
   audience: EventAudienceDefinition | null;
   membershipFacts: MembershipAudienceFacts | null;
@@ -112,6 +117,18 @@ function toEvent(row: typeof events.$inferSelect): Event | null {
     updatedAt: row.updatedAt,
   };
   return isEvent(candidate) ? candidate : null;
+}
+
+function toOrganiserForRead(row: typeof organisers.$inferSelect): Organiser | null {
+  const candidate = {
+    id: row.id,
+    tenantId: row.tenantId,
+    version: row.version,
+    name: row.name,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+  return isOrganiser(candidate) ? candidate : null;
 }
 
 function criteriaEmpty(row: EventAudienceCriteriaRow): boolean {
@@ -316,6 +333,22 @@ function toSuccess(row: Readonly<{ state: EventRsvpState; version: number }>, ch
   };
 }
 
+function persistedSuccess(row: EventRsvpIdempotencyRow): EventRsvpSuccess | null {
+  if (
+    row.completedOutcome === null ||
+    row.completedState === null ||
+    row.completedParticipationVersion === null ||
+    row.completedChanged === null ||
+    row.completedAt === null
+  ) return null;
+  return {
+    outcome: row.completedOutcome,
+    state: row.completedState,
+    participationVersion: row.completedParticipationVersion,
+    changed: row.completedChanged,
+  };
+}
+
 function failed(error: EventRsvpDenialCode): EventRsvpResult {
   return { ok: false, error };
 }
@@ -342,12 +375,13 @@ export class DrizzleEventRsvpRepository {
     const tenant = tenantRows[0] ?? null;
 
     const moduleRows = await transaction
-      .select({ enabled: tenantModuleStates.enabled, updatedAt: tenantModuleStates.updatedAt })
+      .select({ enabled: tenantModuleStates.enabled, version: tenantModuleStates.version, updatedAt: tenantModuleStates.updatedAt })
       .from(tenantModuleStates)
       .where(and(eq(tenantModuleStates.tenantId, tenantId), eq(tenantModuleStates.module, "event")))
       .for("share")
       .limit(1);
     const moduleEnabled = moduleRows[0]?.enabled ?? null;
+    const moduleVersion = moduleRows[0]?.version ?? null;
 
     const membershipRows = await transaction
       .select()
@@ -356,9 +390,7 @@ export class DrizzleEventRsvpRepository {
       .for("share")
       .limit(1);
     const membership = membershipRows[0] ?? null;
-    if (membership !== null && membership.identitySubjectId !== identitySubjectId) {
-      return { tenant, tenantStatus: tenant?.status, moduleEnabled, membership: null, event: null, audience: null, membershipFacts: null };
-    }
+    const membershipBindingValid = membership !== null && membership.identitySubjectId === identitySubjectId;
 
     const eventRows = await transaction
       .select()
@@ -375,10 +407,12 @@ export class DrizzleEventRsvpRepository {
       tenant,
       tenantStatus: tenant?.status,
       moduleEnabled,
+      moduleVersion,
       membership,
+      membershipBindingValid,
       event,
       audience,
-      membershipFacts: toMembershipFacts(membership),
+      membershipFacts: membershipBindingValid ? toMembershipFacts(membership) : null,
     };
   }
 
@@ -386,8 +420,10 @@ export class DrizzleEventRsvpRepository {
     const input: EventParticipationEvaluationInput = {
       tenantStatus: context.tenantStatus,
       moduleEnabled: context.moduleEnabled,
+      moduleVersion: context.moduleVersion,
       event: context.event,
       membershipLifecycle: context.membership?.lifecycle,
+      membershipBindingValid: context.membershipBindingValid,
       assuranceLevel: context.membership?.assuranceLevel,
       audience: context.audience,
       membershipFacts: context.membershipFacts,
@@ -454,7 +490,7 @@ export class DrizzleEventRsvpRepository {
     try {
       return await this.database.transaction(async (transaction) => {
         const context = await this.loadContext(transaction, tenantId, input.eventId, membershipId, identitySubjectId);
-        if (context.tenant === null || context.membership === null) return failed("TENANT_SCOPE_NOT_FOUND");
+        if (context.tenant === null) return failed("TENANT_SCOPE_NOT_FOUND");
         const authorityVerifier = this.options.runtimeDatabaseAuthorityVerifier ?? runtimeRsvpAuthorityIsSafe;
         if (!(await authorityVerifier(transaction))) return failed("PERSISTENCE_FAILED");
         if (this.options.onTransactionStarted !== undefined) {
@@ -484,15 +520,11 @@ export class DrizzleEventRsvpRepository {
           return failed(finalDecision.code);
         }
 
-        if (claim.row.completedState !== null && claim.row.completedParticipationVersion !== null) {
+        const completed = persistedSuccess(claim.row);
+        if (completed !== null) {
           return {
             ok: true,
-            value: {
-              outcome: "NOOP",
-              state: claim.row.completedState,
-              participationVersion: claim.row.completedParticipationVersion,
-              changed: false,
-            },
+            value: completed,
           };
         }
 
@@ -576,8 +608,10 @@ export class DrizzleEventRsvpRepository {
         }
 
         await transaction.update(eventRsvpIdempotency).set({
+          completedOutcome: changed ? "CHANGED" : "NOOP",
           completedState: finalState!,
           completedParticipationVersion: finalVersion!,
+          completedChanged: changed,
           completedAt: finalClock,
           updatedAt: finalClock,
         }).where(eq(eventRsvpIdempotency.id, claim.row.id));
@@ -597,10 +631,53 @@ export class DrizzleEventRsvpRepository {
   ): Promise<EventRsvpReadResult> {
     if (!isUuid(tenantId) || !isUuid(eventId) || !isUuid(membershipId) || identitySubjectId.trim().length === 0) return { ok: false, error: "PERSISTENCE_FAILED" };
     try {
-      const membership = await this.database.select({ id: memberships.id }).from(memberships).where(and(eq(memberships.tenantId, tenantId), eq(memberships.id, membershipId), eq(memberships.identitySubjectId, identitySubjectId))).limit(1);
-      if (membership.length === 0) return { ok: false, error: "TENANT_SCOPE_NOT_FOUND" };
-      const event = await this.database.select({ id: events.id }).from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).limit(1);
-      if (event.length === 0) return { ok: false, error: "NOT_FOUND" };
+      const tenant = (await this.database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1))[0];
+      if (tenant === undefined) return { ok: false, error: "TENANT_SCOPE_NOT_FOUND" };
+      const membership = (await this.database.select().from(memberships).where(and(eq(memberships.tenantId, tenantId), eq(memberships.id, membershipId))).limit(1))[0];
+      if (membership === undefined || membership.identitySubjectId !== identitySubjectId) return { ok: false, error: "TENANT_SCOPE_NOT_FOUND" };
+      const eventRow = (await this.database.select().from(events).where(and(eq(events.tenantId, tenantId), eq(events.id, eventId))).limit(1))[0];
+      const event = eventRow === undefined ? null : toEvent(eventRow);
+      if (event === null) return { ok: false, error: "NOT_FOUND" };
+      const audienceRows = await this.database
+        .select()
+        .from(eventAudienceCriteria)
+        .where(and(eq(eventAudienceCriteria.tenantId, tenantId), eq(eventAudienceCriteria.eventId, eventId)))
+        .orderBy(asc(eventAudienceCriteria.dimension), asc(eventAudienceCriteria.id));
+      const audience = rowsToAudience(tenantId, event, audienceRows);
+      if (audience === null) return { ok: false, error: "NOT_FOUND" };
+      const organiserRow = event.organiserId === null
+        ? undefined
+        : (await this.database.select().from(organisers).where(and(eq(organisers.tenantId, tenantId), eq(organisers.id, event.organiserId))).limit(1))[0];
+      const readable = authorizeEventDetailRead({
+        record: {
+          event,
+          audience,
+          organiser: organiserRow === undefined ? null : toOrganiserForRead(organiserRow),
+        },
+        viewer: {
+          kind: "membership",
+          context: {
+            identitySubjectId,
+            tenantId,
+            tenantStatus: tenant.status,
+            membershipId,
+            assuranceLevel: membership.assuranceLevel,
+            membershipStatus: membership.lifecycle,
+          },
+        },
+        tenantFacts: {
+          tenantId,
+          tenantStatus: tenant.status,
+          publicSurfacePermitted: tenant.status !== "archived",
+          onLeaveReadEnabled: true,
+          alumniPublicReadEnabled: true,
+          ...(tenant.status === "archived" ? { archiveNoticeState: "ENDED" as const } : {}),
+        },
+        membershipFacts: toMembershipFacts(membership),
+        now: await databaseClock(this.database),
+        includePast: true,
+      });
+      if (!readable) return { ok: false, error: "NOT_FOUND" };
       const rows = await this.database.select({ state: eventRsvps.state, version: eventRsvps.version }).from(eventRsvps).where(and(eq(eventRsvps.tenantId, tenantId), eq(eventRsvps.eventId, eventId), eq(eventRsvps.membershipId, membershipId))).limit(1);
       return rows[0] === undefined
         ? { ok: true, state: null, participationVersion: 0 }

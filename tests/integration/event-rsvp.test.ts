@@ -10,6 +10,7 @@ import { DrizzleEventRsvpRepository } from "@/server/repositories/event-rsvp-rep
 import type { CampusHubDatabase } from "@/server/db/client";
 import * as tables from "@/server/db/schema";
 import {
+  eventAudienceCriteria,
   eventRsvpIdempotency,
   eventRsvps,
   events,
@@ -59,7 +60,15 @@ function nextSlug(label: string): string {
   return `event-rsvp-${label}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
 }
 
-async function createGraph(options: Readonly<{ module?: "enabled" | "disabled" | "missing" }> = {}): Promise<Graph> {
+async function createGraph(options: Readonly<{
+  module?: "enabled" | "disabled" | "missing";
+  startsAt?: Date;
+  endsAt?: Date | null;
+  lifecycle?: "draft" | "published" | "postponed" | "cancelled";
+  visibility?: "PUBLIC" | "MEMBERS" | "VERIFIED_MEMBERS";
+  membershipLifecycle?: "unverified" | "pending_review" | "verified" | "stale" | "on_leave" | "alumni" | "transferred_out" | "participation_suspended" | "suspended" | "closed";
+  assuranceLevel?: "L0" | "L1" | "L2" | "L3";
+}> = {}): Promise<Graph> {
   const tenantRows = await getDatabase().insert(tenants).values({
     slug: nextSlug("tenant"),
     displayName: "Event RSVP Integration Tenant",
@@ -81,8 +90,8 @@ async function createGraph(options: Readonly<{ module?: "enabled" | "disabled" |
   const membershipRows = await getDatabase().insert(memberships).values({
     tenantId,
     identitySubjectId,
-    assuranceLevel: "L1",
-    lifecycle: "verified",
+    assuranceLevel: options.assuranceLevel ?? "L1",
+    lifecycle: options.membershipLifecycle ?? "verified",
     campusId,
     campusProvenance: "institution_verified",
     residenceState: "non_resident",
@@ -97,13 +106,13 @@ async function createGraph(options: Readonly<{ module?: "enabled" | "disabled" |
     title: "RSVP Integration Event",
     description: "An Event used by the real RSVP integration suite.",
     venue: "Main Hall",
-    startsAt: FUTURE_START,
-    endsAt: FUTURE_END,
+    startsAt: options.startsAt ?? FUTURE_START,
+    endsAt: options.endsAt === undefined ? FUTURE_END : options.endsAt,
     campusId,
-    visibility: "MEMBERS",
+    visibility: options.visibility ?? "MEMBERS",
     audienceMode: "entire_tenant",
     rsvpEnabled: true,
-    lifecycle: "published",
+    lifecycle: options.lifecycle ?? "published",
   }).returning({ id: events.id });
   const eventId = eventRows[0]?.id;
   if (eventId === undefined) throw new Error("Event fixture insert returned no row.");
@@ -181,13 +190,26 @@ async function waitForBlocked(blockingPid: number, lockQueryFragment: string): P
   throw new Error(`Timed out waiting for PostgreSQL lock evidence: ${lockQueryFragment}`);
 }
 
+async function waitForDatabaseTime(target: Date): Promise<void> {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await getPool().query<{ crossed: boolean }>(
+      "select clock_timestamp() >= $1::timestamptz as crossed",
+      [target],
+    );
+    if (result.rows[0]?.crossed === true) return;
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_DELAY_MS));
+  }
+  throw new Error("Timed out waiting for authoritative PostgreSQL time to cross starts_at.");
+}
+
 type RestrictedRuntime = Readonly<{
   database: CampusHubDatabase;
   pool: Pool;
   roleName: string;
 }>;
 
-async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
+async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRole?: boolean }> = {}): Promise<RestrictedRuntime> {
   const adminPool = getPool();
   const roleName = `campushub_evt003_runtime_${randomUUID().replaceAll("-", "")}`;
   const password = randomUUID().replaceAll("-", "");
@@ -196,7 +218,9 @@ async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
   try {
     await adminPool.query(`grant usage on schema public to ${quotedRole}`);
     await adminPool.query(`revoke create on schema public from ${quotedRole}`);
-    await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
+    if (options.withApprovedRuntimeRole !== false) {
+      await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
+    }
     await adminPool.query(
       `grant select, update, references on "tenants", "memberships", "events" to ${quotedRole}`,
     );
@@ -251,7 +275,7 @@ afterAll(async () => {
 });
 
 describe("real PostgreSQL Event RSVP Core", () => {
-  it("creates, replays, conflicts, withdraws, reactivates, reads, and counts one Tenant RSVP", async () => {
+  it("RSVP-PG-07/08/10 creates, replays, conflicts, withdraws, reactivates, reads, and counts one Tenant RSVP", async () => {
     const graph = await createGraph();
     const rsvps = repository();
 
@@ -271,6 +295,16 @@ describe("real PostgreSQL Event RSVP Core", () => {
       ok: true,
       value: { state: "interested", participationVersion: 2, changed: true },
     });
+    await expect(change(graph, "going", 0, "rsvp-going")).resolves.toEqual({
+      ok: true,
+      value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+    });
+    const replayedRows = await getDatabase().select().from(eventRsvps).where(and(
+      eq(eventRsvps.tenantId, graph.tenantId),
+      eq(eventRsvps.eventId, graph.eventId),
+      eq(eventRsvps.membershipId, graph.membershipId),
+    ));
+    expect(replayedRows[0]).toMatchObject({ state: "interested", version: 2 });
     await expect(change(graph, "withdrawn", 2, "rsvp-withdrawn")).resolves.toMatchObject({
       ok: true,
       value: { state: "withdrawn", participationVersion: 3, changed: true },
@@ -299,7 +333,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
     });
   });
 
-  it("fails closed when the durable Event module row is missing or disabled", async () => {
+  it("RSVP-PG-11 fails closed when the durable Event module row is missing or disabled", async () => {
     const disabled = await createGraph({ module: "disabled" });
     const missing = await createGraph({ module: "missing" });
     await expect(change(disabled, "going", 0, "module-disabled")).resolves.toEqual({
@@ -314,9 +348,9 @@ describe("real PostgreSQL Event RSVP Core", () => {
     await expect(getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, missing.tenantId))).resolves.toHaveLength(0);
   });
 
-  it("enforces real PostgreSQL runtime table privileges through the approved role boundary", async () => {
+  it("RSVP-PG-11 proves the real PostgreSQL runtime module-version privilege boundary", async () => {
     const graph = await createGraph();
-    const runtime = await createRestrictedRuntime();
+    const runtime = await createRestrictedRuntime({ withApprovedRuntimeRole: false });
     try {
       const privilegeRows = await getPool().query<{
         module_select: boolean;
@@ -324,10 +358,13 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_select: boolean;
         rsvp_insert: boolean;
         rsvp_update: boolean;
-        rsvp_delete: boolean;
-        idempotency_delete: boolean;
-        module_enabled_update: boolean;
-        module_updated_at_update: boolean;
+         rsvp_delete: boolean;
+         idempotency_delete: boolean;
+         module_tenant_id_update: boolean;
+         module_scope_update: boolean;
+         module_enabled_update: boolean;
+         module_version_update: boolean;
+         module_updated_at_update: boolean;
       }>(`
         select
           has_table_privilege('campushub_runtime', 'public.tenant_module_states', 'SELECT') as module_select,
@@ -336,9 +373,12 @@ describe("real PostgreSQL Event RSVP Core", () => {
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'INSERT') as rsvp_insert,
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'UPDATE') as rsvp_update,
           has_table_privilege('campushub_runtime', 'public.event_rsvps', 'DELETE') as rsvp_delete,
-          has_table_privilege('campushub_runtime', 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete,
-          has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
-          has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update
+           has_table_privilege('campushub_runtime', 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete,
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'tenant_id', 'UPDATE') as module_tenant_id_update,
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'module', 'UPDATE') as module_scope_update,
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'version', 'UPDATE') as module_version_update,
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update
       `);
       expect(privilegeRows.rows[0]).toEqual({
         module_select: true,
@@ -348,7 +388,10 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_update: true,
         rsvp_delete: false,
         idempotency_delete: false,
+        module_tenant_id_update: false,
+        module_scope_update: false,
         module_enabled_update: false,
+        module_version_update: false,
         module_updated_at_update: true,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
@@ -356,18 +399,24 @@ describe("real PostgreSQL Event RSVP Core", () => {
         ok: true,
         value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
       });
-      await expect(
-        runtime.pool.query(
-          'update "tenant_module_states" set enabled = false where tenant_id = $1 and module = \'event\'',
-          [graph.tenantId],
-        ),
-      ).rejects.toThrow();
+      await expect(runtime.pool.query(
+        'select enabled, version from "tenant_module_states" where tenant_id = $1 and module = \'event\' for share',
+        [graph.tenantId],
+      )).resolves.toMatchObject({ rows: [{ enabled: true, version: 1 }] });
+      await expect(runtime.pool.query(
+        'update "tenant_module_states" set enabled = false where tenant_id = $1 and module = \'event\'',
+        [graph.tenantId],
+      )).rejects.toThrow();
+      await expect(runtime.pool.query(
+        'update "tenant_module_states" set version = version + 1 where tenant_id = $1 and module = \'event\'',
+        [graph.tenantId],
+      )).rejects.toThrow();
     } finally {
       await destroyRestrictedRuntime(runtime);
     }
   });
 
-  it("serializes two first RSVP writes at the Tenant/Event/Membership row", async () => {
+  it("RSVP-PG-01/03 serializes two valid materially different first RSVP writes at the Tenant/Event/Membership row", async () => {
     const graph = await createGraph();
     const results = await Promise.all([
       change(graph, "going", 0, "race-going"),
@@ -384,7 +433,99 @@ describe("real PostgreSQL Event RSVP Core", () => {
     expect(rows[0]?.version).toBe(1);
   });
 
-  it("proves RSVP Event FOR SHARE blocks a competing Event FOR UPDATE", async () => {
+  it("RSVP-PG-02 serializes concurrent same-state requests to one CHANGED and one NOOP", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "same-state-seed")).resolves.toMatchObject({
+      ok: true,
+      value: { state: "going", participationVersion: 1 },
+    });
+    const results = await Promise.all([
+      change(graph, "interested", 1, "same-state-a"),
+      change(graph, "interested", 1, "same-state-b"),
+    ]);
+    expect(results.filter((result) => result.ok && result.value.outcome === "CHANGED")).toHaveLength(1);
+    expect(results.filter((result) => result.ok && result.value.outcome === "NOOP")).toHaveLength(1);
+    expect(results).toEqual(expect.arrayContaining([
+      { ok: true, value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true } },
+      { ok: true, value: { outcome: "NOOP", state: "interested", participationVersion: 2, changed: false } },
+    ]));
+    const rows = await getDatabase().select().from(eventRsvps).where(and(
+      eq(eventRsvps.tenantId, graph.tenantId),
+      eq(eventRsvps.eventId, graph.eventId),
+      eq(eventRsvps.membershipId, graph.membershipId),
+    ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "interested", version: 2 });
+  });
+
+  it("RSVP-PG-09 rejects foreign Event, foreign Membership, and wrong identity without a write", async () => {
+    const graphA = await createGraph();
+    const graphB = await createGraph();
+    const rsvps = repository();
+    await expect(rsvps.changeParticipation(
+      graphA.tenantId,
+      graphA.membershipId,
+      graphA.identitySubjectId,
+      command({ ...graphA, eventId: graphB.eventId }, "going", 0, "foreign-event"),
+    )).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+    await expect(rsvps.changeParticipation(
+      graphA.tenantId,
+      graphB.membershipId,
+      graphB.identitySubjectId,
+      command(graphA, "going", 0, "foreign-membership"),
+    )).resolves.toEqual({ ok: false, error: "TENANT_SCOPE_NOT_FOUND" });
+    await expect(rsvps.changeParticipation(
+      graphA.tenantId,
+      graphA.membershipId,
+      "wrong-identity",
+      command(graphA, "going", 0, "wrong-identity"),
+    )).resolves.toEqual({ ok: false, error: "TENANT_SCOPE_NOT_FOUND" });
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graphA.tenantId))).resolves.toHaveLength(0);
+    await expect(getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, graphA.tenantId))).resolves.toHaveLength(0);
+  });
+
+  it("RSVP-PG-10 keeps aggregate counts isolated by Tenant", async () => {
+    const graphA = await createGraph();
+    const graphB = await createGraph();
+    await expect(change(graphA, "going", 0, "aggregate-a")).resolves.toMatchObject({ ok: true });
+    await expect(change(graphB, "going", 0, "aggregate-b")).resolves.toMatchObject({ ok: true });
+    await expect(repository().getAggregateCounts(graphA.tenantId, graphA.eventId)).resolves.toEqual({
+      ok: true,
+      goingCount: 1,
+      interestedCount: 0,
+    });
+    await expect(repository().getAggregateCounts(graphB.tenantId, graphB.eventId)).resolves.toEqual({
+      ok: true,
+      goingCount: 1,
+      interestedCount: 0,
+    });
+  });
+
+  it("RSVP-PG-06 re-evaluates authoritative database time after a deterministic lock barrier", async () => {
+    const graph = await createGraph();
+    const target = (await getPool().query<{ starts_at: Date }>(
+      'update "events" set starts_at = clock_timestamp() + interval \'1 second\', ends_at = clock_timestamp() + interval \'2 seconds\' where id = $1 returning starts_at',
+      [graph.eventId],
+    )).rows[0]?.starts_at;
+    if (!(target instanceof Date)) throw new Error("PostgreSQL starts_at target was unavailable.");
+    const lockClient = await getPool().connect();
+    try {
+      await lockClient.query("begin");
+      const lockPid = await backendPid(lockClient);
+      await lockClient.query('select id from "events" where id = $1 for update', [graph.eventId]);
+      const rsvpPromise = change(graph, "going", 0, "starts-at-crossing");
+      await waitForBlocked(lockPid, "for share");
+      await waitForDatabaseTime(target);
+      await lockClient.query("commit");
+      await expect(rsvpPromise).resolves.toEqual({ ok: false, error: "RESOURCE_NOT_ACTIVE" });
+      await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(0);
+    } finally {
+      await lockClient.query("rollback").catch(() => undefined);
+      lockClient.release();
+    }
+  });
+
+  it("RSVP-PG-04 proves RSVP-first Event FOR SHARE blocks cancellation FOR UPDATE", async () => {
     const graph = await createGraph();
     const entered = deferred<void>();
     const release = deferred<void>();
@@ -417,7 +558,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
     }
   });
 
-  it("lets an Event cancellation committed behind FOR UPDATE win before RSVP evaluates", async () => {
+  it("RSVP-PG-04 proves cancellation-first Event FOR UPDATE makes RSVP fail closed", async () => {
     const graph = await createGraph();
     const lockClient = await getPool().connect();
     try {
@@ -435,6 +576,346 @@ describe("real PostgreSQL Event RSVP Core", () => {
     } finally {
       await lockClient.query("rollback").catch(() => undefined);
       lockClient.release();
+    }
+  });
+
+  it("RSVP-PG-04 preserves the RSVP-first result after cancellation is unblocked", async () => {
+    const graph = await createGraph();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let rsvpPid = 0;
+    const rsvpRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { rsvpPid = pid; },
+      beforeFinalClockCheck: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const rsvpPromise = change(graph, "going", 0, "cancel-after-rsvp", getDatabase(), rsvpRepository);
+    await entered.promise;
+    const cancellationClient = await getPool().connect();
+    try {
+      await cancellationClient.query("begin");
+      const cancellation = cancellationClient.query(
+        'update "events" set lifecycle = \'cancelled\', cancellation_retention_until = $2, version = version + 1, updated_at = clock_timestamp() where id = $1',
+        [graph.eventId, FUTURE_END],
+      );
+      await waitForBlocked(rsvpPid, 'update "events"');
+      release.resolve();
+      await expect(rsvpPromise).resolves.toMatchObject({ ok: true, value: { state: "going", participationVersion: 1 } });
+      await cancellation;
+      await cancellationClient.query("commit");
+    } finally {
+      await cancellationClient.query("rollback").catch(() => undefined);
+      cancellationClient.release();
+    }
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(1);
+  });
+
+  it("RSVP-PG-05 proves postpone-first denial and preserves RSVP-first writes", async () => {
+    const postponedFirst = await createGraph();
+    const postponeLock = await getPool().connect();
+    try {
+      await postponeLock.query("begin");
+      const lockPid = await backendPid(postponeLock);
+      await postponeLock.query('select id from "events" where id = $1 for update', [postponedFirst.eventId]);
+      const rsvpPromise = change(postponedFirst, "going", 0, "postpone-first");
+      await waitForBlocked(lockPid, "for share");
+      await postponeLock.query(
+        'update "events" set lifecycle = \'postponed\', version = version + 1, starts_at = $2, ends_at = $3, updated_at = clock_timestamp() where id = $1',
+        [postponedFirst.eventId, new Date("2099-09-21T10:00:00.000Z"), new Date("2099-09-21T12:00:00.000Z")],
+      );
+      await postponeLock.query("commit");
+      await expect(rsvpPromise).resolves.toEqual({ ok: false, error: "RESOURCE_NOT_ACTIVE" });
+    } finally {
+      await postponeLock.query("rollback").catch(() => undefined);
+      postponeLock.release();
+    }
+
+    const rsvpFirst = await createGraph();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let rsvpPid = 0;
+    const rsvpRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { rsvpPid = pid; },
+      beforeFinalClockCheck: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const rsvpPromise = change(rsvpFirst, "going", 0, "rsvp-before-postpone", getDatabase(), rsvpRepository);
+    await entered.promise;
+    const postponeClient = await getPool().connect();
+    try {
+      await postponeClient.query("begin");
+      const postponement = postponeClient.query(
+        'update "events" set lifecycle = \'postponed\', version = version + 1, starts_at = $2, ends_at = $3, updated_at = clock_timestamp() where id = $1',
+        [rsvpFirst.eventId, new Date("2099-09-21T10:00:00.000Z"), new Date("2099-09-21T12:00:00.000Z")],
+      );
+      await waitForBlocked(rsvpPid, 'update "events"');
+      release.resolve();
+      await expect(rsvpPromise).resolves.toMatchObject({ ok: true, value: { state: "going", participationVersion: 1 } });
+      await postponement;
+      await postponeClient.query("commit");
+    } finally {
+      await postponeClient.query("rollback").catch(() => undefined);
+      postponeClient.release();
+    }
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, rsvpFirst.tenantId))).resolves.toHaveLength(1);
+  });
+
+  it("RSVP-PG-12 preserves RSVP across postponement and permits it after republish", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "before-postpone")).resolves.toMatchObject({ ok: true, value: { participationVersion: 1 } });
+    await getPool().query(
+      'update "events" set lifecycle = \'postponed\', version = version + 1, starts_at = $2, ends_at = $3, updated_at = clock_timestamp() where id = $1',
+      [graph.eventId, new Date("2099-09-21T10:00:00.000Z"), new Date("2099-09-21T12:00:00.000Z")],
+    );
+    await expect(change(graph, "interested", 1, "while-postponed")).resolves.toEqual({ ok: false, error: "RESOURCE_NOT_ACTIVE" });
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(1);
+    await getPool().query(
+      'update "events" set lifecycle = \'published\', version = version + 1, updated_at = clock_timestamp() where id = $1',
+      [graph.eventId],
+    );
+    await expect(change(graph, "interested", 1, "after-republish")).resolves.toMatchObject({
+      ok: true,
+      value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true },
+    });
+  });
+
+  it("RSVP-PG-07/08 persists exact CHANGED and NOOP replays and rejects fingerprint conflicts", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "exact-replay")).resolves.toEqual({
+      ok: true,
+      value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+    });
+    await expect(change(graph, "going", 0, "exact-replay")).resolves.toEqual({
+      ok: true,
+      value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+    });
+    await expect(change(graph, "interested", 1, "same-state-noop")).resolves.toEqual({
+      ok: true,
+      value: { outcome: "CHANGED", state: "interested", participationVersion: 2, changed: true },
+    });
+    await expect(change(graph, "interested", 2, "noop-replay")).resolves.toEqual({
+      ok: true,
+      value: { outcome: "NOOP", state: "interested", participationVersion: 2, changed: false },
+    });
+    await expect(change(graph, "going", 0, "exact-replay")).resolves.toEqual({ ok: false, error: "IDEMPOTENCY_CONFLICT" });
+    const rows = await getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, graph.tenantId));
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.idempotencyKey === "exact-replay")).toMatchObject({ completedOutcome: "CHANGED", completedChanged: true, completedState: "going", completedParticipationVersion: 1 });
+    expect(rows.find((row) => row.idempotencyKey === "noop-replay")).toMatchObject({ completedOutcome: "NOOP", completedChanged: false, completedState: "interested", completedParticipationVersion: 2 });
+  });
+
+  it("enforces the bounded idempotency completion shape at PostgreSQL", async () => {
+    const graph = await createGraph();
+    const inserted = (await getDatabase().insert(eventRsvpIdempotency).values({
+      tenantId: graph.tenantId,
+      eventId: graph.eventId,
+      membershipId: graph.membershipId,
+      operationFamily: "participation",
+      idempotencyKey: "completion-shape",
+      requestedState: "going",
+      expectedParticipationVersion: 0,
+    }).returning({ id: eventRsvpIdempotency.id }))[0];
+    if (inserted === undefined) throw new Error("Idempotency fixture insert returned no row.");
+    await expect(getPool().query(
+      'update "event_rsvp_idempotency" set completed_outcome = \'CHANGED\', completed_state = \'going\', completed_participation_version = 1, completed_changed = false, completed_at = clock_timestamp() where id = $1',
+      [inserted.id],
+    )).rejects.toThrow();
+    await expect(getPool().query(
+      'update "event_rsvp_idempotency" set completed_outcome = \'CHANGED\', completed_state = \'going\', completed_participation_version = 1, completed_at = clock_timestamp() where id = $1',
+      [inserted.id],
+    )).rejects.toThrow();
+    await expect(getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.id, inserted.id))).resolves.toMatchObject([{ completedOutcome: null, completedState: null, completedParticipationVersion: null, completedChanged: null, completedAt: null }]);
+  });
+
+  it("proves Tenant suspension invalidation both before and after an RSVP lock", async () => {
+    const invalidatorFirst = await createGraph();
+    const invalidator = await getPool().connect();
+    try {
+      await invalidator.query("begin");
+      const invalidatorPid = await backendPid(invalidator);
+      await invalidator.query('update "tenants" set status = \'suspended\' where id = $1', [invalidatorFirst.tenantId]);
+      const blockedRsvp = change(invalidatorFirst, "going", 0, "tenant-invalidator-first");
+      await waitForBlocked(invalidatorPid, "for share");
+      await invalidator.query("commit");
+      await expect(blockedRsvp).resolves.toEqual({ ok: false, error: "TENANT_SUSPENDED" });
+      await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, invalidatorFirst.tenantId))).resolves.toHaveLength(0);
+    } finally {
+      await invalidator.query("rollback").catch(() => undefined);
+      invalidator.release();
+    }
+
+    const rsvpFirst = await createGraph();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let rsvpPid = 0;
+    const rsvpRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { rsvpPid = pid; },
+      beforeFinalClockCheck: async () => { entered.resolve(); await release.promise; },
+    });
+    const rsvp = change(rsvpFirst, "going", 0, "tenant-rsvp-first", getDatabase(), rsvpRepository);
+    await entered.promise;
+    const tenantWriter = await getPool().connect();
+    try {
+      await tenantWriter.query("begin");
+      const update = tenantWriter.query('update "tenants" set status = \'suspended\' where id = $1', [rsvpFirst.tenantId]);
+      await waitForBlocked(rsvpPid, 'update "tenants"');
+      release.resolve();
+      await expect(rsvp).resolves.toMatchObject({ ok: true, value: { state: "going", participationVersion: 1 } });
+      await update;
+      await tenantWriter.query("commit");
+    } finally {
+      await tenantWriter.query("rollback").catch(() => undefined);
+      tenantWriter.release();
+    }
+    await expect(change(rsvpFirst, "interested", 1, "tenant-after-invalidation")).resolves.toEqual({ ok: false, error: "TENANT_SUSPENDED" });
+  });
+
+  it("proves Event-module disable invalidation both before and after an RSVP lock", async () => {
+    const invalidatorFirst = await createGraph();
+    const invalidator = await getPool().connect();
+    try {
+      await invalidator.query("begin");
+      const invalidatorPid = await backendPid(invalidator);
+      await invalidator.query('update "tenant_module_states" set enabled = false, version = version + 1 where tenant_id = $1 and module = \'event\'', [invalidatorFirst.tenantId]);
+      const blockedRsvp = change(invalidatorFirst, "going", 0, "module-invalidator-first");
+      await waitForBlocked(invalidatorPid, "for share");
+      await invalidator.query("commit");
+      await expect(blockedRsvp).resolves.toEqual({ ok: false, error: "MODULE_DISABLED" });
+      await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, invalidatorFirst.tenantId))).resolves.toHaveLength(0);
+    } finally {
+      await invalidator.query("rollback").catch(() => undefined);
+      invalidator.release();
+    }
+
+    const rsvpFirst = await createGraph();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let rsvpPid = 0;
+    const rsvpRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { rsvpPid = pid; },
+      beforeFinalClockCheck: async () => { entered.resolve(); await release.promise; },
+    });
+    const rsvp = change(rsvpFirst, "going", 0, "module-rsvp-first", getDatabase(), rsvpRepository);
+    await entered.promise;
+    const moduleWriter = await getPool().connect();
+    try {
+      await moduleWriter.query("begin");
+      const update = moduleWriter.query('update "tenant_module_states" set enabled = false, version = version + 1 where tenant_id = $1 and module = \'event\'', [rsvpFirst.tenantId]);
+      await waitForBlocked(rsvpPid, 'update "tenant_module_states"');
+      release.resolve();
+      await expect(rsvp).resolves.toMatchObject({ ok: true, value: { state: "going", participationVersion: 1 } });
+      await update;
+      await moduleWriter.query("commit");
+    } finally {
+      await moduleWriter.query("rollback").catch(() => undefined);
+      moduleWriter.release();
+    }
+    await expect(change(rsvpFirst, "interested", 1, "module-after-invalidation")).resolves.toEqual({ ok: false, error: "MODULE_DISABLED" });
+  });
+
+  it("proves Membership participation invalidation both before and after an RSVP lock", async () => {
+    const invalidatorFirst = await createGraph();
+    const invalidator = await getPool().connect();
+    try {
+      await invalidator.query("begin");
+      const invalidatorPid = await backendPid(invalidator);
+      await invalidator.query('update "memberships" set lifecycle = \'participation_suspended\' where tenant_id = $1 and id = $2', [invalidatorFirst.tenantId, invalidatorFirst.membershipId]);
+      const blockedRsvp = change(invalidatorFirst, "going", 0, "membership-invalidator-first");
+      await waitForBlocked(invalidatorPid, "for share");
+      await invalidator.query("commit");
+      await expect(blockedRsvp).resolves.toEqual({ ok: false, error: "MEMBERSHIP_STATE_INELIGIBLE" });
+      await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, invalidatorFirst.tenantId))).resolves.toHaveLength(0);
+    } finally {
+      await invalidator.query("rollback").catch(() => undefined);
+      invalidator.release();
+    }
+
+    const rsvpFirst = await createGraph();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let rsvpPid = 0;
+    const rsvpRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { rsvpPid = pid; },
+      beforeFinalClockCheck: async () => { entered.resolve(); await release.promise; },
+    });
+    const rsvp = change(rsvpFirst, "going", 0, "membership-rsvp-first", getDatabase(), rsvpRepository);
+    await entered.promise;
+    const membershipWriter = await getPool().connect();
+    try {
+      await membershipWriter.query("begin");
+      const update = membershipWriter.query('update "memberships" set lifecycle = \'participation_suspended\' where tenant_id = $1 and id = $2', [rsvpFirst.tenantId, rsvpFirst.membershipId]);
+      await waitForBlocked(rsvpPid, 'update "memberships"');
+      release.resolve();
+      await expect(rsvp).resolves.toMatchObject({ ok: true, value: { state: "going", participationVersion: 1 } });
+      await update;
+      await membershipWriter.query("commit");
+    } finally {
+      await membershipWriter.query("rollback").catch(() => undefined);
+      membershipWriter.release();
+    }
+    await expect(change(rsvpFirst, "interested", 1, "membership-after-invalidation")).resolves.toEqual({ ok: false, error: "MEMBERSHIP_STATE_INELIGIBLE" });
+  });
+
+  it("reauthorizes own RSVP reads through canonical Event detail visibility and audience policy", async () => {
+    const accessible = await createGraph();
+    await expect(change(accessible, "going", 0, "readable-rsvp")).resolves.toMatchObject({ ok: true });
+    await expect(repository().findOwnParticipation(accessible.tenantId, accessible.eventId, accessible.membershipId, accessible.identitySubjectId)).resolves.toEqual({ ok: true, state: "going", participationVersion: 1 });
+
+    const empty = await createGraph();
+    await expect(repository().findOwnParticipation(empty.tenantId, empty.eventId, empty.membershipId, empty.identitySubjectId)).resolves.toEqual({ ok: true, state: null, participationVersion: 0 });
+
+    const draft = await createGraph({ lifecycle: "draft" });
+    await getDatabase().insert(eventRsvps).values({ tenantId: draft.tenantId, eventId: draft.eventId, membershipId: draft.membershipId, state: "going", version: 1 });
+    await expect(repository().findOwnParticipation(draft.tenantId, draft.eventId, draft.membershipId, draft.identitySubjectId)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+
+    const retentionHidden = await createGraph({ lifecycle: "cancelled" });
+    await getDatabase().insert(eventRsvps).values({ tenantId: retentionHidden.tenantId, eventId: retentionHidden.eventId, membershipId: retentionHidden.membershipId, state: "going", version: 1 });
+    await expect(repository().findOwnParticipation(retentionHidden.tenantId, retentionHidden.eventId, retentionHidden.membershipId, retentionHidden.identitySubjectId)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+
+    const assurance = await createGraph();
+    await getDatabase().insert(eventRsvps).values({ tenantId: assurance.tenantId, eventId: assurance.eventId, membershipId: assurance.membershipId, state: "going", version: 1 });
+    await getDatabase().update(memberships).set({ assuranceLevel: "L0" }).where(and(eq(memberships.tenantId, assurance.tenantId), eq(memberships.id, assurance.membershipId)));
+    await expect(repository().findOwnParticipation(assurance.tenantId, assurance.eventId, assurance.membershipId, assurance.identitySubjectId)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+
+    const targeted = await createGraph();
+    const otherCampus = (await getDatabase().insert(tables.campuses).values({ tenantId: targeted.tenantId, label: "Other RSVP Campus", status: "active" }).returning({ id: tables.campuses.id }))[0]?.id;
+    if (otherCampus === undefined) throw new Error("Targeted read campus fixture was unavailable.");
+    await getDatabase().update(events).set({ audienceMode: "targeted" }).where(and(eq(events.tenantId, targeted.tenantId), eq(events.id, targeted.eventId)));
+    await getDatabase().insert(eventAudienceCriteria).values({ tenantId: targeted.tenantId, eventId: targeted.eventId, dimension: "campus", provenancePolicy: "authoritative_only", campusId: otherCampus });
+    await getDatabase().insert(eventRsvps).values({ tenantId: targeted.tenantId, eventId: targeted.eventId, membershipId: targeted.membershipId, state: "going", version: 1 });
+    await expect(repository().findOwnParticipation(targeted.tenantId, targeted.eventId, targeted.membershipId, targeted.identitySubjectId)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+
+    const wrongIdentity = await repository().findOwnParticipation(accessible.tenantId, accessible.eventId, accessible.membershipId, "wrong-read-identity");
+    expect(wrongIdentity).toEqual({ ok: false, error: "TENANT_SCOPE_NOT_FOUND" });
+    const foreign = await createGraph();
+    await expect(repository().findOwnParticipation(accessible.tenantId, foreign.eventId, accessible.membershipId, accessible.identitySubjectId)).resolves.toEqual({ ok: false, error: "NOT_FOUND" });
+  });
+
+  it("rolls back RSVP-PG failure paths without a partial participation or idempotency success", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "atomic-seed")).resolves.toMatchObject({ ok: true });
+    await expect(change(graph, "interested", 0, "stale-version")).resolves.toEqual({ ok: false, error: "VERSION_CONFLICT" });
+    await expect(change(graph, "interested", 0, "atomic-seed")).resolves.toEqual({ ok: false, error: "IDEMPOTENCY_CONFLICT" });
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(1);
+
+    const runtime = await createRestrictedRuntime({ withApprovedRuntimeRole: false });
+    try {
+      await getPool().query(`revoke update on "event_rsvp_idempotency" from "${runtime.roleName}"`);
+      const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, { runtimeDatabaseAuthorityVerifier: async () => true });
+      await expect(change(graph, "going", 0, "finalization-failure", runtime.database, runtimeRepository)).resolves.toEqual({ ok: false, error: "PERSISTENCE_FAILED" });
+      await expect(getDatabase().select().from(eventRsvps).where(and(eq(eventRsvps.tenantId, graph.tenantId), eq(eventRsvps.eventId, graph.eventId), eq(eventRsvps.membershipId, graph.membershipId)))).resolves.toHaveLength(1);
+      await expect(getDatabase().select().from(eventRsvpIdempotency).where(and(eq(eventRsvpIdempotency.tenantId, graph.tenantId), eq(eventRsvpIdempotency.idempotencyKey, "finalization-failure")))).resolves.toHaveLength(0);
+    } finally {
+      await destroyRestrictedRuntime(runtime);
     }
   });
 });

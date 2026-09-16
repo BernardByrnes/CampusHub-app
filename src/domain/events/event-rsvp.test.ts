@@ -68,8 +68,10 @@ function participationInput(overrides: Record<string, unknown> = {}) {
   return {
     tenantStatus: "active",
     moduleEnabled: true,
+    moduleVersion: 1,
     event: event(),
     membershipLifecycle: "verified",
+    membershipBindingValid: true,
     assuranceLevel: "L1",
     audience: entireTenantAudience,
     membershipFacts: null,
@@ -136,6 +138,14 @@ describe("Event RSVP domain contract", () => {
   });
 
   it("closes RSVP at the authoritative start instant and respects the module boundary", () => {
+    expect(evaluateEventParticipation(participationInput({ moduleVersion: 0 }))).toEqual({
+      allowed: false,
+      code: "MODULE_DISABLED",
+    });
+    expect(evaluateEventParticipation(participationInput({ moduleVersion: "1" }))).toEqual({
+      allowed: false,
+      code: "MODULE_DISABLED",
+    });
     expect(evaluateEventParticipation(participationInput({ now: STARTS_AT }))).toEqual({
       allowed: false,
       code: "RESOURCE_NOT_ACTIVE",
@@ -156,6 +166,57 @@ describe("Event RSVP domain contract", () => {
       reason: "PREREQUISITE_MISSING",
     });
     expect(evaluateEventAudienceForParticipation(entireTenantAudience, null)).toEqual({ eligible: true });
+  });
+
+  it("returns missing prerequisites for unknown or insufficient audience facts", () => {
+    const targeted = {
+      eventId: EVENT_ID,
+      tenantId: TENANT_ID,
+      mode: "targeted" as const,
+      groups: [
+        { dimension: "academic_division" as const, provenancePolicy: "authoritative_only" as const, academicDivisionIds: [CAMPUS_ID] },
+      ],
+    };
+    expect(evaluateEventAudienceForParticipation(targeted, {
+      ...campusFacts,
+      academicDivision: { value: null, provenance: "optional" },
+    })).toEqual({ eligible: false, reason: "PREREQUISITE_MISSING" });
+    expect(evaluateEventAudienceForParticipation({
+      ...targeted,
+      groups: [{ dimension: "residence" as const, provenancePolicy: "authoritative_only" as const, residenceTargets: [{ kind: "any_resident" as const }] }],
+    }, {
+      ...campusFacts,
+      residence: { state: "unknown" as const, residenceId: null, provenance: "optional" as const },
+    })).toEqual({ eligible: false, reason: "PREREQUISITE_MISSING" });
+    expect(evaluateEventAudienceForParticipation(campusAudience, {
+      ...campusFacts,
+      campus: { value: CAMPUS_ID, provenance: "self_declared" },
+    })).toEqual({ eligible: false, reason: "PREREQUISITE_MISSING" });
+  });
+
+  it("lets a definitive mismatch win over a later missing dimension", () => {
+    const multiDimension = {
+      eventId: EVENT_ID,
+      tenantId: TENANT_ID,
+      mode: "targeted" as const,
+      groups: [
+        { dimension: "campus" as const, provenancePolicy: "authoritative_only" as const, campusIds: [OTHER_CAMPUS_ID] },
+        { dimension: "academic_division" as const, provenancePolicy: "authoritative_only" as const, academicDivisionIds: [CAMPUS_ID] },
+      ],
+    };
+    expect(evaluateEventAudienceForParticipation(multiDimension, campusFacts)).toEqual({
+      eligible: false,
+      reason: "AUDIENCE_INELIGIBLE",
+    });
+  });
+
+  it("preserves GSC-14 semantic precedence when identity binding is wrong", () => {
+    expect(evaluateEventParticipation(participationInput({ tenantStatus: "suspended", membershipBindingValid: false }))).toEqual({ allowed: false, code: "TENANT_SUSPENDED" });
+    expect(evaluateEventParticipation(participationInput({ moduleEnabled: false, membershipBindingValid: false }))).toEqual({ allowed: false, code: "MODULE_DISABLED" });
+    expect(evaluateEventParticipation(participationInput({ event: null, membershipBindingValid: false }))).toEqual({ allowed: false, code: "NOT_FOUND" });
+    expect(evaluateEventParticipation(participationInput({ membershipBindingValid: false }))).toEqual({ allowed: false, code: "TENANT_SCOPE_NOT_FOUND" });
+    expect(evaluateEventParticipation(participationInput({ membershipLifecycle: "stale", assuranceLevel: "L0", membershipBindingValid: true }))).toEqual({ allowed: false, code: "MEMBERSHIP_STATE_INELIGIBLE" });
+    expect(evaluateEventParticipation(participationInput({ assuranceLevel: "L0", audience: campusAudience, membershipFacts: { ...campusFacts, campus: { value: OTHER_CAMPUS_ID, provenance: "institution_verified" } }, membershipBindingValid: true }))).toEqual({ allowed: false, code: "ASSURANCE_REQUIRED" });
   });
 
   it("requires verified or on-leave membership before assurance and audience checks", () => {

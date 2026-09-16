@@ -1981,6 +1981,7 @@ function eventRsvpLifecycleProbe(): void {
   const base = {
     tenantStatus: "active",
     moduleEnabled: true,
+    moduleVersion: 1,
     event: {
       tenantId: tenantAId,
       lifecycle: "postponed" as const,
@@ -1992,6 +1993,7 @@ function eventRsvpLifecycleProbe(): void {
       cancellationRetentionUntil: null,
     },
     membershipLifecycle: "verified",
+    membershipBindingValid: true,
     assuranceLevel: "L2",
     audience: { eventId: "00000000-0000-4000-8000-000000000021", tenantId: tenantAId, mode: "entire_tenant", groups: [] },
     membershipFacts: null,

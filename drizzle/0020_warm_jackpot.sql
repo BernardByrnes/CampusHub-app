@@ -1,5 +1,6 @@
 CREATE TYPE "public"."event_rsvp_operation_family" AS ENUM('participation');--> statement-breakpoint
 CREATE TYPE "public"."event_rsvp_state" AS ENUM('going', 'interested', 'withdrawn');--> statement-breakpoint
+CREATE TYPE "public"."event_rsvp_outcome" AS ENUM('CHANGED', 'NOOP');--> statement-breakpoint
 CREATE TYPE "public"."tenant_module_scope" AS ENUM('publication', 'event', 'opportunity', 'sports', 'poll', 'voice', 'quiz', 'sponsorship', 'tenant', 'verification', 'analytics', 'notification', 'export', 'search');--> statement-breakpoint
 CREATE TABLE "event_rsvp_idempotency" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -10,8 +11,10 @@ CREATE TABLE "event_rsvp_idempotency" (
 	"idempotency_key" text NOT NULL,
 	"requested_state" "event_rsvp_state" NOT NULL,
 	"expected_participation_version" integer NOT NULL,
+	"completed_outcome" "event_rsvp_outcome",
 	"completed_state" "event_rsvp_state",
 	"completed_participation_version" integer,
+	"completed_changed" boolean,
 	"completed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -20,8 +23,17 @@ CREATE TABLE "event_rsvp_idempotency" (
 	CONSTRAINT "event_rsvp_idempotency_key_nonempty" CHECK (char_length(btrim("event_rsvp_idempotency"."idempotency_key")) > 0 AND char_length("event_rsvp_idempotency"."idempotency_key") <= 200),
 	CONSTRAINT "event_rsvp_idempotency_expected_version_nonnegative" CHECK ("event_rsvp_idempotency"."expected_participation_version" >= 0),
 	CONSTRAINT "event_rsvp_idempotency_completion_shape" CHECK ((
-        ("event_rsvp_idempotency"."completed_state" IS NULL AND "event_rsvp_idempotency"."completed_participation_version" IS NULL AND "event_rsvp_idempotency"."completed_at" IS NULL)
-        OR ("event_rsvp_idempotency"."completed_state" IS NOT NULL AND "event_rsvp_idempotency"."completed_participation_version" >= 1 AND "event_rsvp_idempotency"."completed_at" IS NOT NULL)
+	        ("event_rsvp_idempotency"."completed_outcome" IS NULL AND "event_rsvp_idempotency"."completed_state" IS NULL AND "event_rsvp_idempotency"."completed_participation_version" IS NULL AND "event_rsvp_idempotency"."completed_changed" IS NULL AND "event_rsvp_idempotency"."completed_at" IS NULL)
+	        OR (
+	          "event_rsvp_idempotency"."completed_outcome" IS NOT NULL AND
+	          "event_rsvp_idempotency"."completed_state" IS NOT NULL AND
+	          "event_rsvp_idempotency"."completed_participation_version" IS NOT NULL AND
+	          "event_rsvp_idempotency"."completed_participation_version" >= 1 AND
+	          "event_rsvp_idempotency"."completed_changed" IS NOT NULL AND
+	          "event_rsvp_idempotency"."completed_at" IS NOT NULL AND
+	          (("event_rsvp_idempotency"."completed_outcome" = 'CHANGED' AND "event_rsvp_idempotency"."completed_changed" = true)
+	           OR ("event_rsvp_idempotency"."completed_outcome" = 'NOOP' AND "event_rsvp_idempotency"."completed_changed" = false))
+	        )
       ))
 );
 --> statement-breakpoint

@@ -1,14 +1,9 @@
 import "server-only";
 
-import {
-  authorizeResourceRead,
-  authorizeResourceReadBeforeAudience,
-  isResourceReadViewer,
-  type ResourceReadViewer,
-} from "@/domain/authorization/resource-read-policy";
+import { isResourceReadViewer, type ResourceReadViewer } from "@/domain/authorization/resource-read-policy";
 import type { ResolvedTenantReadFacts } from "@/domain/authorization/publication-read-contract";
 import { isUuid } from "@/domain/identifiers/uuid";
-import { evaluateEventAudience } from "@/domain/events/event-audience";
+import { authorizeEventDetailRead } from "@/domain/events/event-detail-read-policy";
 import { isEventPast, type Event } from "@/domain/events/events";
 import { isOrganiser } from "@/domain/organisers/organisers";
 import type { EventRecord, DrizzleEventRepository, EventListOptions } from "@/server/repositories/event-repository";
@@ -134,22 +129,15 @@ async function allowed(
   }
   const past = isEventPast(record.event, input.now);
   if (past && !input.includePast) return false;
-  const base = {
-    resourceId: record.event.id,
-    tenantId: record.event.tenantId,
-    tenantStatus: input.tenantFacts.tenantStatus,
-    visibility: record.event.visibility,
-    readable: true,
-    publicSurfacePermitted: input.tenantFacts.publicSurfacePermitted,
-    onLeaveReadEnabled: input.tenantFacts.onLeaveReadEnabled,
-    alumniPublicReadEnabled: input.tenantFacts.alumniPublicReadEnabled,
-  } as const;
-  if (!authorizeResourceReadBeforeAudience({ resource: base, viewer: input.viewer }).allowed) return false;
   const audienceFacts = await factsForViewer(input.viewer, input.tenantId, dependencies.memberships);
-  const audience = record.event.audienceMode === "entire_tenant"
-    ? { restricted: false as const }
-    : { restricted: true as const, eligible: evaluateEventAudience(record.audience, audienceFacts).eligible };
-  return authorizeResourceRead({ resource: { ...base, audience }, viewer: input.viewer }).allowed;
+  return authorizeEventDetailRead({
+    record,
+    viewer: input.viewer,
+    tenantFacts: input.tenantFacts,
+    membershipFacts: audienceFacts,
+    now: input.now,
+    includePast: input.includePast === true,
+  });
 }
 
 export class ReadEventService {

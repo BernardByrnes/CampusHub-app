@@ -83,6 +83,8 @@ describe("ReadEventService", () => {
   it("suppresses drafts and treats wrong-Tenant access as not found", async () => {
     const draft = service(record({ lifecycle: "draft" }));
     await expect(draft.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toEqual({ outcome: "NOT_FOUND" });
+    const retentionHidden = service(record({ lifecycle: "cancelled" }));
+    await expect(retentionHidden.getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW })).resolves.toEqual({ outcome: "NOT_FOUND" });
     const wrongTenant = await service(null).getEventForRead({ tenantId: TENANT_ID, eventId: EVENT_ID, viewer: publicViewer, tenantFacts: facts, now: NOW });
     expect(wrongTenant).toEqual({ outcome: "NOT_FOUND" });
     await expect(service(null).listEvents({
