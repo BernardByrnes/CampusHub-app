@@ -198,7 +198,10 @@ async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
     await adminPool.query(`revoke create on schema public from ${quotedRole}`);
     await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
     await adminPool.query(
-      `grant select, references on "tenants", "memberships", "events", "event_audience_criteria" to ${quotedRole}`,
+      `grant select, update, references on "tenants", "memberships", "events" to ${quotedRole}`,
+    );
+    await adminPool.query(
+      `grant select, references on "event_audience_criteria" to ${quotedRole}`,
     );
     const connectionUrl = new URL(configuredDatabaseUrl);
     connectionUrl.username = roleName;
