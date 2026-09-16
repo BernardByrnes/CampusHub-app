@@ -334,9 +334,9 @@ describe("real PostgreSQL Event RSVP Core", () => {
         idempotency_delete: false,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
-      await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toMatchObject({
+      await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
         ok: true,
-        value: { state: "going", participationVersion: 1 },
+        value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
       });
     } finally {
       await destroyRestrictedRuntime(runtime);
@@ -403,8 +403,8 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const rsvpPromise = change(graph, "going", 0, "cancel-lock");
       await waitForBlocked(lockPid, 'for share');
       await lockClient.query(
-        'update "events" set lifecycle = \'cancelled\', version = version + 1, updated_at = clock_timestamp() where id = $1',
-        [graph.eventId],
+        'update "events" set lifecycle = \'cancelled\', cancellation_retention_until = $2, version = version + 1, updated_at = clock_timestamp() where id = $1',
+        [graph.eventId, FUTURE_END],
       );
       await lockClient.query("commit");
       await expect(rsvpPromise).resolves.toEqual({ ok: false, error: "INVALID_STATE" });
