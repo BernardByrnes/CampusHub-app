@@ -192,7 +192,7 @@ async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
   const roleName = `campushub_evt003_runtime_${randomUUID().replaceAll("-", "")}`;
   const password = randomUUID().replaceAll("-", "");
   const quotedRole = `"${roleName}"`;
-  await adminPool.query(`create role ${quotedRole} login password '${password}'`);
+  await adminPool.query(`create role ${quotedRole} login inherit password '${password}'`);
   try {
     await adminPool.query(`grant usage on schema public to ${quotedRole}`);
     await adminPool.query(`revoke create on schema public from ${quotedRole}`);
