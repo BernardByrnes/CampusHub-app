@@ -203,6 +203,12 @@ async function createRestrictedRuntime(): Promise<RestrictedRuntime> {
     await adminPool.query(
       `grant select, references on "event_audience_criteria" to ${quotedRole}`,
     );
+    await adminPool.query(
+      `grant select on "tenant_module_states" to ${quotedRole}`,
+    );
+    await adminPool.query(
+      `grant select, insert, update on "event_rsvps", "event_rsvp_idempotency" to ${quotedRole}`,
+    );
     const connectionUrl = new URL(configuredDatabaseUrl);
     connectionUrl.username = roleName;
     connectionUrl.password = password;
