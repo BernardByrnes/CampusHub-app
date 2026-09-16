@@ -42,6 +42,7 @@ export type EventRsvpRepositoryOptions = Readonly<{
   runtimeDatabaseAuthorityVerifier?: (
     database: Pick<CampusHubDatabase, "execute">,
   ) => Promise<boolean>;
+  onPersistenceError?: (error: unknown) => void;
   onTransactionStarted?: (backendPid: number) => void | Promise<void>;
   beforeFinalClockCheck?: () => Promise<void>;
 }>;
@@ -579,6 +580,7 @@ export class DrizzleEventRsvpRepository {
       });
     } catch (error) {
       if (isRsvpTransactionAbort(error)) return error.result;
+      this.options.onPersistenceError?.(error);
       return failed("PERSISTENCE_FAILED");
     }
   }

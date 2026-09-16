@@ -333,14 +333,24 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_delete: false,
         idempotency_delete: false,
       });
-      const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
+      const persistenceErrors: string[] = [];
+      const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {
+        onPersistenceError: (error: unknown) => {
+          const candidate = error as { code?: unknown; message?: unknown };
+          persistenceErrors.push(JSON.stringify({ code: candidate.code, message: candidate.message }));
+        },
+      });
       const restrictedResult = await change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository);
       if (!restrictedResult.ok) {
         const bypassRepository = new DrizzleEventRsvpRepository(runtime.database, {
           runtimeDatabaseAuthorityVerifier: async () => true,
+          onPersistenceError: (error: unknown) => {
+            const candidate = error as { code?: unknown; message?: unknown };
+            persistenceErrors.push(JSON.stringify({ bypassCode: candidate.code, bypassMessage: candidate.message }));
+          },
         });
         const bypassResult = await change(graph, "going", 0, "restricted-runtime-bypass", runtime.database, bypassRepository);
-        throw new Error(`Restricted RSVP diagnostic: ${JSON.stringify({ restrictedResult, bypassResult })}`);
+        throw new Error(`Restricted RSVP diagnostic: ${JSON.stringify({ restrictedResult, bypassResult, persistenceErrors })}`);
       }
       expect(restrictedResult).toEqual({
         ok: true,
