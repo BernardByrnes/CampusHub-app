@@ -30,6 +30,14 @@ The current foundation remains the authority baseline. Historical v1.2 files
 remain historical records and are not silently elevated over the frozen v1.3
 documents.
 
+This repair records the bounded response to the prior independent review of
+candidate `dcb2377d078a82c25a52cbaf68fcf3aab811f8ff`, which returned
+`FIX_REQUIRED` at `HIGH` severity. The repaired proposal makes the ordinary
+source-claim/ledger relationship database-enforced and narrows the currently
+representable privileged actor branch to Membership-backed actors. It remains
+documentation-only and remains subject to fresh independent review; this text
+does not approve A10 or authorize XP runtime work.
+
 ## 2. Authority and inspected baseline
 
 The proposal is subordinate to applicable external authority, the frozen
@@ -113,11 +121,11 @@ Each row is one immutable business/accounting-like XP fact:
 | `sourceKind` | Closed conceptual source vocabulary, not arbitrary Tenant input. |
 | `sourceReferenceId` | Opaque Tenant-local source reference; never raw content or a ballot. |
 | `sourceOccurrence` | Stable discriminator where one source can legitimately have more than one approved rule occurrence. |
-| `sourceClaimId` | The structural conceptual-source claim that makes an award unique. |
+| `sourceClaimId` | For an ordinary `award` or `capped_award`, the exact structural source claim paired one-to-one with this ledger fact. |
 | `requestIdempotencyKeyDigest` | Bounded opaque request provenance; never the conceptual uniqueness key. |
 | `reasonCode` / `reasonText` | Required for correction/reversal and minimized for normal awards. |
 | `sourceEntryId` | Required for correction/reversal where the original fact is being corrected or reversed. |
-| `actorMembershipId` | Required for privileged correction/reversal; same-Tenant and not a Global User identifier. |
+| `actorMembershipId` | Required for the currently representable Membership-backed correction/reversal actor branch; same-Tenant. It MUST NOT be fabricated for a non-Membership Platform Operator. Non-student privileged actor representation remains deferred under OD-02. |
 | `occurredAt` | Authoritative server/database time for the business fact. |
 | `createdAt` and immutable creation metadata | Reconstruction and audit support without mutable history. |
 
@@ -132,10 +140,38 @@ positive/capped source awards. It is not the balance and is not a replacement
 for the ledger.
 
 It contains a stable claim ID, Tenant, Membership, stable rule ID, closed source
-kind, source reference, source occurrence, award outcome (`awarded` or
-`capped`), and the canonical ledger-entry ID. Both rows are created in the
-same transaction using preallocated identifiers, so a committed claim always
-has its corresponding immutable ledger fact.
+kind, source reference, source occurrence, expected ordinary ledger outcome
+(`award` or `capped_award`), and the canonical ledger-entry ID. The matching
+ordinary ledger row contains its ledger-entry ID, Tenant, Membership,
+`sourceClaimId`, and `entryType`. For an ordinary source award, the database
+must enforce the following exact reciprocal identity, not merely ask the
+application or reconciliation to infer it:
+
+```text
+claim.claimId                 = ledger.sourceClaimId
+claim.canonicalLedgerEntryId  = ledger.ledgerEntryId
+claim.Tenant                  = ledger.Tenant
+claim.Membership              = ledger.Membership
+claim.expectedEntryType       = ledger.entryType
+ledger.entryType              ∈ {award, capped_award}
+```
+
+The physical PostgreSQL design must make that relationship feasible with
+unique keys and reciprocal composite foreign keys, preferably DEFERRABLE
+`INITIALLY DEFERRED` constraints where the two preallocated rows need to be
+inserted in either order. A single one-way foreign key is insufficient. The
+constraints must make these states impossible at commit: a claim without one
+canonical ordinary ledger row; an ordinary ledger row without one claim; two
+ordinary ledger rows for one claim; disagreement between the reciprocal IDs;
+Tenant or Membership mismatch; `award`/`capped_award` mismatch; or a claim
+whose canonical entry is a `correction` or `reversal`. Correction and reversal
+rows may reference an existing fact through their immutable correction fields,
+but they cannot occupy the ordinary canonical claim pair.
+
+Both ordinary rows are created in the same transaction using preallocated
+identifiers. The reciprocal constraints are checked at commit, so an incomplete
+or mismatched pair rolls back. Neither row may be updated or deleted to repair
+the pair after the fact.
 
 The database requires a unique constraint over:
 
@@ -298,7 +334,11 @@ The future implementation must provide:
 
 - Tenant foreign keys and Tenant-first composite Membership FKs;
 - typed same-Tenant source relations wherever an approved source is relational;
-- a database unique constraint for source claims;
+- a database unique constraint for the conceptual source identity;
+- reciprocal, commit-time database constraints for the ordinary claim/ledger
+  pair: one `sourceClaimId` maps to exactly one ordinary `award` or
+  `capped_award`, one claim maps to exactly one canonical ledger ID, and both
+  Tenant and Membership identities and the entry outcome match;
 - a closed database/application event and source vocabulary;
 - append-only triggers and/or privilege hardening that reject ledger
   `UPDATE`, `DELETE`, and `TRUNCATE` by the runtime principal;
@@ -308,10 +348,23 @@ The future implementation must provide:
   source fact;
 - no mutable `membership.xp_total` or equivalent authoritative counter.
 
-The source claim and ledger entry are preallocated and inserted in one
-transaction. A committed source claim without a ledger entry is invalid and
-must be detected by reconciliation. A duplicate claim conflict must resolve to
-the existing immutable result rather than mutate it.
+The ordinary source claim and ledger entry are preallocated and inserted in one
+transaction. PostgreSQL must use a feasible reciprocal composite-key design,
+with DEFERRABLE constraints where required, so COMMIT fails for every
+incomplete or mismatched pair. In particular, the database must reject a
+claim without a canonical ledger entry, an ordinary ledger entry without a
+claim, two ordinary entries for one claim, reciprocal-ID disagreement, Tenant
+or Membership mismatch, an `award`/`capped_award` mismatch, and an ordinary
+claim linked to a correction/reversal. Reconciliation is defense in depth; it
+is not the primary normal-write correctness mechanism. A duplicate conceptual
+claim conflict must resolve to the existing immutable result rather than
+mutate it.
+
+These constraints must be compatible with the runtime privilege boundary:
+the runtime principal may INSERT and perform bounded authorized SELECT only;
+it does not need UPDATE authority on immutable rows merely because the
+reciprocal constraints are deferred. No ordinary application path may UPDATE
+or DELETE either side of the immutable pair.
 
 No database object or migration is created by this document.
 
@@ -325,10 +378,12 @@ RSVP transaction rather than a second commit or an unauthorized worker:
 2. run the final authoritative database-time and GSC-14 decision;
 3. determine the current RSVP transition and whether it is the initial eligible
    award-producing transition;
-4. if applicable, claim the conceptual source with the database uniqueness
-   constraint and insert the immutable ledger fact;
+4. if applicable, preallocate the claim and ledger identifiers, insert the
+   conceptual source claim and immutable ledger fact, and let the reciprocal
+   database constraints enforce their exact one-to-one pair;
 5. mutate the current RSVP row and complete the request idempotency result;
-6. commit all of those facts together.
+6. commit all of those facts together. A deferred reciprocal-constraint
+   failure is a transaction failure, not a reason to continue with the RSVP.
 
 The exact physical statement order may follow the reviewed lock plan, but the
 business boundary is one database transaction. No accepted first eligible RSVP
@@ -429,13 +484,32 @@ Every correction or reversal:
 - is a new immutable ledger row;
 - references the original source entry/claim;
 - has a mandatory reason code and bounded explanation;
-- has exact actor Membership attribution when Membership-backed;
+- has `actorMembershipId` for the currently representable Membership-backed
+  privileged actor branch, with exact same-Tenant identity;
 - uses expected concurrency and a unique correction intent so a retry cannot
   apply it twice;
 - uses the existing shared PMAFB and `xp.adjust`/approved authority boundary
   where applicable;
 - creates the minimum required A6 security audit event for the privileged
   decision.
+
+The currently representable correction/reversal actor is a Membership-backed
+privileged actor, for example an authorized Guild Administrator. Capability
+checks, PMAFB, A6 attribution, and same-Tenant Membership ownership all apply
+inside the future mutation transaction. This checkpoint does not authorize a
+Global User behavioral owner or a fabricated Membership for a non-Membership
+principal.
+
+**PLATFORM OPERATOR ACTOR PERSISTENCE/AUTHORIZATION REMAINS DEFERRED BY OD-02**
+
+Until OD-02 and the related authority/A6 governance are closed, there is no
+Platform principal ID, inferred Platform capability or grant, fabricated
+Membership, or new Global User behavior in this model. A future Platform or
+other non-student branch must fail closed with the approved `NOT_READY` (or
+equivalent safe denial) family and receive a separately reviewed additive
+contract. The append-only correction/reversal data model is preserved for that
+future branch, but it does not make CH-XP-004 runtime-complete; the first XP
+runtime may be limited to the separately approved RSVP award path.
 
 The original award is never updated or deleted. A correction/reversal failure
 cannot rewrite the balance or partially commit a new fact. A future correction
@@ -453,8 +527,10 @@ view and report drift without silently mutating immutable history. It must:
 
 1. recompute each Tenant/Membership balance from ledger deltas;
 2. compare that result with any derived/cache representation;
-3. verify every source claim has exactly one matching award or capped ledger
-   fact and that no award source has duplicate claims;
+3. verify that the PostgreSQL reciprocal constraints remain intact and that
+   every source claim has exactly one matching ordinary `award` or
+   `capped_award` ledger fact, with matching reciprocal IDs, Tenant,
+   Membership, and outcome, and that no award source has duplicate claims;
 4. detect source claims or ledger rows with missing/foreign Tenant or Membership
    relations;
 5. detect invalid rule versions, invalid event-type/amount combinations,
@@ -462,8 +538,15 @@ view and report drift without silently mutating immutable history. It must:
    impossible source occurrences;
 6. report the immutable identifiers, Tenant, Membership, rule/source category,
    and safe reason for drift without exposing unrelated Student data;
-7. leave history untouched and require a separately authorized correction or
+7. identify corruption that could only have been introduced by a privileged or
+   manual bypass, historical/migration defect, injected disposable fixture, or
+   derived-balance drift; and
+8. leave history untouched and require a separately authorized correction or
    reversal workflow for remediation.
+
+Reconciliation is defense in depth. It must not be the sole mechanism that
+permits a normal application write to create a claim without its canonical
+ledger fact or to pair facts across Tenant, Membership, or outcome identity.
 
 The invariant/algorithm is defined here separately from execution scheduling.
 OD-08 remains open: no cron, worker, queue, outbox, background job, or SYSTEM
@@ -486,12 +569,23 @@ Where blocking is claimed, evidence must include backend PIDs and
 | XP-PG-06 | Forced ledger/source-claim failure: no partial RSVP, claim, ledger, or completed idempotency state. |
 | XP-PG-07 | Business-source/award atomicity at the dangerous boundary: the approved transaction either commits both or rolls back both. |
 | XP-PG-08 | Repeated/concurrent correction or reversal: one append-only corrective intent, no history rewrite, no duplicate delta. |
+| XP-PG-09 | A claim inserted without its canonical ordinary ledger row: PostgreSQL commit fails. |
+| XP-PG-10 | An ordinary ledger row inserted without its claim: PostgreSQL commit fails. |
+| XP-PG-11 | Reciprocal claim/ledger IDs disagree: PostgreSQL commit fails. |
+| XP-PG-12 | Two ordinary ledger facts use one claim: exactly one valid pair is possible and the duplicate fails. |
+| XP-PG-13 | Claim and ledger Tenant identities disagree: PostgreSQL commit fails. |
+| XP-PG-14 | Claim and ledger Membership identities disagree: PostgreSQL commit fails. |
+| XP-PG-15 | Claim outcome and ledger `entryType` disagree (`award` versus `capped_award`): PostgreSQL commit fails. |
+| XP-PG-16 | A claim's canonical entry is a `correction` or `reversal`: PostgreSQL commit fails. |
 
 Additional evidence must cover same-key material-intent conflict,
 `IDEMPOTENCY_CONFLICT`, malformed source references, runtime privilege
 hardening, recursive effective-authority closure, Student read isolation,
 Tenant negative probes, and reconciliation detection of deliberately injected
-invalid fixtures in a disposable database.
+invalid fixtures in a disposable database. XP-PG-09 through XP-PG-16 must use
+real PostgreSQL constraints and transaction outcomes; mocks or reconciliation
+reports alone are not evidence. The fixtures must run against disposable
+database objects and must not weaken the production runtime privilege boundary.
 
 ## 15. A2, A4, and implementation obligations
 
@@ -559,17 +653,17 @@ Every item below is a proposal or a preserved deferral, not an approval.
 | ID | Decision | Status | Boundary/evidence required to close |
 | --- | --- | --- | --- |
 | A10-D01 | Ledger ownership and append-only source of truth | **PROPOSED — SENIOR DECISION REQUIRED** | Accept `Tenant + Membership` ownership, immutable deltas, no authoritative mutable total, and PostgreSQL append-only proof. |
-| A10-D02 | Conceptual source identity and uniqueness | **PROPOSED — SENIOR DECISION REQUIRED** | Accept a structural unique source claim independent of request keys, with typed same-Tenant relations and concurrent conflict evidence. |
+| A10-D02 | Conceptual source identity and uniqueness | **PROPOSED — SENIOR DECISION REQUIRED** | Accept the conceptual unique source claim plus a PostgreSQL-enforced reciprocal one-claim/one-matching-ordinary-ledger pair: exact claim ID, canonical ledger ID, Tenant, Membership, and `award`/`capped_award` outcome, with commit-time failure for incomplete or mismatched pairs. |
 | A10-D03 | Request idempotency versus source uniqueness | **PROPOSED — SENIOR DECISION REQUIRED** | Accept separate same-key replay/conflict semantics and different-key source-claim resolution. |
 | A10-D04 | RSVP once-per-Event source key | **PROPOSED — SENIOR DECISION REQUIRED** | Accept Membership + Event + stable RSVP rule + initial eligible occurrence; prove state changes, withdrawal, reactivation, and races. |
 | A10-D05 | Privacy-safe source references | **PROPOSED — SENIOR DECISION REQUIRED** | Accept opaque Tenant-local references, typed source relations, no attendee directory, no Global User behavior, and no Poll ballot reference. |
 | A10-D06 | Rule identity and versioning | **PROPOSED — SENIOR DECISION REQUIRED** | Accept closed stable rule IDs, immutable versions, amount snapshots, forward-only activation, and no historical recalculation. |
 | A10-D07 | Business-action/award atomicity | **PROPOSED — SENIOR DECISION REQUIRED** | Accept one future RSVP transaction for the state change, source claim, ledger fact, and request completion, with forced-failure evidence. |
-| A10-D08 | Correction/reversal model | **PROPOSED — SENIOR DECISION REQUIRED** | Accept append-only new deltas, mandatory reasons, authority/A6 boundary, source references, and correction-intent uniqueness. |
+| A10-D08 | Correction/reversal model | **PROPOSED — SENIOR DECISION REQUIRED** | Accept append-only new deltas, mandatory reasons, exact same-Tenant Membership-backed actor attribution, authority/A6 boundary, source references, and correction-intent uniqueness; preserve the future data model while deferring Platform Operator/non-student actor persistence and authorization under OD-02 without fabricated Membership. |
 | A10-D09 | Derived balance model | **PROPOSED — SENIOR DECISION REQUIRED** | Accept ledger sum as authority, rebuildable cache only, bounded own-XP reads, and no leaderboard. |
 | A10-D10 | Reconciliation invariant | **PROPOSED — SENIOR DECISION REQUIRED** | Accept drift/duplicate/malformed-chain detection without silent history mutation and separate OD-08 execution scheduling. |
-| A10-D11 | Database/runtime-role hardening | **PROPOSED — SENIOR DECISION REQUIRED** | Accept runtime INSERT/authorized SELECT only for immutable facts, no destructive privilege, owner/admin separation, and recursive authority closure evidence. |
-| A10-D12 | Real PostgreSQL race and failure evidence | **PROPOSED — SENIOR DECISION REQUIRED** | Accept XP-PG-01 through XP-PG-08 plus lock, privilege, isolation, and reconciliation evidence as a runtime exit gate. |
+| A10-D11 | Database/runtime-role hardening | **PROPOSED — SENIOR DECISION REQUIRED** | Accept runtime INSERT/authorized SELECT only for immutable facts, reciprocal commit-time claim/ledger integrity across IDs, Tenant, Membership, and outcome, no destructive privilege, owner/admin separation, and recursive authority closure evidence. |
+| A10-D12 | Real PostgreSQL race and failure evidence | **PROPOSED — SENIOR DECISION REQUIRED** | Accept XP-PG-01 through XP-PG-16 plus lock, privilege, isolation, reciprocal-constraint, and reconciliation evidence as a runtime exit gate. |
 | A10-D13 | Numeric daily cap and capped allocation semantics | **DEFERRED — OD-12 REMAINS OPEN** | No numeric cap, prototype value, allocation ordering, carry-over, or temporary default may be implemented. |
 
 ## 18. Future implementation exit criteria
