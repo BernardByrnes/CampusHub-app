@@ -12,6 +12,7 @@ import { DrizzleMembershipRepository } from "@/server/repositories/membership-re
 import { DrizzleRoleGrantRepository } from "@/server/repositories/role-grant-repository";
 import { DrizzleTenantRepository } from "@/server/repositories/tenant-repository";
 import { db } from "@/server/db/client";
+import { createEventRsvpServices } from "./create-event-rsvp-services";
 
 export function createEventServices() {
   const events = new DrizzleEventRepository();
@@ -35,8 +36,11 @@ export function createEventServices() {
     auditEvents,
     eventRepository: events,
   });
+  const rsvp = createEventRsvpServices();
   return {
     management: new EventManagementService({ capabilityAuthorizer: authorizer, gateway }),
     reads: new ReadEventService({ events, memberships }),
+    participation: rsvp.participation,
+    participationRepository: rsvp.rsvps,
   };
 }

@@ -29,10 +29,22 @@ import {
   publicationAudienceResidenceTargetEnum,
   publicationVisibilityEnum,
 } from "./publication";
+import { memberships } from "./membership";
 import { tenants } from "./tenant";
 import { organisers } from "./organisers";
 
 export const eventLifecycleEnum = pgEnum("event_lifecycle", EVENT_LIFECYCLES);
+
+export const eventRsvpStateEnum = pgEnum("event_rsvp_state", [
+  "going",
+  "interested",
+  "withdrawn",
+] as const);
+
+export const eventRsvpOperationFamilyEnum = pgEnum(
+  "event_rsvp_operation_family",
+  ["participation"] as const,
+);
 
 export const events = pgTable(
   "events",
@@ -241,3 +253,125 @@ export const eventLifecycleHistory = pgTable(
 
 export type EventLifecycleHistoryRow = typeof eventLifecycleHistory.$inferSelect;
 export type NewEventLifecycleHistoryRow = typeof eventLifecycleHistory.$inferInsert;
+
+export const eventRsvps = pgTable(
+  "event_rsvps",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    eventId: uuid("event_id").notNull(),
+    membershipId: uuid("membership_id").notNull(),
+    state: eventRsvpStateEnum("state").notNull(),
+    version: integer("version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("event_rsvps_tenant_event_membership_unique").on(
+      table.tenantId,
+      table.eventId,
+      table.membershipId,
+    ),
+    unique("event_rsvps_tenant_id_id_unique").on(table.tenantId, table.id),
+    index("event_rsvps_tenant_event_state").on(
+      table.tenantId,
+      table.eventId,
+      table.state,
+    ),
+    index("event_rsvps_tenant_membership").on(
+      table.tenantId,
+      table.membershipId,
+      table.eventId,
+    ),
+    check("event_rsvps_version_positive", sql`${table.version} >= 1`),
+    foreignKey({
+      name: "event_rsvps_event_same_tenant_fk",
+      columns: [table.tenantId, table.eventId],
+      foreignColumns: [events.tenantId, events.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+    foreignKey({
+      name: "event_rsvps_membership_same_tenant_fk",
+      columns: [table.tenantId, table.membershipId],
+      foreignColumns: [memberships.tenantId, memberships.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+  ],
+);
+
+export const eventRsvpIdempotency = pgTable(
+  "event_rsvp_idempotency",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict", onUpdate: "cascade" }),
+    eventId: uuid("event_id").notNull(),
+    membershipId: uuid("membership_id").notNull(),
+    operationFamily: eventRsvpOperationFamilyEnum("operation_family").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestedState: eventRsvpStateEnum("requested_state").notNull(),
+    expectedParticipationVersion: integer("expected_participation_version").notNull(),
+    completedState: eventRsvpStateEnum("completed_state"),
+    completedParticipationVersion: integer("completed_participation_version"),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "date" }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("event_rsvp_idempotency_identity_unique").on(
+      table.tenantId,
+      table.eventId,
+      table.membershipId,
+      table.operationFamily,
+      table.idempotencyKey,
+    ),
+    unique("event_rsvp_idempotency_tenant_id_id_unique").on(
+      table.tenantId,
+      table.id,
+    ),
+    index("event_rsvp_idempotency_tenant_event_membership").on(
+      table.tenantId,
+      table.eventId,
+      table.membershipId,
+    ),
+    check(
+      "event_rsvp_idempotency_key_nonempty",
+      sql`char_length(btrim(${table.idempotencyKey})) > 0 AND char_length(${table.idempotencyKey}) <= 200`,
+    ),
+    check(
+      "event_rsvp_idempotency_expected_version_nonnegative",
+      sql`${table.expectedParticipationVersion} >= 0`,
+    ),
+    check(
+      "event_rsvp_idempotency_completion_shape",
+      sql`(
+        (${table.completedState} IS NULL AND ${table.completedParticipationVersion} IS NULL AND ${table.completedAt} IS NULL)
+        OR (${table.completedState} IS NOT NULL AND ${table.completedParticipationVersion} >= 1 AND ${table.completedAt} IS NOT NULL)
+      )`,
+    ),
+    foreignKey({
+      name: "event_rsvp_idempotency_event_same_tenant_fk",
+      columns: [table.tenantId, table.eventId],
+      foreignColumns: [events.tenantId, events.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+    foreignKey({
+      name: "event_rsvp_idempotency_membership_same_tenant_fk",
+      columns: [table.tenantId, table.membershipId],
+      foreignColumns: [memberships.tenantId, memberships.id],
+    }).onDelete("restrict").onUpdate("cascade"),
+  ],
+);
+
+export type EventRsvpRow = typeof eventRsvps.$inferSelect;
+export type NewEventRsvpRow = typeof eventRsvps.$inferInsert;
+export type EventRsvpIdempotencyRow = typeof eventRsvpIdempotency.$inferSelect;
+export type NewEventRsvpIdempotencyRow = typeof eventRsvpIdempotency.$inferInsert;

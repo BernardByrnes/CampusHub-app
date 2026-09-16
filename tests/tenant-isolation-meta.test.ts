@@ -52,6 +52,9 @@ function implementationPathForDatabaseObject(
     events: "src/server/db/schema/events.ts",
     event_audience_criteria: "src/server/db/schema/events.ts",
     event_lifecycle_history: "src/server/db/schema/events.ts",
+    tenant_module_states: "src/server/db/schema/tenant.ts",
+    event_rsvps: "src/server/db/schema/events.ts",
+    event_rsvp_idempotency: "src/server/db/schema/events.ts",
     organisers: "src/server/db/schema/organisers.ts",
   };
 

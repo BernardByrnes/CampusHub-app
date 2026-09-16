@@ -79,6 +79,7 @@ export const APPROVED_GLOBAL_NON_TENANT_SURFACE_IDS = [
   "fixtures.services.factory-list",
   "fixtures.services.factory-management",
   "event.services.factory",
+  "event.rsvp.services.factory",
   "organiser.services.factory",
 ] as const;
 
@@ -121,7 +122,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0019_high_harry_osborn.sql",
+    implementationPath: "drizzle/0020_warm_jackpot.sql",
   },
   "fixtures.services.factory": {
     category: "infrastructure",
@@ -141,6 +142,11 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
     category: "infrastructure",
     implementationPath: "src/server/events/create-event-services.ts",
     operation: "createEventServices",
+  },
+  "event.rsvp.services.factory": {
+    category: "infrastructure",
+    implementationPath: "src/server/events/create-event-rsvp-services.ts",
+    operation: "createEventRsvpServices",
   },
   "organiser.services.factory": {
     category: "infrastructure",
@@ -182,6 +188,16 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/tenant.ts",
     exportName: "tenants",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/tenant.ts",
+    exportName: "tenantModuleScopeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/tenant.ts",
+    exportName: "tenantModuleStates",
     expectedAstForm: "CallExpression",
   },
   {
@@ -407,6 +423,26 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/events.ts",
     exportName: "eventLifecycleHistory",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventRsvpStateEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventRsvpOperationFamilyEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventRsvps",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/events.ts",
+    exportName: "eventRsvpIdempotency",
     expectedAstForm: "CallExpression",
   },
   {
@@ -861,6 +897,26 @@ export const REVIEWED_NON_OPERATIONAL_CONSTRUCTOR_CONTRACTS = [
     parameterTypeTexts: ["CampusHubDatabase"],
     parameterPropertyModifiers: [["private", "readonly"]],
     defaultInitializerIdentifiers: ["db"],
+  },
+  {
+    implementationPath: "src/server/repositories/event-rsvp-repository.ts",
+    classIdentity: "DrizzleEventRsvpRepository",
+    constructorModifiers: ["public"],
+    parameterCount: 2,
+    parameterNames: ["database", "options"],
+    parameterTypeTexts: ["CampusHubDatabase", "EventRsvpRepositoryOptions"],
+    parameterPropertyModifiers: [["private", "readonly"], ["private", "readonly"]],
+    defaultInitializerIdentifiers: ["db", "DEFAULT_EVENT_RSVP_REPOSITORY_OPTIONS"],
+  },
+  {
+    implementationPath: "src/application/events/manage-event-rsvp.ts",
+    classIdentity: "EventRsvpService",
+    constructorModifiers: ["public"],
+    parameterCount: 1,
+    parameterNames: ["dependencies"],
+    parameterTypeTexts: ["EventRsvpServiceDependencies"],
+    parameterPropertyModifiers: [["private", "readonly"]],
+    defaultInitializerIdentifiers: [null],
   },
   {
     implementationPath: "src/server/authorization/postgres-authorized-events.ts",
@@ -2721,8 +2777,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0019_high_harry_osborn.sql",
-    surface: "Reviewed Drizzle migration history through 0019",
+    implementationPath: "drizzle/0020_warm_jackpot.sql",
+    surface: "Reviewed Drizzle migration history through 0020",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -2748,8 +2804,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0017_calm_menace.sql",
       "drizzle/0018_parched_maximus.sql",
       "drizzle/0019_high_harry_osborn.sql",
+      "drizzle/0020_warm_jackpot.sql",
     ],
-    migrationHead: "drizzle/0019_high_harry_osborn.sql",
+    migrationHead: "drizzle/0020_warm_jackpot.sql",
   },
   {
     id: "organisers.persistence",
@@ -2874,6 +2931,39 @@ export const tenantSurfaceRegistry = [
     operation: "table:event_lifecycle_history",
   },
   {
+    id: "event-module-state.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/tenant.ts",
+    surface: "tenant_module_states",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "The module-enabled fact is Tenant-owned, versioned, same-Tenant, and read-only to RSVP consumers; a missing or disabled Event row fails closed.",
+    requiredNegativeTestIds: ["event-module-state.persistence"],
+    databaseObjectName: "tenant_module_states",
+    operation: "table:tenant_module_states",
+  },
+  {
+    id: "event-rsvp.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/events.ts",
+    surface: "event_rsvps",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Current RSVP state is one Tenant/Event/Membership row with a positive participation version and no delete-based withdrawal.",
+    requiredNegativeTestIds: ["event-rsvp.persistence", "event-rsvp.direct"],
+    databaseObjectName: "event_rsvps",
+    operation: "table:event_rsvps",
+  },
+  {
+    id: "event-rsvp-idempotency.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/events.ts",
+    surface: "event_rsvp_idempotency",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Durable participation retries bind Tenant, Event, Membership, operation family, and immutable request fingerprint.",
+    requiredNegativeTestIds: ["event-rsvp-idempotency.persistence", "event-rsvp.direct"],
+    databaseObjectName: "event_rsvp_idempotency",
+    operation: "table:event_rsvp_idempotency",
+  },
+  {
     id: "events.repository",
     category: "repository",
     implementationPath: "src/server/repositories/event-repository.ts",
@@ -2891,6 +2981,25 @@ export const tenantSurfaceRegistry = [
     isolationStrategy: "Event repository operation is Tenant-bound and does not resolve an Event by identifier alone.",
     requiredNegativeTestIds: ["events.direct", "events.collection"],
     operation: `DrizzleEventRepository.${operation}`,
+  })),
+  {
+    id: "events.rsvp-repository",
+    category: "repository",
+    implementationPath: "src/server/repositories/event-rsvp-repository.ts",
+    surface: "DrizzleEventRsvpRepository",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "RSVP mutation locks Tenant, Event module, Membership, Event, idempotency, and current RSVP rows in one transaction before a fresh GSC-14 decision.",
+    requiredNegativeTestIds: ["event-rsvp.direct", "event-rsvp.lifecycle"],
+  },
+  ...(["changeParticipation", "findOwnParticipation", "getAggregateCounts"] as const).map((operation) => ({
+    id: `events.rsvp-repository-${operation}`,
+    category: "repository" as const,
+    implementationPath: "src/server/repositories/event-rsvp-repository.ts",
+    surface: `DrizzleEventRsvpRepository.${operation}`,
+    tenantScope: "TENANT_SCOPED" as const,
+    isolationStrategy: "RSVP repository operations bind every read and mutation to explicit Tenant, Event, Membership, and trusted identity facts.",
+    requiredNegativeTestIds: ["event-rsvp.direct", "event-rsvp.lifecycle"],
+    operation: `DrizzleEventRsvpRepository.${operation}`,
   })),
   {
     id: "events.audit-append",
@@ -2951,6 +3060,25 @@ export const tenantSurfaceRegistry = [
     operation: `EventManagementService.${operation}`,
   })),
   {
+    id: "events.rsvp-participation",
+    category: "application_service",
+    implementationPath: "src/application/events/manage-event-rsvp.ts",
+    surface: "EventRsvpService",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy: "Student RSVP and Interest commands accept only the trusted RequestContext plus the narrow command and never use event.manage or client authority.",
+    requiredNegativeTestIds: ["event-rsvp.service", "event-rsvp.lifecycle"],
+  },
+  ...(["changeParticipation", "changeRsvp", "getOwnParticipation", "getCurrentParticipation", "getManagementCounts"] as const).map((operation) => ({
+    id: `events.rsvp-participation-${operation}`,
+    category: "application_service" as const,
+    implementationPath: "src/application/events/manage-event-rsvp.ts",
+    surface: `EventRsvpService.${operation}`,
+    tenantScope: "TENANT_SCOPED" as const,
+    isolationStrategy: "RSVP application operations validate the trusted context and keep own-state reads and aggregate management counts Tenant-bound.",
+    requiredNegativeTestIds: ["event-rsvp.service", "event-rsvp.lifecycle"],
+    operation: `EventRsvpService.${operation}`,
+  })),
+  {
     id: "events.student-read",
     category: "application_service",
     implementationPath: "src/application/events/read-events.ts",
@@ -3006,6 +3134,17 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: [],
     globalExemptionReason: "This is a dependency-injection factory with no direct resource query or authority decision; the constructed services enforce Tenant scope.",
     operation: "createEventServices",
+  },
+  {
+    id: "event.rsvp.services.factory",
+    category: "infrastructure",
+    implementationPath: "src/server/events/create-event-rsvp-services.ts",
+    surface: "createEventRsvpServices",
+    tenantScope: "GLOBAL_NON_TENANT",
+    isolationStrategy: "The RSVP factory only wires server-side dependencies; returned participation operations enforce trusted identity and Tenant scope.",
+    requiredNegativeTestIds: [],
+    globalExemptionReason: "This is a dependency-injection factory with no direct resource query or authority decision; constructed RSVP services enforce the approved participation boundary.",
+    operation: "createEventRsvpServices",
   },
 ] as const satisfies readonly TenantSurfaceRegistryEntry[];
 

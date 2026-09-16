@@ -86,6 +86,17 @@ key, even if a future account model contains it.
 | `organiser.id` | Organiser resource | PostgreSQL UUID primary key; stable across bounded name/version changes and owned by one Tenant. | `CURRENT` |
 | `organiser.tenantId` | Organiser ownership | PostgreSQL UUID FK to `tenant.id`; Organiser reads and mutations are Tenant-scoped. | `CURRENT` |
 | `event.organiserId` | Optional Event Organiser relation | Nullable PostgreSQL UUID paired with `event.tenantId` for a same-Tenant Organiser FK; Event-first creation remains permitted. | `CURRENT` |
+| `tenantModuleState.id` | Tenant module-state identity | PostgreSQL UUID primary key for one Tenant/module enablement fact; consumers may read it but do not manage it. | `CURRENT` |
+| `tenantModuleState.tenantId` | Tenant module-state ownership | PostgreSQL UUID FK to `tenant.id`; module enablement is never global. | `CURRENT` |
+| `eventRsvp.id` | Event participation identity | PostgreSQL UUID primary key for one current Tenant/Event/Membership participation row. | `CURRENT` |
+| `eventRsvp.tenantId` | Event participation ownership | PostgreSQL UUID paired with `eventRsvp.eventId` and `eventRsvp.membershipId` for same-Tenant constraints. | `CURRENT` |
+| `eventRsvp.eventId` | RSVP Event relation | PostgreSQL UUID paired with `eventRsvp.tenantId` for a same-Tenant Event FK. | `CURRENT` |
+| `eventRsvp.membershipId` | RSVP Membership relation | PostgreSQL UUID paired with `eventRsvp.tenantId` for a same-Tenant Membership FK. | `CURRENT` |
+| `eventRsvpIdempotency.id` | RSVP idempotency record identity | PostgreSQL UUID primary key for one Tenant/Event/Membership/operation/key request fingerprint. | `CURRENT` |
+| `eventRsvpIdempotency.tenantId` | RSVP idempotency ownership | PostgreSQL UUID paired with the Event and Membership identifiers for same-Tenant replay safety. | `CURRENT` |
+| `eventRsvpIdempotency.eventId` | RSVP idempotency Event relation | PostgreSQL UUID paired with `eventRsvpIdempotency.tenantId` for a same-Tenant Event FK. | `CURRENT` |
+| `eventRsvpIdempotency.membershipId` | RSVP idempotency Membership relation | PostgreSQL UUID paired with `eventRsvpIdempotency.tenantId` for a same-Tenant Membership FK. | `CURRENT` |
+| `eventRsvpIdempotency.idempotencyKey` | RSVP retry identity | Bounded client retry key; unique only inside Tenant/Event/Membership/operation-family scope and never an authority grant. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -132,11 +143,20 @@ key, even if a future account model contains it.
 | `audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant audit actor FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; actor attribution cannot cross Tenant boundaries. | `CURRENT` |
 | `organisers.tenant_id -> tenants.id` | Organiser ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `events.(tenant_id,organiser_id) -> organisers.(tenant_id,id)` | Same-Tenant Event Organiser FK | Nullable composite attribution constraint; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `tenant_module_states.tenant_id -> tenants.id` | Tenant module-state ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`; module consumers cannot create or update enablement rows. | `CURRENT` |
+| `event_rsvps.tenant_id -> tenants.id` | Event participation ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `event_rsvps.(tenant_id,event_id) -> events.(tenant_id,id)` | Same-Tenant Event RSVP FK | Participation cannot point to an Event in another Tenant; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `event_rsvps.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant Membership RSVP FK | Participation cannot point to a Membership in another Tenant; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `event_rsvp_idempotency.tenant_id -> tenants.id` | RSVP idempotency ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `event_rsvp_idempotency.(tenant_id,event_id) -> events.(tenant_id,id)` | Same-Tenant RSVP idempotency Event FK | Retry records cannot cross the Event Tenant boundary; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `event_rsvp_idempotency.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant RSVP idempotency Membership FK | Retry records cannot cross the Membership Tenant boundary; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
-`residences`, `tenant_academic_year_config`, `guild_terms`, `role_grants`,
-`sports`, `competitions`, `teams`, `fixtures`, `results`, `result_revisions`, `organisers`, and `audit_events`, with `tenants` as their
+`residences`, `tenant_academic_year_config`, `tenant_module_states`,
+`guild_terms`, `role_grants`, `sports`, `competitions`, `teams`, `fixtures`,
+`results`, `result_revisions`, `organisers`, `event_rsvps`,
+`event_rsvp_idempotency`, and `audit_events`, with `tenants` as their
 Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.

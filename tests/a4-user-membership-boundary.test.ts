@@ -230,6 +230,8 @@ describe("A4 User/Membership boundary", () => {
       "competitions",
       "event_audience_criteria",
       "event_lifecycle_history",
+      "event_rsvp_idempotency",
+      "event_rsvps",
       "events",
       "fixtures",
       "guild_terms",
@@ -245,6 +247,7 @@ describe("A4 User/Membership boundary", () => {
       "sports",
       "teams",
       "tenant_academic_year_config",
+      "tenant_module_states",
       "tenants",
     ]);
 
@@ -278,6 +281,8 @@ describe("A4 User/Membership boundary", () => {
       "competitions",
       "event_audience_criteria",
       "event_lifecycle_history",
+      "event_rsvp_idempotency",
+      "event_rsvps",
       "events",
       "fixtures",
       "guild_terms",
@@ -293,6 +298,7 @@ describe("A4 User/Membership boundary", () => {
       "sports",
       "teams",
       "tenant_academic_year_config",
+      "tenant_module_states",
     ]);
     for (const identifier of [
       "tenant.id",
@@ -355,6 +361,17 @@ describe("A4 User/Membership boundary", () => {
       "resultRevision.actorMembershipId",
       "organiser.id",
       "organiser.tenantId",
+      "tenantModuleState.id",
+      "tenantModuleState.tenantId",
+      "eventRsvp.id",
+      "eventRsvp.tenantId",
+      "eventRsvp.eventId",
+      "eventRsvp.membershipId",
+      "eventRsvpIdempotency.id",
+      "eventRsvpIdempotency.tenantId",
+      "eventRsvpIdempotency.eventId",
+      "eventRsvpIdempotency.membershipId",
+      "eventRsvpIdempotency.idempotencyKey",
       "RequestContext.tenantId",
       "RequestContext.membershipId",
       "Publication collection cursor.id",
@@ -398,6 +415,13 @@ describe("A4 User/Membership boundary", () => {
       "audit_events.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
       "organisers.tenant_id -> tenants.id",
       "events.(tenant_id,organiser_id) -> organisers.(tenant_id,id)",
+      "tenant_module_states.tenant_id -> tenants.id",
+      "event_rsvps.tenant_id -> tenants.id",
+      "event_rsvps.(tenant_id,event_id) -> events.(tenant_id,id)",
+      "event_rsvps.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
+      "event_rsvp_idempotency.tenant_id -> tenants.id",
+      "event_rsvp_idempotency.(tenant_id,event_id) -> events.(tenant_id,id)",
+      "event_rsvp_idempotency.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

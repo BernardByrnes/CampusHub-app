@@ -27,6 +27,8 @@ import { ListResultsService } from "@/application/sports/list-results";
 import { ResultManagementService } from "@/application/sports/manage-results";
 import { EventManagementService } from "@/application/events/manage-events";
 import { OrganiserManagementService } from "@/application/organisers/manage-organisers";
+import { EventRsvpService } from "@/application/events/manage-event-rsvp";
+import { evaluateEventParticipation } from "@/domain/events/event-rsvp";
 import { PostgresAuthorizedEventManagementExecutor } from "@/server/authorization/postgres-authorized-events";
 import { PostgresAuthorizedOrganiserManagementExecutor } from "@/server/authorization/postgres-authorized-organisers";
 import {
@@ -58,6 +60,9 @@ import {
   events,
   eventAudienceCriteria,
   eventLifecycleHistory,
+  tenantModuleStates,
+  eventRsvps,
+  eventRsvpIdempotency,
   organisers,
   tenants,
   type MembershipRow,
@@ -1928,6 +1933,74 @@ function eventAudiencePersistenceProbe(): void {
   );
 }
 
+function eventModuleStatePersistenceProbe(): void {
+  expectTenantOwnedTable(tenantModuleStates);
+  expectTenantCompositeIdentity(tenantModuleStates);
+  const config = getTableConfig(tenantModuleStates as never);
+  expect(config.indexes.map((index) => index.config.name)).toContain(
+    "tenant_module_states_tenant_module_unique",
+  );
+}
+
+function eventRsvpPersistenceProbe(): void {
+  for (const table of [eventRsvps, eventRsvpIdempotency]) {
+    expectTenantOwnedTable(table);
+    expectTenantCompositeIdentity(table);
+    expectForeignKey(table, ["tenant_id", "event_id"], ["tenant_id", "id"]);
+    expectForeignKey(table, ["tenant_id", "membership_id"], ["tenant_id", "id"]);
+  }
+}
+
+async function eventRsvpServiceProbe(): Promise<void> {
+  let called = false;
+  const service = new EventRsvpService({
+    rsvps: {
+      changeParticipation: async () => {
+        called = true;
+        return { ok: true as const, value: { outcome: "CHANGED" as const, state: "going" as const, participationVersion: 1, changed: true } };
+      },
+      findOwnParticipation: async () => ({ ok: true as const, state: null, participationVersion: 0 }),
+      getAggregateCounts: async () => ({ ok: true as const, goingCount: 0, interestedCount: 0 }),
+    },
+  });
+  await expect(service.changeParticipation({
+    trustedContext: {
+      identitySubjectId: "rsvp-probe",
+      tenantId: tenantAId,
+      membershipId: membershipAId,
+      tenantStatus: "active",
+      membershipStatus: "verified",
+      assuranceLevel: "L2",
+    },
+    participation: { eventId: "not-a-uuid", requestedState: "going", expectedParticipationVersion: 0, idempotencyKey: "probe" },
+  })).resolves.toEqual({ ok: false, error: "INVALID_INPUT" });
+  expect(called).toBe(false);
+}
+
+function eventRsvpLifecycleProbe(): void {
+  const base = {
+    tenantStatus: "active",
+    moduleEnabled: true,
+    event: {
+      tenantId: tenantAId,
+      lifecycle: "postponed" as const,
+      startsAt: new Date("2026-02-01T00:00:00.000Z"),
+      endsAt: null,
+      rsvpEnabled: true,
+      audienceMode: "entire_tenant" as const,
+      visibility: "MEMBERS" as const,
+      cancellationRetentionUntil: null,
+    },
+    membershipLifecycle: "verified",
+    assuranceLevel: "L2",
+    audience: { eventId: "00000000-0000-4000-8000-000000000021", tenantId: tenantAId, mode: "entire_tenant", groups: [] },
+    membershipFacts: null,
+    now: new Date("2026-01-15T12:00:00.000Z"),
+  };
+  expect(evaluateEventParticipation(base)).toEqual({ allowed: false, code: "RESOURCE_NOT_ACTIVE" });
+  expect(evaluateEventParticipation({ ...base, event: { ...base.event, lifecycle: "cancelled", cancellationRetentionUntil: new Date("2026-02-02T00:00:00.000Z") } })).toEqual({ allowed: false, code: "INVALID_STATE" });
+}
+
 async function eventManagementProbe(): Promise<void> {
   let gatewayCalled = false;
   const service = new EventManagementService({
@@ -2260,6 +2333,12 @@ export const tenantIsolationProbeRegistry: Readonly<
     );
   },
   "events.persistence": eventPersistenceProbe,
+  "event-module-state.persistence": eventModuleStatePersistenceProbe,
+  "event-rsvp.persistence": eventRsvpPersistenceProbe,
+  "event-rsvp-idempotency.persistence": eventRsvpPersistenceProbe,
+  "event-rsvp.direct": eventRsvpPersistenceProbe,
+  "event-rsvp.service": eventRsvpServiceProbe,
+  "event-rsvp.lifecycle": eventRsvpLifecycleProbe,
   "event-audience.persistence": eventAudiencePersistenceProbe,
   "events.direct": eventPersistenceProbe,
   "events.collection": eventPersistenceProbe,
