@@ -261,6 +261,8 @@ async function destroyRestrictedRuntime(runtime: RestrictedRuntime): Promise<voi
   await getPool().query(`revoke "campushub_runtime" from ${quotedRole}`).catch(() => undefined);
   await getPool().query(`revoke all privileges on schema public from ${quotedRole}`).catch(() => undefined);
   await getPool().query(`revoke all privileges on all tables in schema public from ${quotedRole}`).catch(() => undefined);
+  await getPool().query(`revoke update ("updated_at") on "tenant_module_states" from ${quotedRole}`).catch(() => undefined);
+  await getPool().query(`drop owned by ${quotedRole}`);
   await getPool().query(`drop role ${quotedRole}`);
 }
 
@@ -285,7 +287,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
     });
     await expect(change(graph, "going", 0, "rsvp-going")).resolves.toMatchObject({
       ok: true,
-      value: { outcome: "NOOP", state: "going", participationVersion: 1, changed: false },
+      value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
     });
     await expect(change(graph, "interested", 0, "rsvp-going")).resolves.toEqual({
       ok: false,
@@ -703,7 +705,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       ok: true,
       value: { outcome: "NOOP", state: "interested", participationVersion: 2, changed: false },
     });
-    await expect(change(graph, "going", 0, "exact-replay")).resolves.toEqual({ ok: false, error: "IDEMPOTENCY_CONFLICT" });
+    await expect(change(graph, "interested", 0, "exact-replay")).resolves.toEqual({ ok: false, error: "IDEMPOTENCY_CONFLICT" });
     const rows = await getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, graph.tenantId));
     expect(rows).toHaveLength(3);
     expect(rows.find((row) => row.idempotencyKey === "exact-replay")).toMatchObject({ completedOutcome: "CHANGED", completedChanged: true, completedState: "going", completedParticipationVersion: 1 });

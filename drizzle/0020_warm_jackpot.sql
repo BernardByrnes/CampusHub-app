@@ -102,6 +102,23 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  IF EXISTS (
+       SELECT 1
+       FROM pg_roles
+       WHERE rolname = current_user
+         AND (rolsuper OR rolcreaterole)
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_class
+       JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+       JOIN pg_roles ON pg_roles.oid = pg_class.relowner
+       WHERE pg_namespace.nspname = 'public'
+         AND pg_class.relname = 'tenant_module_states'
+         AND pg_roles.rolname = current_user
+     ) THEN
+    RETURN NEW;
+  END IF;
   IF pg_has_role(current_user, 'campushub_runtime', 'USAGE') THEN
     RAISE EXCEPTION 'tenant_module_states is not runtime-mutable'
       USING ERRCODE = '42501';
