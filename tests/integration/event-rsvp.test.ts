@@ -219,7 +219,6 @@ function sqlLiteral(value: string): string {
 
 type RsvpWriteBarrier = Readonly<{
   ownerPid: number;
-  tableName: string;
   release: () => Promise<void>;
   cleanup: () => Promise<void>;
 }>;
@@ -281,7 +280,6 @@ async function createRsvpWriteBarrier(graph: Graph): Promise<RsvpWriteBarrier> {
 
     return {
       ownerPid,
-      tableName,
       release: async () => {
         if (!transactionHeld || released) return;
         await barrierClient.query(`update ${table} set released = true where barrier_key = $1`, [barrierKey]);
@@ -553,7 +551,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       });
       firstPromise = change(graph, "going", 0, "race-going", getDatabase(), firstRepository);
       const firstPid = await firstStarted.promise;
-      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+      await waitForBlockedBy(firstPid, barrier.ownerPid, "event_rsvps");
 
       const secondStarted = deferred<number>();
       const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
@@ -601,7 +599,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       });
       firstPromise = change(graph, "interested", 1, "same-state-a", getDatabase(), firstRepository);
       const firstPid = await firstStarted.promise;
-      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+      await waitForBlockedBy(firstPid, barrier.ownerPid, "event_rsvps");
 
       const secondStarted = deferred<number>();
       const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
@@ -649,7 +647,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       });
       firstPromise = change(graph, "interested", 1, "different-state-a", getDatabase(), firstRepository);
       const firstPid = await firstStarted.promise;
-      await waitForBlockedBy(firstPid, barrier.ownerPid, barrier.tableName);
+      await waitForBlockedBy(firstPid, barrier.ownerPid, "event_rsvps");
 
       const secondStarted = deferred<number>();
       const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
