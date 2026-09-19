@@ -262,6 +262,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'campushub_runtime') THEN
     CREATE ROLE campushub_runtime NOLOGIN;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'campushub_rsvp_lock_owner') THEN
+    CREATE ROLE campushub_rsvp_lock_owner NOLOGIN;
+  END IF;
 END
 $$;--> statement-breakpoint
 
@@ -272,4 +275,62 @@ ALTER TABLE "xp_event_rsvp_source_claims" OWNER TO "campushub_data_owner";--> st
 REVOKE ALL ON TABLE "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" FROM PUBLIC;--> statement-breakpoint
 GRANT SELECT, INSERT ON TABLE "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" TO "campushub_runtime";--> statement-breakpoint
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" FROM "campushub_runtime";--> statement-breakpoint
-REVOKE REFERENCES ON TABLE "tenants", "memberships", "events" FROM "campushub_runtime";
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE "tenants", "memberships", "events" FROM "campushub_runtime";--> statement-breakpoint
+REVOKE TRIGGER ON TABLE "tenant_module_states", "event_rsvps", "event_rsvp_idempotency" FROM "campushub_runtime";--> statement-breakpoint
+
+GRANT SELECT ON TABLE "tenants", "memberships", "events" TO "campushub_rsvp_lock_owner";--> statement-breakpoint
+GRANT UPDATE ("id") ON TABLE "tenants", "memberships", "events" TO "campushub_rsvp_lock_owner";--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "public"."campushub_rsvp_lock_tenant"(p_tenant_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM 1
+  FROM public.tenants
+  WHERE public.tenants.id = p_tenant_id
+  FOR SHARE;
+END
+$$;--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "public"."campushub_rsvp_lock_membership"(p_tenant_id uuid, p_membership_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM 1
+  FROM public.memberships
+  WHERE public.memberships.tenant_id = p_tenant_id
+    AND public.memberships.id = p_membership_id
+  FOR SHARE;
+END
+$$;--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION "public"."campushub_rsvp_lock_event"(p_tenant_id uuid, p_event_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM 1
+  FROM public.events
+  WHERE public.events.tenant_id = p_tenant_id
+    AND public.events.id = p_event_id
+  FOR SHARE;
+END
+$$;--> statement-breakpoint
+
+ALTER FUNCTION "public"."campushub_rsvp_lock_tenant"(uuid) OWNER TO "campushub_rsvp_lock_owner";--> statement-breakpoint
+ALTER FUNCTION "public"."campushub_rsvp_lock_membership"(uuid, uuid) OWNER TO "campushub_rsvp_lock_owner";--> statement-breakpoint
+ALTER FUNCTION "public"."campushub_rsvp_lock_event"(uuid, uuid) OWNER TO "campushub_rsvp_lock_owner";--> statement-breakpoint
+REVOKE ALL ON FUNCTION "public"."campushub_rsvp_lock_tenant"(uuid) FROM PUBLIC;--> statement-breakpoint
+REVOKE ALL ON FUNCTION "public"."campushub_rsvp_lock_membership"(uuid, uuid) FROM PUBLIC;--> statement-breakpoint
+REVOKE ALL ON FUNCTION "public"."campushub_rsvp_lock_event"(uuid, uuid) FROM PUBLIC;--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION "public"."campushub_rsvp_lock_tenant"(uuid) TO "campushub_runtime";--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION "public"."campushub_rsvp_lock_membership"(uuid, uuid) TO "campushub_runtime";--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION "public"."campushub_rsvp_lock_event"(uuid, uuid) TO "campushub_runtime";

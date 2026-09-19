@@ -266,9 +266,16 @@ function runtimeRsvpAuthorityIsSafe(
     )
     select (
       current_user = session_user
+      and (
+        current_user = 'campushub_runtime'
+        or pg_has_role(current_user, 'campushub_runtime', 'MEMBER')
+      )
       and runtime_role.rolsuper = false
       and runtime_role.rolcreaterole = false
       and not has_schema_privilege(current_user, 'public', 'CREATE')
+      and has_function_privilege(current_user, 'public.campushub_rsvp_lock_tenant(uuid)', 'EXECUTE')
+      and has_function_privilege(current_user, 'public.campushub_rsvp_lock_membership(uuid, uuid)', 'EXECUTE')
+      and has_function_privilege(current_user, 'public.campushub_rsvp_lock_event(uuid, uuid)', 'EXECUTE')
       and not exists (
         select 1
         from effective_authority_closure as authority
@@ -276,6 +283,7 @@ function runtimeRsvpAuthorityIsSafe(
         where authority_role.rolsuper
            or authority_role.rolcreaterole
            or authority_role.rolname = 'campushub_data_owner'
+           or authority_role.rolname = 'campushub_rsvp_lock_owner'
            or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner, xp_ledger_table.relowner, xp_claim_table.relowner, xp_event_source_table.relowner, tenant_table.relowner, membership_table.relowner, events_table.relowner)
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'INSERT')
            or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'tenant_id', 'UPDATE')
@@ -288,21 +296,39 @@ function runtimeRsvpAuthorityIsSafe(
            or has_table_privilege(authority_role.rolname, 'public.event_rsvps', 'TRUNCATE')
            or has_table_privilege(authority_role.rolname, 'public.event_rsvp_idempotency', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.event_rsvp_idempotency', 'TRUNCATE')
-           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'TRIGGER')
+           or has_table_privilege(authority_role.rolname, 'public.event_rsvps', 'TRIGGER')
+           or has_table_privilege(authority_role.rolname, 'public.event_rsvp_idempotency', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.tenants', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.tenants', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.tenants', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.tenants', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.memberships', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.memberships', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.memberships', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.memberships', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.events', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.events', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.events', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.events', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'TRUNCATE')
-           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.xp_source_claims', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'TRUNCATE')
-           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'TRIGGER')
+           or has_any_column_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
-           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'REFERENCES')
-           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'REFERENCES')
-           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'TRIGGER')
            or has_table_privilege(authority_role.rolname, 'public.tenants', 'REFERENCES')
            or has_table_privilege(authority_role.rolname, 'public.memberships', 'REFERENCES')
            or has_table_privilege(authority_role.rolname, 'public.events', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
       )
       and has_table_privilege(current_user, 'public.tenant_module_states', 'SELECT')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'INSERT')
@@ -312,37 +338,55 @@ function runtimeRsvpAuthorityIsSafe(
       and not has_column_privilege(current_user, 'public.tenant_module_states', 'version', 'UPDATE')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'DELETE')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.tenant_module_states', 'TRIGGER')
       and has_table_privilege(current_user, 'public.event_rsvps', 'SELECT')
       and has_table_privilege(current_user, 'public.event_rsvps', 'INSERT')
       and has_table_privilege(current_user, 'public.event_rsvps', 'UPDATE')
       and not has_table_privilege(current_user, 'public.event_rsvps', 'DELETE')
       and not has_table_privilege(current_user, 'public.event_rsvps', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.event_rsvps', 'TRIGGER')
       and has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'SELECT')
       and has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'INSERT')
       and has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'UPDATE')
       and not has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'DELETE')
       and not has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'TRIGGER')
+       and not has_any_column_privilege(current_user, 'public.tenants', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.tenants', 'DELETE')
+      and not has_table_privilege(current_user, 'public.tenants', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.tenants', 'TRIGGER')
+      and not has_table_privilege(current_user, 'public.tenants', 'REFERENCES')
+       and not has_any_column_privilege(current_user, 'public.memberships', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.memberships', 'DELETE')
+      and not has_table_privilege(current_user, 'public.memberships', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.memberships', 'TRIGGER')
+      and not has_table_privilege(current_user, 'public.memberships', 'REFERENCES')
+       and not has_any_column_privilege(current_user, 'public.events', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.events', 'DELETE')
+      and not has_table_privilege(current_user, 'public.events', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.events', 'TRIGGER')
+      and not has_table_privilege(current_user, 'public.events', 'REFERENCES')
       and has_table_privilege(current_user, 'public.xp_ledger_entries', 'SELECT')
       and has_table_privilege(current_user, 'public.xp_ledger_entries', 'INSERT')
-      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'UPDATE')
+       and not has_any_column_privilege(current_user, 'public.xp_ledger_entries', 'UPDATE')
       and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'DELETE')
       and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'TRIGGER')
       and has_table_privilege(current_user, 'public.xp_source_claims', 'SELECT')
       and has_table_privilege(current_user, 'public.xp_source_claims', 'INSERT')
-      and not has_table_privilege(current_user, 'public.xp_source_claims', 'UPDATE')
+       and not has_any_column_privilege(current_user, 'public.xp_source_claims', 'UPDATE')
       and not has_table_privilege(current_user, 'public.xp_source_claims', 'DELETE')
       and not has_table_privilege(current_user, 'public.xp_source_claims', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.xp_source_claims', 'TRIGGER')
       and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'SELECT')
       and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'INSERT')
-       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'UPDATE')
-       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'DELETE')
-       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
-       and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'REFERENCES')
-       and not has_table_privilege(current_user, 'public.xp_source_claims', 'REFERENCES')
-       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
-       and not has_table_privilege(current_user, 'public.tenants', 'REFERENCES')
-       and not has_table_privilege(current_user, 'public.memberships', 'REFERENCES')
-       and not has_table_privilege(current_user, 'public.events', 'REFERENCES')
+       and not has_any_column_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'DELETE')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRIGGER')
+      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'REFERENCES')
+      and not has_table_privilege(current_user, 'public.xp_source_claims', 'REFERENCES')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
     ) as allowed
     from pg_roles as runtime_role
     cross join pg_class as module_table
@@ -428,11 +472,11 @@ export class DrizzleEventRsvpRepository {
     membershipId: string,
     identitySubjectId: string,
   ): Promise<RsvpContext> {
+    await transaction.execute(sql`select public.campushub_rsvp_lock_tenant(${tenantId}::uuid)`);
     const tenantRows = await transaction
       .select()
       .from(tenants)
       .where(eq(tenants.id, tenantId))
-      .for("share")
       .limit(1);
     const tenant = tenantRows[0] ?? null;
 
@@ -445,20 +489,20 @@ export class DrizzleEventRsvpRepository {
     const moduleEnabled = moduleRows[0]?.enabled ?? null;
     const moduleVersion = moduleRows[0]?.version ?? null;
 
+    await transaction.execute(sql`select public.campushub_rsvp_lock_membership(${tenantId}::uuid, ${membershipId}::uuid)`);
     const membershipRows = await transaction
       .select()
       .from(memberships)
       .where(and(eq(memberships.tenantId, tenantId), eq(memberships.id, membershipId)))
-      .for("share")
       .limit(1);
     const membership = membershipRows[0] ?? null;
     const membershipBindingValid = membership !== null && membership.identitySubjectId === identitySubjectId;
 
+    await transaction.execute(sql`select public.campushub_rsvp_lock_event(${tenantId}::uuid, ${eventId}::uuid)`);
     const eventRows = await transaction
       .select()
       .from(events)
       .where(and(eq(events.tenantId, tenantId), eq(events.id, eventId)))
-      .for("share")
       .limit(1);
     const event = eventRows[0] ? toEvent(eventRows[0]) : null;
     const audienceRows = eventRows[0]

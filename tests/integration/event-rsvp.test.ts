@@ -579,7 +579,7 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
       await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
     }
     await adminPool.query(
-      `grant select, update on "tenants", "memberships", "events" to ${quotedRole}`,
+      `grant select on "tenants", "memberships", "events" to ${quotedRole}`,
     );
     await adminPool.query(
       `grant select on "event_audience_criteria" to ${quotedRole}`,
@@ -624,6 +624,68 @@ async function destroyRestrictedRuntime(runtime: RestrictedRuntime): Promise<voi
   await getPool().query(`revoke update ("updated_at") on "tenant_module_states" from ${quotedRole}`).catch(() => undefined);
   await getPool().query(`drop owned by ${quotedRole}`);
   await getPool().query(`drop role ${quotedRole}`);
+}
+
+type AuthorityPrivilege = Readonly<{
+  table: "tenants" | "memberships" | "events" | "xp_ledger_entries" | "xp_source_claims" | "xp_event_rsvp_source_claims";
+  privilege: "UPDATE" | "DELETE" | "TRUNCATE" | "TRIGGER";
+}>;
+
+async function grantAuthorityPrivilege(roleName: string, authority: AuthorityPrivilege): Promise<void> {
+  await getPool().query(
+    `grant ${authority.privilege} on table public.${sqlIdentifier(authority.table)} to ${sqlIdentifier(roleName)}`,
+  );
+}
+
+async function revokeAuthorityPrivilege(roleName: string, authority: AuthorityPrivilege): Promise<void> {
+  await getPool().query(
+    `revoke ${authority.privilege} on table public.${sqlIdentifier(authority.table)} from ${sqlIdentifier(roleName)}`,
+  );
+}
+
+async function expectRuntimeAuthorityDenied(runtime: RestrictedRuntime, graph: Graph, idempotencyKey: string): Promise<void> {
+  const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database);
+  await expect(change(graph, "going", 0, idempotencyKey, runtime.database, runtimeRepository)).resolves.toEqual({
+    ok: false,
+    error: "PERSISTENCE_FAILED",
+  });
+}
+
+type AuthorityRoleChain = Readonly<{
+  intermediaryRole: string;
+  dangerousRole: string;
+}>;
+
+async function createAuthorityRoleChain(runtime: RestrictedRuntime): Promise<AuthorityRoleChain> {
+  const suffix = randomUUID().replaceAll("-", "");
+  const intermediaryRole = `campushub_evt003_intermediary_${suffix}`;
+  const dangerousRole = `campushub_evt003_dangerous_${suffix}`;
+  const quotedIntermediary = sqlIdentifier(intermediaryRole);
+  const quotedDangerous = sqlIdentifier(dangerousRole);
+  const quotedLogin = sqlIdentifier(runtime.roleName);
+  await getPool().query(`create role ${quotedDangerous} nologin`);
+  try {
+    await getPool().query(`create role ${quotedIntermediary} nologin`);
+    await getPool().query(`grant ${quotedDangerous} to ${quotedIntermediary}`);
+    await getPool().query(`grant ${quotedIntermediary} to ${quotedLogin}`);
+    return { intermediaryRole, dangerousRole };
+  } catch (error) {
+    await getPool().query(`revoke ${quotedDangerous} from ${quotedIntermediary}`).catch(() => undefined);
+    await getPool().query(`drop role ${quotedIntermediary}`).catch(() => undefined);
+    await getPool().query(`drop role ${quotedDangerous}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function destroyAuthorityRoleChain(runtime: RestrictedRuntime, chain: AuthorityRoleChain): Promise<void> {
+  const quotedIntermediary = sqlIdentifier(chain.intermediaryRole);
+  const quotedDangerous = sqlIdentifier(chain.dangerousRole);
+  const quotedLogin = sqlIdentifier(runtime.roleName);
+  await getPool().query(`revoke "campushub_data_owner" from ${quotedDangerous}`).catch(() => undefined);
+  await getPool().query(`revoke ${quotedDangerous} from ${quotedIntermediary}`).catch(() => undefined);
+  await getPool().query(`revoke ${quotedIntermediary} from ${quotedLogin}`).catch(() => undefined);
+  await getPool().query(`drop role ${quotedIntermediary}`).catch(() => undefined);
+  await getPool().query(`drop role ${quotedDangerous}`).catch(() => undefined);
 }
 
 beforeAll(async () => {
@@ -712,7 +774,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
 
   it("RSVP-PG-11 proves the real PostgreSQL runtime module-version privilege boundary", async () => {
     const graph = await createGraph();
-    const runtime = await createRestrictedRuntime({ withApprovedRuntimeRole: false });
+    const runtime = await createRestrictedRuntime();
     try {
       const privilegeRows = await getPool().query<{
         module_select: boolean;
@@ -720,40 +782,104 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_select: boolean;
         rsvp_insert: boolean;
         rsvp_update: boolean;
-         rsvp_delete: boolean;
-         idempotency_delete: boolean;
-         module_tenant_id_update: boolean;
-         module_scope_update: boolean;
-         module_enabled_update: boolean;
-         module_version_update: boolean;
-          module_updated_at_update: boolean;
-          xp_ledger_references: boolean;
-          xp_source_claims_references: boolean;
-          xp_event_source_references: boolean;
-          tenants_references: boolean;
-          memberships_references: boolean;
-          events_references: boolean;
+        rsvp_delete: boolean;
+        rsvp_trigger: boolean;
+        idempotency_delete: boolean;
+        idempotency_trigger: boolean;
+        module_tenant_id_update: boolean;
+        module_scope_update: boolean;
+        module_enabled_update: boolean;
+        module_version_update: boolean;
+        module_updated_at_update: boolean;
+        tenants_update: boolean;
+        tenants_delete: boolean;
+        tenants_truncate: boolean;
+        tenants_trigger: boolean;
+        tenants_references: boolean;
+        memberships_update: boolean;
+        memberships_delete: boolean;
+        memberships_truncate: boolean;
+        memberships_trigger: boolean;
+        memberships_references: boolean;
+        events_update: boolean;
+        events_delete: boolean;
+        events_truncate: boolean;
+        events_trigger: boolean;
+        events_references: boolean;
+        xp_ledger_select: boolean;
+        xp_ledger_insert: boolean;
+        xp_ledger_update: boolean;
+        xp_ledger_delete: boolean;
+        xp_ledger_truncate: boolean;
+        xp_ledger_trigger: boolean;
+        xp_ledger_references: boolean;
+        xp_source_select: boolean;
+        xp_source_insert: boolean;
+        xp_source_update: boolean;
+        xp_source_delete: boolean;
+        xp_source_truncate: boolean;
+        xp_source_trigger: boolean;
+        xp_source_references: boolean;
+        xp_event_source_select: boolean;
+        xp_event_source_insert: boolean;
+        xp_event_source_update: boolean;
+        xp_event_source_delete: boolean;
+        xp_event_source_truncate: boolean;
+        xp_event_source_trigger: boolean;
+        xp_event_source_references: boolean;
       }>(`
         select
-          has_table_privilege('campushub_runtime', 'public.tenant_module_states', 'SELECT') as module_select,
-          has_table_privilege('campushub_runtime', 'public.tenant_module_states', 'INSERT') as module_insert,
-          has_table_privilege('campushub_runtime', 'public.event_rsvps', 'SELECT') as rsvp_select,
-          has_table_privilege('campushub_runtime', 'public.event_rsvps', 'INSERT') as rsvp_insert,
-          has_table_privilege('campushub_runtime', 'public.event_rsvps', 'UPDATE') as rsvp_update,
-          has_table_privilege('campushub_runtime', 'public.event_rsvps', 'DELETE') as rsvp_delete,
-           has_table_privilege('campushub_runtime', 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'tenant_id', 'UPDATE') as module_tenant_id_update,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'module', 'UPDATE') as module_scope_update,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'version', 'UPDATE') as module_version_update,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update,
-           has_table_privilege('campushub_runtime', 'public.xp_ledger_entries', 'REFERENCES') as xp_ledger_references,
-           has_table_privilege('campushub_runtime', 'public.xp_source_claims', 'REFERENCES') as xp_source_claims_references,
-           has_table_privilege('campushub_runtime', 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_references,
-           has_table_privilege('campushub_runtime', 'public.tenants', 'REFERENCES') as tenants_references,
-           has_table_privilege('campushub_runtime', 'public.memberships', 'REFERENCES') as memberships_references,
-           has_table_privilege('campushub_runtime', 'public.events', 'REFERENCES') as events_references
-      `);
+          has_table_privilege($1::name, 'public.tenant_module_states', 'SELECT') as module_select,
+          has_table_privilege($1::name, 'public.tenant_module_states', 'INSERT') as module_insert,
+          has_table_privilege($1::name, 'public.event_rsvps', 'SELECT') as rsvp_select,
+          has_table_privilege($1::name, 'public.event_rsvps', 'INSERT') as rsvp_insert,
+          has_table_privilege($1::name, 'public.event_rsvps', 'UPDATE') as rsvp_update,
+          has_table_privilege($1::name, 'public.event_rsvps', 'DELETE') as rsvp_delete,
+          has_table_privilege($1::name, 'public.event_rsvps', 'TRIGGER') as rsvp_trigger,
+          has_table_privilege($1::name, 'public.event_rsvp_idempotency', 'DELETE') as idempotency_delete,
+          has_table_privilege($1::name, 'public.event_rsvp_idempotency', 'TRIGGER') as idempotency_trigger,
+          has_column_privilege($1::name, 'public.tenant_module_states', 'tenant_id', 'UPDATE') as module_tenant_id_update,
+          has_column_privilege($1::name, 'public.tenant_module_states', 'module', 'UPDATE') as module_scope_update,
+          has_column_privilege($1::name, 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
+          has_column_privilege($1::name, 'public.tenant_module_states', 'version', 'UPDATE') as module_version_update,
+          has_column_privilege($1::name, 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update,
+          has_table_privilege($1::name, 'public.tenants', 'UPDATE') as tenants_update,
+          has_table_privilege($1::name, 'public.tenants', 'DELETE') as tenants_delete,
+          has_table_privilege($1::name, 'public.tenants', 'TRUNCATE') as tenants_truncate,
+          has_table_privilege($1::name, 'public.tenants', 'TRIGGER') as tenants_trigger,
+          has_table_privilege($1::name, 'public.tenants', 'REFERENCES') as tenants_references,
+          has_table_privilege($1::name, 'public.memberships', 'UPDATE') as memberships_update,
+          has_table_privilege($1::name, 'public.memberships', 'DELETE') as memberships_delete,
+          has_table_privilege($1::name, 'public.memberships', 'TRUNCATE') as memberships_truncate,
+          has_table_privilege($1::name, 'public.memberships', 'TRIGGER') as memberships_trigger,
+          has_table_privilege($1::name, 'public.memberships', 'REFERENCES') as memberships_references,
+          has_table_privilege($1::name, 'public.events', 'UPDATE') as events_update,
+          has_table_privilege($1::name, 'public.events', 'DELETE') as events_delete,
+          has_table_privilege($1::name, 'public.events', 'TRUNCATE') as events_truncate,
+          has_table_privilege($1::name, 'public.events', 'TRIGGER') as events_trigger,
+          has_table_privilege($1::name, 'public.events', 'REFERENCES') as events_references,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'SELECT') as xp_ledger_select,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'INSERT') as xp_ledger_insert,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'UPDATE') as xp_ledger_update,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'DELETE') as xp_ledger_delete,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'TRUNCATE') as xp_ledger_truncate,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'TRIGGER') as xp_ledger_trigger,
+          has_table_privilege($1::name, 'public.xp_ledger_entries', 'REFERENCES') as xp_ledger_references,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'SELECT') as xp_source_select,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'INSERT') as xp_source_insert,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'UPDATE') as xp_source_update,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'DELETE') as xp_source_delete,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'TRUNCATE') as xp_source_truncate,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'TRIGGER') as xp_source_trigger,
+          has_table_privilege($1::name, 'public.xp_source_claims', 'REFERENCES') as xp_source_references,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'SELECT') as xp_event_source_select,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'INSERT') as xp_event_source_insert,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'UPDATE') as xp_event_source_update,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'DELETE') as xp_event_source_delete,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'TRUNCATE') as xp_event_source_truncate,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'TRIGGER') as xp_event_source_trigger,
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_references
+      `, [runtime.roleName]);
       expect(privilegeRows.rows[0]).toEqual({
         module_select: true,
         module_insert: false,
@@ -761,18 +887,50 @@ describe("real PostgreSQL Event RSVP Core", () => {
         rsvp_insert: true,
         rsvp_update: true,
         rsvp_delete: false,
+        rsvp_trigger: false,
         idempotency_delete: false,
+        idempotency_trigger: false,
         module_tenant_id_update: false,
         module_scope_update: false,
-         module_enabled_update: false,
-         module_version_update: false,
-         module_updated_at_update: true,
-         xp_ledger_references: false,
-         xp_source_claims_references: false,
-         xp_event_source_references: false,
-         tenants_references: false,
-         memberships_references: false,
-         events_references: false,
+        module_enabled_update: false,
+        module_version_update: false,
+        module_updated_at_update: true,
+        tenants_update: false,
+        tenants_delete: false,
+        tenants_truncate: false,
+        tenants_trigger: false,
+        tenants_references: false,
+        memberships_update: false,
+        memberships_delete: false,
+        memberships_truncate: false,
+        memberships_trigger: false,
+        memberships_references: false,
+        events_update: false,
+        events_delete: false,
+        events_truncate: false,
+        events_trigger: false,
+        events_references: false,
+        xp_ledger_select: true,
+        xp_ledger_insert: true,
+        xp_ledger_update: false,
+        xp_ledger_delete: false,
+        xp_ledger_truncate: false,
+        xp_ledger_trigger: false,
+        xp_ledger_references: false,
+        xp_source_select: true,
+        xp_source_insert: true,
+        xp_source_update: false,
+        xp_source_delete: false,
+        xp_source_truncate: false,
+        xp_source_trigger: false,
+        xp_source_references: false,
+        xp_event_source_select: true,
+        xp_event_source_insert: true,
+        xp_event_source_update: false,
+        xp_event_source_delete: false,
+        xp_event_source_truncate: false,
+        xp_event_source_trigger: false,
+        xp_event_source_references: false,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
       await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
@@ -793,6 +951,107 @@ describe("real PostgreSQL Event RSVP Core", () => {
       )).rejects.toThrow();
     } finally {
       await destroyRestrictedRuntime(runtime);
+    }
+  });
+
+  it("RSVP-PG-AUTH-01 rejects every directly granted protected-table mutation privilege and unrelated login identity", async () => {
+    const graph = await createGraph();
+    const directAuthorities: readonly AuthorityPrivilege[] = [
+      { table: "tenants", privilege: "UPDATE" },
+      { table: "tenants", privilege: "DELETE" },
+      { table: "tenants", privilege: "TRUNCATE" },
+      { table: "tenants", privilege: "TRIGGER" },
+      { table: "memberships", privilege: "UPDATE" },
+      { table: "memberships", privilege: "DELETE" },
+      { table: "memberships", privilege: "TRUNCATE" },
+      { table: "memberships", privilege: "TRIGGER" },
+      { table: "events", privilege: "UPDATE" },
+      { table: "events", privilege: "DELETE" },
+      { table: "events", privilege: "TRUNCATE" },
+      { table: "events", privilege: "TRIGGER" },
+      { table: "xp_ledger_entries", privilege: "TRIGGER" },
+      { table: "xp_source_claims", privilege: "TRIGGER" },
+      { table: "xp_event_rsvp_source_claims", privilege: "TRIGGER" },
+    ];
+    const runtime = await createRestrictedRuntime();
+    try {
+      for (const [index, authority] of directAuthorities.entries()) {
+        await grantAuthorityPrivilege(runtime.roleName, authority);
+        try {
+          await expectRuntimeAuthorityDenied(runtime, graph, `authority-direct-${index}`);
+        } finally {
+          await revokeAuthorityPrivilege(runtime.roleName, authority);
+        }
+      }
+    } finally {
+      await destroyRestrictedRuntime(runtime);
+    }
+
+    const unrelatedRuntime = await createRestrictedRuntime({ withApprovedRuntimeRole: false });
+    try {
+      await expectRuntimeAuthorityDenied(unrelatedRuntime, graph, "authority-unrelated-login");
+    } finally {
+      await destroyRestrictedRuntime(unrelatedRuntime);
+    }
+  });
+
+  it("RSVP-PG-AUTH-02 rejects an approved runtime member that owns a protected table", async () => {
+    const graph = await createGraph();
+    const runtime = await createRestrictedRuntime();
+    const ownerRows = await getPool().query<{ owner: string }>(`
+      select pg_get_userbyid(relowner) as owner
+      from pg_class
+      join pg_namespace on pg_namespace.oid = relnamespace
+      where pg_namespace.nspname = 'public'
+        and relname = 'events'
+        and relkind = 'r'
+    `);
+    const originalOwner = ownerRows.rows[0]?.owner;
+    if (originalOwner === undefined) {
+      await destroyRestrictedRuntime(runtime);
+      throw new Error("Protected Event table owner was unavailable.");
+    }
+    try {
+      await getPool().query(`alter table public."events" owner to ${sqlIdentifier(runtime.roleName)}`);
+      await expectRuntimeAuthorityDenied(runtime, graph, "authority-owner-negative");
+    } finally {
+      await getPool().query(`alter table public."events" owner to ${sqlIdentifier(originalOwner)}`);
+      await destroyRestrictedRuntime(runtime);
+    }
+  });
+
+  it("RSVP-PG-AUTH-03 rejects true two-hop dangerous authority and owner/admin reachability", async () => {
+    const graph = await createGraph();
+    const cases: readonly Readonly<{
+      key: string;
+      setup: (dangerousRole: string) => Promise<void>;
+      cleanup?: (dangerousRole: string) => Promise<void>;
+    }>[] = [
+      {
+        key: "authority-multihop-parent",
+        setup: (dangerousRole) => grantAuthorityPrivilege(dangerousRole, { table: "events", privilege: "UPDATE" }),
+      },
+      {
+        key: "authority-multihop-xp-trigger",
+        setup: (dangerousRole) => grantAuthorityPrivilege(dangerousRole, { table: "xp_ledger_entries", privilege: "TRIGGER" }),
+      },
+      {
+        key: "authority-multihop-data-owner",
+        setup: (dangerousRole) => getPool().query(`grant "campushub_data_owner" to ${sqlIdentifier(dangerousRole)}`).then(() => undefined),
+      },
+    ];
+
+    for (const authorityCase of cases) {
+      const runtime = await createRestrictedRuntime();
+      const chain = await createAuthorityRoleChain(runtime);
+      try {
+        await authorityCase.setup(chain.dangerousRole);
+        await expectRuntimeAuthorityDenied(runtime, graph, authorityCase.key);
+      } finally {
+        await authorityCase.cleanup?.(chain.dangerousRole);
+        await destroyAuthorityRoleChain(runtime, chain);
+        await destroyRestrictedRuntime(runtime);
+      }
     }
   });
 
@@ -992,7 +1251,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const lockPid = await backendPid(lockClient);
       await lockClient.query('select id from "events" where id = $1 for update', [graph.eventId]);
       const rsvpPromise = change(graph, "going", 0, "starts-at-crossing");
-      await waitForBlocked(lockPid, "for share");
+      await waitForBlocked(lockPid, "campushub_rsvp_lock_event");
       await waitForDatabaseTime(target);
       await lockClient.query("commit");
       await expect(rsvpPromise).resolves.toEqual({ ok: false, error: "RESOURCE_NOT_ACTIVE" });
@@ -1044,7 +1303,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const lockPid = await backendPid(lockClient);
       await lockClient.query('select id from "events" where id = $1 for update', [graph.eventId]);
       const rsvpPromise = change(graph, "going", 0, "cancel-lock");
-      await waitForBlocked(lockPid, 'for share');
+      await waitForBlocked(lockPid, 'campushub_rsvp_lock_event');
       await lockClient.query(
         'update "events" set lifecycle = \'cancelled\', cancellation_retention_until = $2, version = version + 1, updated_at = clock_timestamp() where id = $1',
         [graph.eventId, FUTURE_END],
@@ -1099,7 +1358,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const lockPid = await backendPid(postponeLock);
       await postponeLock.query('select id from "events" where id = $1 for update', [postponedFirst.eventId]);
       const rsvpPromise = change(postponedFirst, "going", 0, "postpone-first");
-      await waitForBlocked(lockPid, "for share");
+      await waitForBlocked(lockPid, "campushub_rsvp_lock_event");
       await postponeLock.query(
         'update "events" set lifecycle = \'postponed\', version = version + 1, starts_at = $2, ends_at = $3, updated_at = clock_timestamp() where id = $1',
         [postponedFirst.eventId, new Date("2099-09-21T10:00:00.000Z"), new Date("2099-09-21T12:00:00.000Z")],
@@ -1219,7 +1478,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const invalidatorPid = await backendPid(invalidator);
       await invalidator.query('update "tenants" set status = \'suspended\' where id = $1', [invalidatorFirst.tenantId]);
       const blockedRsvp = change(invalidatorFirst, "going", 0, "tenant-invalidator-first");
-      await waitForBlocked(invalidatorPid, "for share");
+      await waitForBlocked(invalidatorPid, "campushub_rsvp_lock_tenant");
       await invalidator.query("commit");
       await expect(blockedRsvp).resolves.toEqual({ ok: false, error: "TENANT_SUSPENDED" });
       await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, invalidatorFirst.tenantId))).resolves.toHaveLength(0);
@@ -1307,7 +1566,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
       const invalidatorPid = await backendPid(invalidator);
       await invalidator.query('update "memberships" set lifecycle = \'participation_suspended\' where tenant_id = $1 and id = $2', [invalidatorFirst.tenantId, invalidatorFirst.membershipId]);
       const blockedRsvp = change(invalidatorFirst, "going", 0, "membership-invalidator-first");
-      await waitForBlocked(invalidatorPid, "for share");
+      await waitForBlocked(invalidatorPid, "campushub_rsvp_lock_membership");
       await invalidator.query("commit");
       await expect(blockedRsvp).resolves.toEqual({ ok: false, error: "MEMBERSHIP_STATE_INELIGIBLE" });
       await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, invalidatorFirst.tenantId))).resolves.toHaveLength(0);
