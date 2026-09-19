@@ -148,6 +148,13 @@
       "when": 1789543184107,
       "tag": "0020_warm_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789600748778,
+      "tag": "0021_tense_moonstone",
+      "breakpoints": true
     }
   ]
 }

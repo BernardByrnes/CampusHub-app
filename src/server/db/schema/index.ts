@@ -3,6 +3,7 @@ export * from "./membership";
 export * from "./governance";
 export * from "./organization";
 export * from "./organisers";
+export * from "./xp";
 export * from "./publication";
 export * from "./sports";
 export * from "./events";

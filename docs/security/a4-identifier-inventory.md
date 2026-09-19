@@ -97,6 +97,21 @@ key, even if a future account model contains it.
 | `eventRsvpIdempotency.eventId` | RSVP idempotency Event relation | PostgreSQL UUID paired with `eventRsvpIdempotency.tenantId` for a same-Tenant Event FK. | `CURRENT` |
 | `eventRsvpIdempotency.membershipId` | RSVP idempotency Membership relation | PostgreSQL UUID paired with `eventRsvpIdempotency.tenantId` for a same-Tenant Membership FK. | `CURRENT` |
 | `eventRsvpIdempotency.idempotencyKey` | RSVP retry identity | Bounded client retry key; unique only inside Tenant/Event/Membership/operation-family scope and never an authority grant. | `CURRENT` |
+| `xpLedgerEntry.id` | Immutable XP ledger fact identity | PostgreSQL UUID for one append-only balance/explanation fact. | `CURRENT` |
+| `xpLedgerEntry.tenantId` | XP ledger ownership | PostgreSQL UUID paired with `xpLedgerEntry.membershipId`; every ledger fact is Tenant-local. | `CURRENT` |
+| `xpLedgerEntry.membershipId` | XP ledger Membership owner | PostgreSQL UUID paired with `xpLedgerEntry.tenantId` for a same-Tenant Membership FK; no Global User behavioural owner exists. | `CURRENT` |
+| `xpLedgerEntry.sourceClaimId` | Ordinary XP source-claim pairing | Nullable PostgreSQL UUID; non-null for `award`/`capped_award` and bound by reciprocal commit-time constraints. | `CURRENT` |
+| `xpLedgerEntry.sourceReferenceId` | Privacy-safe XP source reference | Tenant-local opaque UUID; the first `event_rsvp` producer references an Event without exposing attendee behaviour. | `CURRENT` |
+| `xpLedgerEntry.actorMembershipId` | Future correction/reversal actor | Nullable same-Tenant Membership UUID; ordinary Event RSVP awards do not fabricate a privileged actor. | `CURRENT` |
+| `xpSourceClaim.id` | Conceptual XP source claim identity | PostgreSQL UUID for one immutable once-only source consumption claim. | `CURRENT` |
+| `xpSourceClaim.tenantId` | Source-claim ownership | PostgreSQL UUID paired with `xpSourceClaim.membershipId`; source uniqueness is Tenant-local. | `CURRENT` |
+| `xpSourceClaim.membershipId` | Conceptual source Membership owner | PostgreSQL UUID paired with `xpSourceClaim.tenantId`; one Membership/Event/rule occurrence can be claimed once. | `CURRENT` |
+| `xpSourceClaim.canonicalLedgerEntryId` | Reciprocal canonical ledger identity | PostgreSQL UUID bound to exactly one matching ordinary ledger fact at commit. | `CURRENT` |
+| `xpSourceClaim.sourceReferenceId` | Source-claim business reference | Tenant-local Event UUID for the initial Event RSVP producer; request keys are not source identity. | `CURRENT` |
+| `xpEventRsvpSourceClaim.id` | Typed Event RSVP source relation identity | PostgreSQL UUID for the same-Tenant typed relation between an XP claim and Event. | `CURRENT` |
+| `xpEventRsvpSourceClaim.tenantId` | Typed source ownership | PostgreSQL UUID governing both the source claim and Event relation. | `CURRENT` |
+| `xpEventRsvpSourceClaim.sourceClaimId` | Typed source claim relation | PostgreSQL UUID with a unique same-Tenant FK to `xp_source_claims`. | `CURRENT` |
+| `xpEventRsvpSourceClaim.eventId` | Event RSVP XP source relation | PostgreSQL UUID paired with `tenantId` for a same-Tenant Event FK. | `CURRENT` |
 | `Publication collection cursor.id` | Keyset position | Opaque encoded Publication UUID position; not an authority or Tenant override. | `CURRENT` |
 | `Publication collection cursor.publishAt` | Keyset position | Encoded timestamp paired with cursor ID for deterministic ordering. | `CURRENT` |
 | `memberships.tenant_id -> tenants.id` | Database ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
@@ -151,12 +166,22 @@ key, even if a future account model contains it.
 | `event_rsvp_idempotency.(tenant_id,event_id) -> events.(tenant_id,id)` | Same-Tenant RSVP idempotency Event FK | Retry records cannot cross the Event Tenant boundary; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `event_rsvp_idempotency.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant RSVP idempotency Membership FK | Retry records cannot cross the Membership Tenant boundary; `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 
+| `xp_ledger_entries.tenant_id -> tenants.id` | XP ledger ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `xp_ledger_entries.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP ledger Membership FK | Ledger ownership cannot cross a Tenant boundary. | `CURRENT` |
+| `xp_ledger_entries.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP actor FK | Only future Membership-backed correction/reversal actors may be attributed; ordinary awards leave it null. | `CURRENT` |
+| `xp_source_claims.tenant_id -> tenants.id` | XP source-claim ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `xp_source_claims.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP source Membership FK | Conceptual uniqueness is always Tenant/Membership-local. | `CURRENT` |
+| `xp_event_rsvp_source_claims.tenant_id -> tenants.id` | Typed Event source ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
+| `xp_event_rsvp_source_claims.(tenant_id,source_claim_id) -> xp_source_claims.(tenant_id,id)` | Same-Tenant typed source claim FK | Event RSVP source relations cannot bind a claim from another Tenant. | `CURRENT` |
+| `xp_event_rsvp_source_claims.(tenant_id,event_id) -> events.(tenant_id,id)` | Same-Tenant Event source FK | An Event RSVP XP source cannot reference an Event in another Tenant. | `CURRENT` |
+
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,
 `residences`, `tenant_academic_year_config`, `tenant_module_states`,
 `guild_terms`, `role_grants`, `sports`, `competitions`, `teams`, `fixtures`,
 `results`, `result_revisions`, `organisers`, `event_rsvps`,
-`event_rsvp_idempotency`, and `audit_events`, with `tenants` as their
+`event_rsvp_idempotency`, `audit_events`, `xp_ledger_entries`,
+`xp_source_claims`, and `xp_event_rsvp_source_claims`, with `tenants` as their
 Tenant root. `publicationAudienceCriteria.academicYear` is an ordinary numeric
 audience attribute, not an entity identifier. There is no current Global User,
 account, session, credential, OAuth, or MFA table.
@@ -170,7 +195,7 @@ account, session, credential, OAuth, or MFA table.
 | Verification evidence identifiers | Tenant Membership assurance/evidence records. | `FUTURE_REQUIRED` |
 | Poll participation receipt identifiers | Tenant-local poll participation and privacy mechanism. | `FUTURE_REQUIRED` |
 | Voice identity-access/audit identifiers | Separately granted, audited Tenant-local Voice identity access. | `FUTURE_REQUIRED` |
-| XP/Streak source identifiers | Tenant-local ledger/source and idempotency attribution. | `FUTURE_REQUIRED` |
+| XP/Streak source identifiers | Tenant-local ledger/source and idempotency attribution. | `CURRENT` for the Event RSVP producer; other source types remain future-gated. |
 | Notification identifiers | Tenant-local notification, preference, delivery, and grouping records. | `FUTURE_REQUIRED` |
 
 No concrete format is prescribed for these future classes by A4.

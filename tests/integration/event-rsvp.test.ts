@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
 
 import { DrizzleEventRsvpRepository } from "@/server/repositories/event-rsvp-repository";
+import { appendEventRsvpAwardInTransaction } from "@/server/repositories/xp-ledger-repository";
 import type { CampusHubDatabase } from "@/server/db/client";
 import * as tables from "@/server/db/schema";
 import {
@@ -17,6 +18,9 @@ import {
   memberships,
   tenantModuleStates,
   tenants,
+  xpEventRsvpSourceClaims,
+  xpLedgerEntries,
+  xpSourceClaims,
 } from "@/server/db/schema";
 
 if (process.env.CAMPUSHUB_DB_INTEGRATION !== "1") {
@@ -128,6 +132,26 @@ async function createGraph(options: Readonly<{
   return { tenantId, campusId, membershipId, identitySubjectId, eventId };
 }
 
+async function createEventForGraph(graph: Graph, label: string): Promise<string> {
+  const rows = await getDatabase().insert(events).values({
+    tenantId: graph.tenantId,
+    version: 1,
+    title: `RSVP XP ${label}`,
+    description: "An Event used by the real RSVP XP integration suite.",
+    venue: "Main Hall",
+    startsAt: FUTURE_START,
+    endsAt: FUTURE_END,
+    campusId: graph.campusId,
+    visibility: "MEMBERS",
+    audienceMode: "entire_tenant",
+    rsvpEnabled: true,
+    lifecycle: "published",
+  }).returning({ id: events.id });
+  const eventId = rows[0]?.id;
+  if (eventId === undefined) throw new Error("RSVP XP Event fixture insert returned no row.");
+  return eventId;
+}
+
 function repository(targetDatabase: CampusHubDatabase = getDatabase()): DrizzleEventRsvpRepository {
   return new DrizzleEventRsvpRepository(targetDatabase, {
     runtimeDatabaseAuthorityVerifier: async () => true,
@@ -156,6 +180,121 @@ async function change(
     graph.membershipId,
     graph.identitySubjectId,
     command(graph, requestedState, expectedParticipationVersion, idempotencyKey),
+  );
+}
+
+async function appendXpAward(
+  graph: Graph,
+  eventId: string,
+  occurredAt: Date,
+  requestIdempotencyKey: string,
+): Promise<Awaited<ReturnType<typeof appendEventRsvpAwardInTransaction>>> {
+  return getDatabase().transaction((transaction) => appendEventRsvpAwardInTransaction(transaction, {
+    tenantId: graph.tenantId,
+    membershipId: graph.membershipId,
+    eventId,
+    tenantTimezone: "Africa/Kampala",
+    occurredAt,
+    requestIdempotencyKey,
+  }));
+}
+
+function postgresErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return typeof candidate.code === "string" ? candidate.code : postgresErrorCode(candidate.cause);
+}
+
+async function expectCommitFailure(
+  operation: (client: PoolClient) => Promise<void>,
+): Promise<string> {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    await operation(client);
+    await client.query("commit");
+    return "NO_ERROR";
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    return postgresErrorCode(error) ?? "UNKNOWN";
+  } finally {
+    client.release();
+  }
+}
+
+type GenericPair = Readonly<{
+  tenantId: string;
+  membershipId: string;
+  claimId: string;
+  ledgerId: string;
+  sourceReferenceId: string;
+}>;
+
+function genericPair(graph: Graph): GenericPair {
+  return {
+    tenantId: graph.tenantId,
+    membershipId: graph.membershipId,
+    claimId: randomUUID(),
+    ledgerId: randomUUID(),
+    sourceReferenceId: randomUUID(),
+  };
+}
+
+async function insertGenericClaim(client: PoolClient, pair: GenericPair, canonicalLedgerId = pair.ledgerId): Promise<void> {
+  await client.query(
+    `insert into public."xp_source_claims"
+      (id, tenant_id, membership_id, rule_id, rule_version, source_kind,
+       source_reference_id, source_occurrence, expected_entry_type,
+       canonical_ledger_entry_id)
+     values ($1, $2, $3, 'profile.field', 1, 'profile_field_completion',
+             $4, 'a10-test-source', 'award', $5)`,
+    [pair.claimId, pair.tenantId, pair.membershipId, pair.sourceReferenceId, canonicalLedgerId],
+  );
+}
+
+async function insertGenericLedger(
+  client: PoolClient,
+  pair: GenericPair,
+  options: Readonly<{
+    ledgerId?: string;
+    tenantId?: string;
+    membershipId?: string;
+    entryType?: "award" | "capped_award" | "correction" | "reversal";
+    amount?: number;
+    sourceClaimId?: string | null;
+    sourceReferenceId?: string;
+    reasonCode?: string | null;
+    reasonText?: string | null;
+    sourceEntryId?: string | null;
+    actorMembershipId?: string | null;
+  }> = {},
+): Promise<void> {
+  const entryType = options.entryType ?? "award";
+  const amount = options.amount ?? 5;
+  const sourceClaimId = options.sourceClaimId === undefined ? pair.claimId : options.sourceClaimId;
+  await client.query(
+    `insert into public."xp_ledger_entries"
+      (id, tenant_id, membership_id, entry_type, amount, rule_id, rule_version,
+       source_kind, source_reference_id, source_occurrence, source_claim_id,
+       reason_code, reason_text, source_entry_id, actor_membership_id,
+       tenant_day, occurred_at)
+     values ($1, $2, $3, $4::public.xp_ledger_entry_type, $5, 'profile.field', 1,
+             'profile_field_completion'::public.xp_source_kind, $6,
+             'a10-test-source', $7, $8, $9, $10, $11, current_date,
+             clock_timestamp())`,
+    [
+      options.ledgerId ?? pair.ledgerId,
+      options.tenantId ?? pair.tenantId,
+      options.membershipId ?? pair.membershipId,
+      entryType,
+      amount,
+      options.sourceReferenceId ?? pair.sourceReferenceId,
+      sourceClaimId,
+      options.reasonCode ?? null,
+      options.reasonText ?? null,
+      options.sourceEntryId ?? null,
+      options.actorMembershipId ?? null,
+    ],
   );
 }
 
@@ -355,6 +494,9 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
     );
     await adminPool.query(
       `grant select, insert, update on "event_rsvps", "event_rsvp_idempotency" to ${quotedRole}`,
+    );
+    await adminPool.query(
+      `grant select, insert, references on "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" to ${quotedRole}`,
     );
     const connectionUrl = new URL(configuredDatabaseUrl);
     connectionUrl.username = roleName;
@@ -1167,5 +1309,418 @@ describe("real PostgreSQL Event RSVP Core", () => {
     } finally {
       await destroyRestrictedRuntime(runtime);
     }
+  });
+
+  it("XP-PG-01/03 records one reciprocal Event RSVP award and never re-awards later RSVP transitions", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "xp-initial")).resolves.toMatchObject({ ok: true });
+    await expect(change(graph, "going", 0, "xp-initial")).resolves.toMatchObject({ ok: true });
+    await expect(change(graph, "interested", 1, "xp-transition")).resolves.toMatchObject({ ok: true });
+    await expect(change(graph, "withdrawn", 2, "xp-withdraw")).resolves.toMatchObject({ ok: true });
+    await expect(change(graph, "interested", 3, "xp-reactivate-interested")).resolves.toMatchObject({ ok: true });
+
+    const ledgerRows = await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    ));
+    expect(ledgerRows).toHaveLength(1);
+    expect(ledgerRows[0]).toMatchObject({
+      entryType: "award",
+      amount: 5,
+      ruleId: "event.rsvp",
+      ruleVersion: 1,
+      sourceKind: "event_rsvp",
+      sourceReferenceId: graph.eventId,
+      sourceOccurrence: "initial_eligible_rsvp",
+    });
+
+    const claimRows = await getDatabase().select().from(xpSourceClaims).where(and(
+      eq(xpSourceClaims.tenantId, graph.tenantId),
+      eq(xpSourceClaims.membershipId, graph.membershipId),
+    ));
+    const typedRows = await getDatabase().select().from(xpEventRsvpSourceClaims).where(eq(
+      xpEventRsvpSourceClaims.tenantId,
+      graph.tenantId,
+    ));
+    expect(claimRows).toHaveLength(1);
+    expect(typedRows).toHaveLength(1);
+    expect(typedRows[0]).toMatchObject({ eventId: graph.eventId, sourceClaimId: claimRows[0]?.id });
+    expect(claimRows[0]?.canonicalLedgerEntryId).toBe(ledgerRows[0]?.id);
+    expect(claimRows[0]?.expectedEntryType).toBe(ledgerRows[0]?.entryType);
+    const expectedDay = await getPool().query<{ tenant_day: string }>(
+      "select ($1::timestamptz at time zone $2)::date::text as tenant_day",
+      [ledgerRows[0]?.occurredAt, "Africa/Kampala"],
+    );
+    expect(ledgerRows[0]?.tenantDay).toBe(expectedDay.rows[0]?.tenant_day);
+  });
+
+  it("XP-PG-04 applies the Tenant-local whole-award cap across distinct Event RSVPs", async () => {
+    const graph = await createGraph();
+    for (let index = 0; index < 11; index += 1) {
+      const eventId = index === 0 ? graph.eventId : await createEventForGraph(graph, String(index));
+      await expect(change(
+        { ...graph, eventId },
+        "going",
+        0,
+        `xp-cap-${index}`,
+      )).resolves.toMatchObject({ ok: true });
+    }
+
+    const ledgerRows = await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    ));
+    expect(ledgerRows).toHaveLength(11);
+    expect(ledgerRows.filter((row) => row.entryType === "award" && row.amount === 5)).toHaveLength(10);
+    expect(ledgerRows.filter((row) => row.entryType === "capped_award" && row.amount === 0)).toHaveLength(1);
+    expect(new Set(ledgerRows.map((row) => row.tenantDay)).size).toBe(1);
+  });
+
+  it("CAP-PG-01 serializes concurrent first RSVPs for one Tenant/Membership/day when both awards fit", async () => {
+    const graph = await createGraph();
+    const secondEventId = await createEventForGraph(graph, "concurrent");
+    const firstLockAcquired = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondEntered = deferred<void>();
+    let firstPid = 0;
+    let secondPid = 0;
+    const firstRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { firstPid = pid; },
+      afterXpAwardLockAcquired: async () => {
+        firstLockAcquired.resolve();
+        await releaseFirst.promise;
+      },
+    });
+    const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { secondPid = pid; secondEntered.resolve(); },
+    });
+
+    try {
+      const first = change(graph, "going", 0, "xp-race-first", getDatabase(), firstRepository);
+      await firstLockAcquired.promise;
+
+      const second = change(
+        { ...graph, eventId: secondEventId },
+        "going",
+        0,
+        "xp-race-second",
+        getDatabase(),
+        secondRepository,
+      );
+      await secondEntered.promise;
+      expect(secondPid).toBeGreaterThan(0);
+      await waitForBlocked(firstPid, "pg_advisory_xact_lock");
+
+      releaseFirst.resolve();
+      await expect(first).resolves.toMatchObject({ ok: true, value: { state: "going" } });
+      await expect(second).resolves.toMatchObject({ ok: true, value: { state: "going" } });
+    } finally {
+      releaseFirst.resolve();
+    }
+
+    const ledgerRows = await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    ));
+    expect(ledgerRows).toHaveLength(2);
+    expect(ledgerRows.filter((row) => row.entryType === "award" && row.amount === 5)).toHaveLength(2);
+    expect(ledgerRows.filter((row) => row.entryType === "capped_award" && row.amount === 0)).toHaveLength(0);
+  });
+
+  it("XP-PG-08 rejects an incomplete reciprocal pair and denies runtime mutation of immutable facts", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "xp-immutable-seed")).resolves.toMatchObject({ ok: true });
+    const existing = (await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    )))[0];
+    if (existing === undefined) throw new Error("XP immutable fixture was unavailable.");
+
+    const runtime = await createRestrictedRuntime();
+    try {
+      await expect(runtime.pool.query(
+        'update "xp_ledger_entries" set amount = 4 where tenant_id = $1 and id = $2',
+        [graph.tenantId, existing.id],
+      )).rejects.toThrow();
+      await expect(runtime.pool.query(
+        'delete from "xp_source_claims" where tenant_id = $1',
+        [graph.tenantId],
+      )).rejects.toThrow();
+    } finally {
+      await destroyRestrictedRuntime(runtime);
+    }
+
+    const client = await getPool().connect();
+    const claimId = randomUUID();
+    const ledgerId = randomUUID();
+    const incompletePairGraph = await createGraph();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into public."xp_source_claims"
+          (id, tenant_id, membership_id, rule_id, rule_version, source_kind,
+           source_reference_id, source_occurrence, expected_entry_type,
+           canonical_ledger_entry_id)
+         values ($1, $2, $3, 'event.rsvp', 1, 'event_rsvp', $4,
+                 'initial_eligible_rsvp', 'award', $5)`,
+        [claimId, incompletePairGraph.tenantId, incompletePairGraph.membershipId, incompletePairGraph.eventId, ledgerId],
+      );
+      await expect(client.query("commit")).rejects.toThrow();
+    } finally {
+      await client.query("rollback").catch(() => undefined);
+      client.release();
+    }
+  });
+
+  it("XP-PG-02 keeps conceptual source uniqueness stronger than request idempotency", async () => {
+    const graph = await createGraph();
+    const first = await appendXpAward(graph, graph.eventId, new Date(), "xp-source-key-a");
+    const second = await appendXpAward(graph, graph.eventId, new Date(), "xp-source-key-b");
+    expect(second).toEqual(first);
+    await expect(getDatabase().select().from(xpSourceClaims).where(and(
+      eq(xpSourceClaims.tenantId, graph.tenantId),
+      eq(xpSourceClaims.membershipId, graph.membershipId),
+    ))).resolves.toHaveLength(1);
+    await expect(getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    ))).resolves.toHaveLength(1);
+  });
+
+  it("XP-PG-05 prevents cross-Tenant reads, writes, and false source conflicts", async () => {
+    const first = await createGraph();
+    const second = await createGraph();
+    await expect(change(first, "going", 0, "xp-tenant-a")).resolves.toMatchObject({ ok: true });
+    await expect(change({ ...second, eventId: first.eventId }, "going", 0, "xp-tenant-b-foreign-event")).resolves.toEqual({
+      ok: false,
+      error: "NOT_FOUND",
+    });
+    await expect(getDatabase().select().from(xpSourceClaims).where(eq(
+      xpSourceClaims.tenantId,
+      second.tenantId,
+    ))).resolves.toHaveLength(0);
+    await expect(getDatabase().select().from(xpLedgerEntries).where(eq(
+      xpLedgerEntries.tenantId,
+      second.tenantId,
+    ))).resolves.toHaveLength(0);
+  });
+
+  it("XP-PG-06 rolls back a forced XP failure without a partial RSVP, claim, ledger, or idempotency row", async () => {
+    const graph = await createGraph();
+    const repositoryWithFailure = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      afterXpAwardLockAcquired: async () => {
+        throw new Error("deterministic XP failure");
+      },
+    });
+    await expect(change(graph, "going", 0, "xp-forced-failure", getDatabase(), repositoryWithFailure)).resolves.toEqual({
+      ok: false,
+      error: "PERSISTENCE_FAILED",
+    });
+    await expect(getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId))).resolves.toHaveLength(0);
+    await expect(getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, graph.tenantId))).resolves.toHaveLength(0);
+    await expect(getDatabase().select().from(xpSourceClaims).where(eq(xpSourceClaims.tenantId, graph.tenantId))).resolves.toHaveLength(0);
+    await expect(getDatabase().select().from(xpLedgerEntries).where(eq(xpLedgerEntries.tenantId, graph.tenantId))).resolves.toHaveLength(0);
+  });
+
+  it("XP-PG-07 commits the RSVP, source claim, ledger fact, and request completion atomically", async () => {
+    const graph = await createGraph();
+    await expect(change(graph, "going", 0, "xp-atomic-success")).resolves.toMatchObject({ ok: true });
+    const rsvpRows = await getDatabase().select().from(eventRsvps).where(eq(eventRsvps.tenantId, graph.tenantId));
+    const idempotencyRows = await getDatabase().select().from(eventRsvpIdempotency).where(eq(eventRsvpIdempotency.tenantId, graph.tenantId));
+    const claimRows = await getDatabase().select().from(xpSourceClaims).where(eq(xpSourceClaims.tenantId, graph.tenantId));
+    const ledgerRows = await getDatabase().select().from(xpLedgerEntries).where(eq(xpLedgerEntries.tenantId, graph.tenantId));
+    expect(rsvpRows).toHaveLength(1);
+    expect(idempotencyRows[0]?.completedOutcome).toBe("CHANGED");
+    expect(claimRows).toHaveLength(1);
+    expect(ledgerRows).toHaveLength(1);
+    expect(claimRows[0]?.canonicalLedgerEntryId).toBe(ledgerRows[0]?.id);
+  });
+
+  it("XP-PG-09 rejects a source claim without its canonical ordinary ledger row at commit", async () => {
+    const pair = genericPair(await createGraph());
+    const code = await expectCommitFailure((client) => insertGenericClaim(client, pair));
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-10 rejects an ordinary ledger row without its source claim at commit", async () => {
+    const pair = genericPair(await createGraph());
+    const code = await expectCommitFailure((client) => insertGenericLedger(client, pair));
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-11 rejects reciprocal claim and ledger identifiers that disagree", async () => {
+    const pair = genericPair(await createGraph());
+    const wrongLedgerId = randomUUID();
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair, { ledgerId: wrongLedgerId });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-12 rejects two ordinary ledger facts for one source claim", async () => {
+    const pair = genericPair(await createGraph());
+    const duplicateLedgerId = randomUUID();
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair);
+      await insertGenericLedger(client, pair, { ledgerId: duplicateLedgerId });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-13 rejects claim and ledger Tenant identities that disagree", async () => {
+    const first = await createGraph();
+    const second = await createGraph();
+    const pair = genericPair(first);
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair, {
+        tenantId: second.tenantId,
+        membershipId: second.membershipId,
+      });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-14 rejects claim and ledger Membership identities that disagree", async () => {
+    const first = await createGraph();
+    const second = await createGraph();
+    const pair = genericPair(first);
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair, { membershipId: second.membershipId });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-15 rejects a claim outcome that disagrees with ledger entry type", async () => {
+    const pair = genericPair(await createGraph());
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair, { entryType: "capped_award", amount: 0 });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-16 rejects a claim whose canonical entry is a correction or reversal", async () => {
+    const graph = await createGraph();
+    const pair = genericPair(graph);
+    const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair);
+      await insertGenericLedger(client, pair, {
+        entryType: "correction",
+        amount: -1,
+        sourceClaimId: null,
+        reasonCode: "A10_TEST",
+        reasonText: "Structural correction fixture",
+        sourceEntryId: randomUUID(),
+        actorMembershipId: graph.membershipId,
+      });
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("CAP-PG-02 serializes a concurrent daily-cap overshoot so 45 plus two five-point awards ends at 50", async () => {
+    const graph = await createGraph();
+    for (let index = 0; index < 9; index += 1) {
+      const seedEventId = await createEventForGraph(graph, `cap-boundary-seed-${index}`);
+      await expect(change({ ...graph, eventId: seedEventId }, "going", 0, `cap-boundary-seed-${index}`)).resolves.toMatchObject({ ok: true });
+    }
+    const firstEventId = await createEventForGraph(graph, "cap-boundary-first");
+    const secondEventId = await createEventForGraph(graph, "cap-boundary-second");
+    const firstLockAcquired = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    let firstPid = 0;
+    let secondPid = 0;
+    const firstRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { firstPid = pid; firstStarted.resolve(); },
+      afterXpAwardLockAcquired: async () => {
+        firstLockAcquired.resolve();
+        await releaseFirst.promise;
+      },
+    });
+    const secondRepository = new DrizzleEventRsvpRepository(getDatabase(), {
+      runtimeDatabaseAuthorityVerifier: async () => true,
+      onTransactionStarted: async (pid) => { secondPid = pid; secondStarted.resolve(); },
+    });
+    let first: ReturnType<typeof change> | undefined;
+    let second: ReturnType<typeof change> | undefined;
+    try {
+      first = change({ ...graph, eventId: firstEventId }, "going", 0, "cap-boundary-first", getDatabase(), firstRepository);
+      await firstStarted.promise;
+      await firstLockAcquired.promise;
+      second = change({ ...graph, eventId: secondEventId }, "going", 0, "cap-boundary-second", getDatabase(), secondRepository);
+      await secondStarted.promise;
+      await waitForBlocked(firstPid, "pg_advisory_xact_lock");
+      expect(secondPid).toBeGreaterThan(0);
+      releaseFirst.resolve();
+      await expect(first).resolves.toMatchObject({ ok: true });
+      await expect(second).resolves.toMatchObject({ ok: true });
+    } finally {
+      releaseFirst.resolve();
+      await Promise.allSettled([first, second].filter((value): value is ReturnType<typeof change> => value !== undefined));
+    }
+    const rows = await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+    ));
+    expect(rows).toHaveLength(11);
+    expect(rows.filter((row) => row.entryType === "award" && row.amount === 5)).toHaveLength(10);
+    expect(rows.filter((row) => row.entryType === "capped_award" && row.amount === 0)).toHaveLength(1);
+  });
+
+  it("CAP-PG-03 permanently consumes a capped source across a later Tenant-local day", async () => {
+    const graph = await createGraph();
+    for (let index = 0; index < 10; index += 1) {
+      const seedEventId = await createEventForGraph(graph, `cap-retry-seed-${index}`);
+      await expect(change({ ...graph, eventId: seedEventId }, "going", 0, `cap-retry-seed-${index}`)).resolves.toMatchObject({ ok: true });
+    }
+    const cappedEventId = await createEventForGraph(graph, "cap-retry-capped");
+    await expect(change({ ...graph, eventId: cappedEventId }, "going", 0, "cap-retry-original")).resolves.toMatchObject({ ok: true });
+    const replay = await appendXpAward(graph, cappedEventId, new Date(Date.now() + 86_400_000), "cap-retry-next-day");
+    expect(replay).toMatchObject({ entryType: "capped_award", amount: 0 });
+    await expect(getDatabase().select().from(xpSourceClaims).where(and(
+      eq(xpSourceClaims.tenantId, graph.tenantId),
+      eq(xpSourceClaims.membershipId, graph.membershipId),
+    ))).resolves.toHaveLength(11);
+  });
+
+  it("CAP-PG-04 derives the governed day from the Tenant timezone rather than UTC", async () => {
+    const graph = await createGraph();
+    const occurredAt = new Date("2026-09-19T23:30:00.000Z");
+    await appendXpAward(graph, graph.eventId, occurredAt, "cap-timezone-boundary");
+    const rows = await getDatabase().select({ tenantDay: xpLedgerEntries.tenantDay }).from(xpLedgerEntries).where(eq(
+      xpLedgerEntries.tenantId,
+      graph.tenantId,
+    ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.tenantDay).toBe("2026-09-20");
+    expect(occurredAt.toISOString().slice(0, 10)).toBe("2026-09-19");
+  });
+
+  it("CAP-PG-05 scopes advisory-lock key material to Tenant, Membership, and local day", async () => {
+    const graph = await createGraph();
+    const otherMembershipId = randomUUID();
+    const day = "2026-09-20";
+    const result = await getPool().query<{ first_key: string; second_key: string; third_key: string }>(
+      `select
+         hashtextextended($1, 0)::text as first_key,
+         hashtextextended($2, 0)::text as second_key,
+         hashtextextended($3, 0)::text as third_key`,
+      [
+        `${graph.tenantId}:${graph.membershipId}:${day}`,
+        `${graph.tenantId}:${otherMembershipId}:${day}`,
+        `${randomUUID()}:${graph.membershipId}:${day}`,
+      ],
+    );
+    expect(result.rows[0]?.first_key).not.toBe(result.rows[0]?.second_key);
+    expect(result.rows[0]?.first_key).not.toBe(result.rows[0]?.third_key);
   });
 });

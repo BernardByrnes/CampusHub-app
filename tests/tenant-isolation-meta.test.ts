@@ -55,6 +55,9 @@ function implementationPathForDatabaseObject(
     tenant_module_states: "src/server/db/schema/tenant.ts",
     event_rsvps: "src/server/db/schema/events.ts",
     event_rsvp_idempotency: "src/server/db/schema/events.ts",
+    xp_ledger_entries: "src/server/db/schema/xp.ts",
+    xp_source_claims: "src/server/db/schema/xp.ts",
+    xp_event_rsvp_source_claims: "src/server/db/schema/xp.ts",
     organisers: "src/server/db/schema/organisers.ts",
   };
 

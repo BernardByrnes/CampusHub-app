@@ -20,6 +20,7 @@ import { parsePublicationAudienceProvenancePolicy } from "@/domain/authorization
 import { isMembershipAudienceFacts, parseMembershipResidenceState, parseProfileFieldProvenance, type MembershipAudienceFacts } from "@/domain/membership/membership-audience";
 import type { Event } from "@/domain/events/events";
 import { isUuid } from "@/domain/identifiers/uuid";
+import { appendEventRsvpAwardInTransaction } from "@/server/repositories/xp-ledger-repository";
 import { db, type CampusHubDatabase } from "@/server/db/client";
 import {
   eventAudienceCriteria,
@@ -47,6 +48,7 @@ export type EventRsvpRepositoryOptions = Readonly<{
   ) => Promise<boolean>;
   onTransactionStarted?: (backendPid: number) => void | Promise<void>;
   beforeFinalClockCheck?: () => Promise<void>;
+  afterXpAwardLockAcquired?: () => Promise<void>;
 }>;
 
 const DEFAULT_EVENT_RSVP_REPOSITORY_OPTIONS: EventRsvpRepositoryOptions = {};
@@ -274,7 +276,7 @@ function runtimeRsvpAuthorityIsSafe(
         where authority_role.rolsuper
            or authority_role.rolcreaterole
            or authority_role.rolname = 'campushub_data_owner'
-           or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner)
+           or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner, xp_ledger_table.relowner, xp_claim_table.relowner, xp_event_source_table.relowner)
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'INSERT')
            or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'tenant_id', 'UPDATE')
            or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'module', 'UPDATE')
@@ -286,6 +288,15 @@ function runtimeRsvpAuthorityIsSafe(
            or has_table_privilege(authority_role.rolname, 'public.event_rsvps', 'TRUNCATE')
            or has_table_privilege(authority_role.rolname, 'public.event_rsvp_idempotency', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.event_rsvp_idempotency', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'UPDATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'DELETE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
       )
       and has_table_privilege(current_user, 'public.tenant_module_states', 'SELECT')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'INSERT')
@@ -305,11 +316,29 @@ function runtimeRsvpAuthorityIsSafe(
       and has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'UPDATE')
       and not has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'DELETE')
       and not has_table_privilege(current_user, 'public.event_rsvp_idempotency', 'TRUNCATE')
+      and has_table_privilege(current_user, 'public.xp_ledger_entries', 'SELECT')
+      and has_table_privilege(current_user, 'public.xp_ledger_entries', 'INSERT')
+      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'DELETE')
+      and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'TRUNCATE')
+      and has_table_privilege(current_user, 'public.xp_source_claims', 'SELECT')
+      and has_table_privilege(current_user, 'public.xp_source_claims', 'INSERT')
+      and not has_table_privilege(current_user, 'public.xp_source_claims', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.xp_source_claims', 'DELETE')
+      and not has_table_privilege(current_user, 'public.xp_source_claims', 'TRUNCATE')
+      and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'SELECT')
+      and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'INSERT')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'UPDATE')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'DELETE')
+      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
     ) as allowed
     from pg_roles as runtime_role
     cross join pg_class as module_table
     cross join pg_class as rsvp_table
     cross join pg_class as idempotency_table
+    cross join pg_class as xp_ledger_table
+    cross join pg_class as xp_claim_table
+    cross join pg_class as xp_event_source_table
     join pg_namespace as namespace on namespace.nspname = 'public'
     where runtime_role.rolname = current_user
       and module_table.relnamespace = namespace.oid
@@ -321,6 +350,15 @@ function runtimeRsvpAuthorityIsSafe(
       and idempotency_table.relnamespace = namespace.oid
       and idempotency_table.relname = 'event_rsvp_idempotency'
       and idempotency_table.relkind = 'r'
+      and xp_ledger_table.relnamespace = namespace.oid
+      and xp_ledger_table.relname = 'xp_ledger_entries'
+      and xp_ledger_table.relkind = 'r'
+      and xp_claim_table.relnamespace = namespace.oid
+      and xp_claim_table.relname = 'xp_source_claims'
+      and xp_claim_table.relkind = 'r'
+      and xp_event_source_table.relnamespace = namespace.oid
+      and xp_event_source_table.relname = 'xp_event_rsvp_source_claims'
+      and xp_event_source_table.relkind = 'r'
   `).then((result) => (result.rows[0] as { allowed?: unknown } | undefined)?.allowed === true).catch(() => false);
 }
 
@@ -555,6 +593,15 @@ export class DrizzleEventRsvpRepository {
           }).returning();
           const inserted = rows[0];
           if (inserted !== undefined) {
+            await appendEventRsvpAwardInTransaction(transaction, {
+              tenantId,
+              membershipId,
+              eventId: input.eventId,
+              tenantTimezone: context.tenant!.timezone,
+              occurredAt: finalClock,
+              requestIdempotencyKey: input.idempotencyKey,
+              afterAdvisoryLockAcquired: this.options.afterXpAwardLockAcquired,
+            });
             finalState = inserted.state;
             finalVersion = inserted.version;
             changed = true;

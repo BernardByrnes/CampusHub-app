@@ -63,6 +63,9 @@ import {
   tenantModuleStates,
   eventRsvps,
   eventRsvpIdempotency,
+  xpLedgerEntries,
+  xpSourceClaims,
+  xpEventRsvpSourceClaims,
   organisers,
   tenants,
   type MembershipRow,
@@ -1951,6 +1954,26 @@ function eventRsvpPersistenceProbe(): void {
   }
 }
 
+function xpPersistenceProbe(): void {
+  expectTenantOwnedTable(xpLedgerEntries);
+  expectTenantOwnedTable(xpSourceClaims);
+  expectTenantOwnedTable(xpEventRsvpSourceClaims);
+  expectTenantCompositeIdentity(xpLedgerEntries);
+  expectTenantCompositeIdentity(xpSourceClaims);
+  expectTenantCompositeIdentity(xpEventRsvpSourceClaims);
+  expectForeignKey(xpLedgerEntries, ["tenant_id", "membership_id"], ["tenant_id", "id"]);
+  expectForeignKey(xpLedgerEntries, ["tenant_id", "actor_membership_id"], ["tenant_id", "id"]);
+  expectForeignKey(xpSourceClaims, ["tenant_id", "membership_id"], ["tenant_id", "id"]);
+  expectForeignKey(xpEventRsvpSourceClaims, ["tenant_id", "source_claim_id"], ["tenant_id", "id"]);
+  expectForeignKey(xpEventRsvpSourceClaims, ["tenant_id", "event_id"], ["tenant_id", "id"]);
+  expect(getTableConfig(xpLedgerEntries).uniqueConstraints.map((constraint) => constraint.name)).toContain(
+    "xp_ledger_entries_reciprocal_unique",
+  );
+  expect(getTableConfig(xpSourceClaims).uniqueConstraints.map((constraint) => constraint.name)).toContain(
+    "xp_source_claims_conceptual_source_unique",
+  );
+}
+
 async function eventRsvpServiceProbe(): Promise<void> {
   let called = false;
   const service = new EventRsvpService({
@@ -2341,6 +2364,9 @@ export const tenantIsolationProbeRegistry: Readonly<
   "event-rsvp.direct": eventRsvpPersistenceProbe,
   "event-rsvp.service": eventRsvpServiceProbe,
   "event-rsvp.lifecycle": eventRsvpLifecycleProbe,
+  "xp-ledger.persistence": xpPersistenceProbe,
+  "xp-source-claims.persistence": xpPersistenceProbe,
+  "xp-event-rsvp-source.persistence": xpPersistenceProbe,
   "event-audience.persistence": eventAudiencePersistenceProbe,
   "events.direct": eventPersistenceProbe,
   "events.collection": eventPersistenceProbe,

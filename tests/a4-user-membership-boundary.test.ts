@@ -249,6 +249,9 @@ describe("A4 User/Membership boundary", () => {
       "tenant_academic_year_config",
       "tenant_module_states",
       "tenants",
+      "xp_event_rsvp_source_claims",
+      "xp_ledger_entries",
+      "xp_source_claims",
     ]);
 
     const globalIdentityTableConfigs = currentTableConfigs.filter((config) =>
@@ -299,6 +302,9 @@ describe("A4 User/Membership boundary", () => {
       "teams",
       "tenant_academic_year_config",
       "tenant_module_states",
+      "xp_event_rsvp_source_claims",
+      "xp_ledger_entries",
+      "xp_source_claims",
     ]);
     for (const identifier of [
       "tenant.id",
@@ -372,6 +378,21 @@ describe("A4 User/Membership boundary", () => {
       "eventRsvpIdempotency.eventId",
       "eventRsvpIdempotency.membershipId",
       "eventRsvpIdempotency.idempotencyKey",
+      "xpLedgerEntry.id",
+      "xpLedgerEntry.tenantId",
+      "xpLedgerEntry.membershipId",
+      "xpLedgerEntry.sourceClaimId",
+      "xpLedgerEntry.sourceReferenceId",
+      "xpLedgerEntry.actorMembershipId",
+      "xpSourceClaim.id",
+      "xpSourceClaim.tenantId",
+      "xpSourceClaim.membershipId",
+      "xpSourceClaim.canonicalLedgerEntryId",
+      "xpSourceClaim.sourceReferenceId",
+      "xpEventRsvpSourceClaim.id",
+      "xpEventRsvpSourceClaim.tenantId",
+      "xpEventRsvpSourceClaim.sourceClaimId",
+      "xpEventRsvpSourceClaim.eventId",
       "RequestContext.tenantId",
       "RequestContext.membershipId",
       "Publication collection cursor.id",
@@ -422,6 +443,14 @@ describe("A4 User/Membership boundary", () => {
       "event_rsvp_idempotency.tenant_id -> tenants.id",
       "event_rsvp_idempotency.(tenant_id,event_id) -> events.(tenant_id,id)",
       "event_rsvp_idempotency.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
+      "xp_ledger_entries.tenant_id -> tenants.id",
+      "xp_ledger_entries.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
+      "xp_ledger_entries.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)",
+      "xp_source_claims.tenant_id -> tenants.id",
+      "xp_source_claims.(tenant_id,membership_id) -> memberships.(tenant_id,id)",
+      "xp_event_rsvp_source_claims.tenant_id -> tenants.id",
+      "xp_event_rsvp_source_claims.(tenant_id,source_claim_id) -> xp_source_claims.(tenant_id,id)",
+      "xp_event_rsvp_source_claims.(tenant_id,event_id) -> events.(tenant_id,id)",
     ]) {
       expect(inventory).toContain(`| \`${identifier}\``);
     }

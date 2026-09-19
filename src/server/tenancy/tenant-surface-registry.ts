@@ -122,7 +122,7 @@ export const APPROVED_GLOBAL_NON_TENANT_CONTRACTS = {
   },
   "global.migrations": {
     category: "migration",
-    implementationPath: "drizzle/0020_warm_jackpot.sql",
+    implementationPath: "drizzle/0021_tense_moonstone.sql",
   },
   "fixtures.services.factory": {
     category: "infrastructure",
@@ -451,6 +451,31 @@ export const REVIEWED_NON_CALLABLE_EXPORT_CONTRACTS = [
     expectedAstForm: "CallExpression",
   },
   {
+    implementationPath: "src/server/db/schema/xp.ts",
+    exportName: "xpLedgerEntryTypeEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/xp.ts",
+    exportName: "xpSourceKindEnum",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/xp.ts",
+    exportName: "xpLedgerEntries",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/xp.ts",
+    exportName: "xpSourceClaims",
+    expectedAstForm: "CallExpression",
+  },
+  {
+    implementationPath: "src/server/db/schema/xp.ts",
+    exportName: "xpEventRsvpSourceClaims",
+    expectedAstForm: "CallExpression",
+  },
+  {
     implementationPath: "src/server/db/schema/organisers.ts",
     exportName: "organisers",
     expectedAstForm: "CallExpression",
@@ -537,6 +562,11 @@ export const REVIEWED_NON_CALLABLE_REEXPORT_CONTRACTS = [
   {
     implementationPath: "src/server/db/schema/index.ts",
     moduleSpecifier: "./organisers",
+    exportForm: "ExportAllDeclaration",
+  },
+  {
+    implementationPath: "src/server/db/schema/index.ts",
+    moduleSpecifier: "./xp",
     exportForm: "ExportAllDeclaration",
   },
 ] as const;
@@ -1390,6 +1420,42 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["audit.persistence"],
     databaseObjectName: "audit_events",
     operation: "table:audit_events",
+  },
+  {
+    id: "xp-ledger.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/xp.ts",
+    surface: "xp_ledger_entries",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "XP ledger facts are immutable Tenant/Membership-owned deltas with closed entry/source vocabularies and no Global User behavioural ownership.",
+    requiredNegativeTestIds: ["xp-ledger.persistence"],
+    databaseObjectName: "xp_ledger_entries",
+    operation: "table:xp_ledger_entries",
+  },
+  {
+    id: "xp-source-claims.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/xp.ts",
+    surface: "xp_source_claims",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Conceptual XP source claims are Tenant/Membership-bound, uniquely consume one approved source action, and reciprocally pair with one immutable ordinary ledger fact.",
+    requiredNegativeTestIds: ["xp-source-claims.persistence"],
+    databaseObjectName: "xp_source_claims",
+    operation: "table:xp_source_claims",
+  },
+  {
+    id: "xp-event-rsvp-source.persistence",
+    category: "model",
+    implementationPath: "src/server/db/schema/xp.ts",
+    surface: "xp_event_rsvp_source_claims",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "The first XP producer uses a typed same-Tenant Event relation rather than an ungoverned polymorphic source reference.",
+    requiredNegativeTestIds: ["xp-event-rsvp-source.persistence"],
+    databaseObjectName: "xp_event_rsvp_source_claims",
+    operation: "table:xp_event_rsvp_source_claims",
   },
   {
     id: "publication.persistence",
@@ -2782,8 +2848,8 @@ export const tenantSurfaceRegistry = [
   {
     id: "global.migrations",
     category: "migration",
-    implementationPath: "drizzle/0020_warm_jackpot.sql",
-    surface: "Reviewed Drizzle migration history through 0020",
+    implementationPath: "drizzle/0021_tense_moonstone.sql",
+    surface: "Reviewed Drizzle migration history through 0021",
     tenantScope: "GLOBAL_NON_TENANT",
     isolationStrategy: "Migration files change schema ownership constraints and do not serve runtime resource data.",
     requiredNegativeTestIds: [],
@@ -2810,8 +2876,9 @@ export const tenantSurfaceRegistry = [
       "drizzle/0018_parched_maximus.sql",
       "drizzle/0019_high_harry_osborn.sql",
       "drizzle/0020_warm_jackpot.sql",
+      "drizzle/0021_tense_moonstone.sql",
     ],
-    migrationHead: "drizzle/0020_warm_jackpot.sql",
+    migrationHead: "drizzle/0021_tense_moonstone.sql",
   },
   {
     id: "organisers.persistence",
@@ -3006,6 +3073,17 @@ export const tenantSurfaceRegistry = [
     requiredNegativeTestIds: ["event-rsvp.direct", "event-rsvp.lifecycle"],
     operation: `DrizzleEventRsvpRepository.${operation}`,
   })),
+  {
+    id: "xp.ledger-repository",
+    category: "repository",
+    implementationPath: "src/server/repositories/xp-ledger-repository.ts",
+    surface: "appendEventRsvpAwardInTransaction",
+    tenantScope: "TENANT_SCOPED",
+    isolationStrategy:
+      "Event RSVP XP source claim, cap serialization, and immutable ledger append remain inside the caller's explicit Tenant transaction.",
+    requiredNegativeTestIds: ["xp-ledger.persistence", "xp-source-claims.persistence"],
+    operation: "appendEventRsvpAwardInTransaction",
+  },
   {
     id: "events.audit-append",
     category: "repository",
