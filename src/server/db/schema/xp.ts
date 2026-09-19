@@ -54,12 +54,18 @@ export const xpLedgerEntries = pgTable(
     reasonText: text("reason_text"),
     sourceEntryId: uuid("source_entry_id"),
     actorMembershipId: uuid("actor_membership_id"),
+    adjustmentIntentId: uuid("adjustment_intent_id"),
     tenantDay: date("tenant_day", { mode: "string" }).notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "date" }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
   (table) => [
     unique("xp_ledger_entries_tenant_id_id_unique").on(table.tenantId, table.id),
+    unique("xp_ledger_entries_tenant_membership_id_unique").on(
+      table.tenantId,
+      table.membershipId,
+      table.id,
+    ),
     unique("xp_ledger_entries_reciprocal_unique").on(
       table.tenantId,
       table.sourceClaimId,
@@ -67,9 +73,14 @@ export const xpLedgerEntries = pgTable(
       table.id,
       table.entryType,
       table.ruleId,
+      table.ruleVersion,
       table.sourceKind,
       table.sourceReferenceId,
       table.sourceOccurrence,
+    ),
+    unique("xp_ledger_entries_tenant_adjustment_intent_unique").on(
+      table.tenantId,
+      table.adjustmentIntentId,
     ),
     index("xp_ledger_entries_tenant_membership_day").on(
       table.tenantId,
@@ -97,12 +108,25 @@ export const xpLedgerEntries = pgTable(
       columns: [table.tenantId, table.actorMembershipId],
       foreignColumns: [memberships.tenantId, memberships.id],
     }).onDelete("restrict").onUpdate("cascade"),
+    foreignKey({
+      name: "xp_ledger_entries_source_same_tenant_membership_fk",
+      columns: [table.tenantId, table.membershipId, table.sourceEntryId],
+      foreignColumns: [table.tenantId, table.membershipId, table.id],
+    }).onDelete("restrict").onUpdate("cascade"),
     check(
       "xp_ledger_entries_amount_shape",
       sql`(
         (${table.entryType} = 'award' AND ${table.amount} > 0 AND ${table.sourceClaimId} IS NOT NULL AND ${table.reasonCode} IS NULL AND ${table.reasonText} IS NULL AND ${table.sourceEntryId} IS NULL AND ${table.actorMembershipId} IS NULL)
         OR (${table.entryType} = 'capped_award' AND ${table.amount} = 0 AND ${table.sourceClaimId} IS NOT NULL AND ${table.reasonCode} IS NULL AND ${table.reasonText} IS NULL AND ${table.sourceEntryId} IS NULL AND ${table.actorMembershipId} IS NULL)
-        OR (${table.entryType} IN ('correction', 'reversal') AND ${table.amount} <> 0 AND ${table.sourceClaimId} IS NULL AND ${table.reasonCode} IS NOT NULL AND char_length(btrim(${table.reasonCode})) > 0 AND ${table.reasonText} IS NOT NULL AND char_length(btrim(${table.reasonText})) > 0 AND ${table.sourceEntryId} IS NOT NULL AND ${table.actorMembershipId} IS NOT NULL)
+        OR (${table.entryType} = 'correction' AND ${table.amount} > 0 AND ${table.sourceClaimId} IS NULL AND ${table.reasonCode} IS NOT NULL AND char_length(btrim(${table.reasonCode})) > 0 AND ${table.reasonText} IS NOT NULL AND char_length(btrim(${table.reasonText})) > 0 AND ${table.sourceEntryId} IS NOT NULL AND ${table.actorMembershipId} IS NOT NULL)
+        OR (${table.entryType} = 'reversal' AND ${table.amount} < 0 AND ${table.sourceClaimId} IS NULL AND ${table.reasonCode} IS NOT NULL AND char_length(btrim(${table.reasonCode})) > 0 AND ${table.reasonText} IS NOT NULL AND char_length(btrim(${table.reasonText})) > 0 AND ${table.sourceEntryId} IS NOT NULL AND ${table.actorMembershipId} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "xp_ledger_entries_adjustment_intent_shape",
+      sql`(
+        (${table.entryType} IN ('award', 'capped_award') AND ${table.adjustmentIntentId} IS NULL)
+        OR (${table.entryType} IN ('correction', 'reversal') AND ${table.adjustmentIntentId} IS NOT NULL)
       )`,
     ),
     check(
@@ -157,6 +181,7 @@ export const xpSourceClaims = pgTable(
       table.canonicalLedgerEntryId,
       table.expectedEntryType,
       table.ruleId,
+      table.ruleVersion,
       table.sourceKind,
       table.sourceReferenceId,
       table.sourceOccurrence,

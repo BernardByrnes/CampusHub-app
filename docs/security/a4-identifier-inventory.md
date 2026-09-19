@@ -169,11 +169,13 @@ key, even if a future account model contains it.
 | `xp_ledger_entries.tenant_id -> tenants.id` | XP ledger ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `xp_ledger_entries.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP ledger Membership FK | Ledger ownership cannot cross a Tenant boundary. | `CURRENT` |
 | `xp_ledger_entries.(tenant_id,actor_membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP actor FK | Only future Membership-backed correction/reversal actors may be attributed; ordinary awards leave it null. | `CURRENT` |
+| `xp_ledger_entries.(tenant_id,membership_id,source_entry_id) -> xp_ledger_entries.(tenant_id,membership_id,id)` | Same-Tenant XP corrective-source FK | Corrective facts must reference an existing ordinary source fact for the same Tenant and Membership. | `CURRENT` |
 | `xp_source_claims.tenant_id -> tenants.id` | XP source-claim ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `xp_source_claims.(tenant_id,membership_id) -> memberships.(tenant_id,id)` | Same-Tenant XP source Membership FK | Conceptual uniqueness is always Tenant/Membership-local. | `CURRENT` |
 | `xp_event_rsvp_source_claims.tenant_id -> tenants.id` | Typed Event source ownership FK | `ON DELETE RESTRICT`, `ON UPDATE CASCADE`. | `CURRENT` |
 | `xp_event_rsvp_source_claims.(tenant_id,source_claim_id) -> xp_source_claims.(tenant_id,id)` | Same-Tenant typed source claim FK | Event RSVP source relations cannot bind a claim from another Tenant. | `CURRENT` |
 | `xp_event_rsvp_source_claims.(tenant_id,event_id) -> events.(tenant_id,id)` | Same-Tenant Event source FK | An Event RSVP XP source cannot reference an Event in another Tenant. | `CURRENT` |
+| `xpLedgerEntry.adjustmentIntentId` | Tenant-local immutable correction/reversal intent identity | Nullable for ordinary awards; required and unique within Tenant for corrective facts. | `CURRENT` |
 
 The current ID-bearing Tenant-owned models are `memberships`, `publications`,
 `publication_audience_criteria`, `campuses`, `academic_divisions`, `programmes`,

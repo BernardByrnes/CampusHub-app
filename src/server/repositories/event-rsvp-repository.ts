@@ -276,7 +276,7 @@ function runtimeRsvpAuthorityIsSafe(
         where authority_role.rolsuper
            or authority_role.rolcreaterole
            or authority_role.rolname = 'campushub_data_owner'
-           or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner, xp_ledger_table.relowner, xp_claim_table.relowner, xp_event_source_table.relowner)
+           or authority.oid in (module_table.relowner, rsvp_table.relowner, idempotency_table.relowner, xp_ledger_table.relowner, xp_claim_table.relowner, xp_event_source_table.relowner, tenant_table.relowner, membership_table.relowner, events_table.relowner)
            or has_table_privilege(authority_role.rolname, 'public.tenant_module_states', 'INSERT')
            or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'tenant_id', 'UPDATE')
            or has_column_privilege(authority_role.rolname, 'public.tenant_module_states', 'module', 'UPDATE')
@@ -297,6 +297,12 @@ function runtimeRsvpAuthorityIsSafe(
            or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'UPDATE')
            or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'DELETE')
            or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
+           or has_table_privilege(authority_role.rolname, 'public.xp_ledger_entries', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_source_claims', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.tenants', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.memberships', 'REFERENCES')
+           or has_table_privilege(authority_role.rolname, 'public.events', 'REFERENCES')
       )
       and has_table_privilege(current_user, 'public.tenant_module_states', 'SELECT')
       and not has_table_privilege(current_user, 'public.tenant_module_states', 'INSERT')
@@ -328,9 +334,15 @@ function runtimeRsvpAuthorityIsSafe(
       and not has_table_privilege(current_user, 'public.xp_source_claims', 'TRUNCATE')
       and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'SELECT')
       and has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'INSERT')
-      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'UPDATE')
-      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'DELETE')
-      and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
+       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'UPDATE')
+       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'DELETE')
+       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'TRUNCATE')
+       and not has_table_privilege(current_user, 'public.xp_ledger_entries', 'REFERENCES')
+       and not has_table_privilege(current_user, 'public.xp_source_claims', 'REFERENCES')
+       and not has_table_privilege(current_user, 'public.xp_event_rsvp_source_claims', 'REFERENCES')
+       and not has_table_privilege(current_user, 'public.tenants', 'REFERENCES')
+       and not has_table_privilege(current_user, 'public.memberships', 'REFERENCES')
+       and not has_table_privilege(current_user, 'public.events', 'REFERENCES')
     ) as allowed
     from pg_roles as runtime_role
     cross join pg_class as module_table
@@ -339,6 +351,9 @@ function runtimeRsvpAuthorityIsSafe(
     cross join pg_class as xp_ledger_table
     cross join pg_class as xp_claim_table
     cross join pg_class as xp_event_source_table
+    cross join pg_class as tenant_table
+    cross join pg_class as membership_table
+    cross join pg_class as events_table
     join pg_namespace as namespace on namespace.nspname = 'public'
     where runtime_role.rolname = current_user
       and module_table.relnamespace = namespace.oid
@@ -359,6 +374,15 @@ function runtimeRsvpAuthorityIsSafe(
       and xp_event_source_table.relnamespace = namespace.oid
       and xp_event_source_table.relname = 'xp_event_rsvp_source_claims'
       and xp_event_source_table.relkind = 'r'
+      and tenant_table.relnamespace = namespace.oid
+      and tenant_table.relname = 'tenants'
+      and tenant_table.relkind = 'r'
+      and membership_table.relnamespace = namespace.oid
+      and membership_table.relname = 'memberships'
+      and membership_table.relkind = 'r'
+      and events_table.relnamespace = namespace.oid
+      and events_table.relname = 'events'
+      and events_table.relkind = 'r'
   `).then((result) => (result.rows[0] as { allowed?: unknown } | undefined)?.allowed === true).catch(() => false);
 }
 

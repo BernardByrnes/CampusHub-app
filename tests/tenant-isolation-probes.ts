@@ -1963,11 +1963,15 @@ function xpPersistenceProbe(): void {
   expectTenantCompositeIdentity(xpEventRsvpSourceClaims);
   expectForeignKey(xpLedgerEntries, ["tenant_id", "membership_id"], ["tenant_id", "id"]);
   expectForeignKey(xpLedgerEntries, ["tenant_id", "actor_membership_id"], ["tenant_id", "id"]);
+  expectForeignKey(xpLedgerEntries, ["tenant_id", "membership_id", "source_entry_id"], ["tenant_id", "membership_id", "id"]);
   expectForeignKey(xpSourceClaims, ["tenant_id", "membership_id"], ["tenant_id", "id"]);
   expectForeignKey(xpEventRsvpSourceClaims, ["tenant_id", "source_claim_id"], ["tenant_id", "id"]);
   expectForeignKey(xpEventRsvpSourceClaims, ["tenant_id", "event_id"], ["tenant_id", "id"]);
   expect(getTableConfig(xpLedgerEntries).uniqueConstraints.map((constraint) => constraint.name)).toContain(
     "xp_ledger_entries_reciprocal_unique",
+  );
+  expect(getTableConfig(xpLedgerEntries).uniqueConstraints.map((constraint) => constraint.name)).toContain(
+    "xp_ledger_entries_tenant_adjustment_intent_unique",
   );
   expect(getTableConfig(xpSourceClaims).uniqueConstraints.map((constraint) => constraint.name)).toContain(
     "xp_source_claims_conceptual_source_unique",

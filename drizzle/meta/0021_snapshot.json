@@ -1825,6 +1825,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "adjustment_intent_id": {
+          "name": "adjustment_intent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "tenant_day": {
           "name": "tenant_day",
           "type": "date",
@@ -1950,6 +1956,23 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "cascade"
+        },
+        "xp_ledger_entries_source_same_tenant_membership_fk": {
+          "name": "xp_ledger_entries_source_same_tenant_membership_fk",
+          "tableFrom": "xp_ledger_entries",
+          "tableTo": "xp_ledger_entries",
+          "columnsFrom": [
+            "tenant_id",
+            "membership_id",
+            "source_entry_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "membership_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1959,6 +1982,15 @@
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
+            "id"
+          ]
+        },
+        "xp_ledger_entries_tenant_membership_id_unique": {
+          "name": "xp_ledger_entries_tenant_membership_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "membership_id",
             "id"
           ]
         },
@@ -1972,9 +2004,18 @@
             "id",
             "entry_type",
             "rule_id",
+            "rule_version",
             "source_kind",
             "source_reference_id",
             "source_occurrence"
+          ]
+        },
+        "xp_ledger_entries_tenant_adjustment_intent_unique": {
+          "name": "xp_ledger_entries_tenant_adjustment_intent_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "adjustment_intent_id"
           ]
         }
       },
@@ -1982,7 +2023,11 @@
       "checkConstraints": {
         "xp_ledger_entries_amount_shape": {
           "name": "xp_ledger_entries_amount_shape",
-          "value": "(\n        (\"xp_ledger_entries\".\"entry_type\" = 'award' AND \"xp_ledger_entries\".\"amount\" > 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NOT NULL AND \"xp_ledger_entries\".\"reason_code\" IS NULL AND \"xp_ledger_entries\".\"reason_text\" IS NULL AND \"xp_ledger_entries\".\"source_entry_id\" IS NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" = 'capped_award' AND \"xp_ledger_entries\".\"amount\" = 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NOT NULL AND \"xp_ledger_entries\".\"reason_code\" IS NULL AND \"xp_ledger_entries\".\"reason_text\" IS NULL AND \"xp_ledger_entries\".\"source_entry_id\" IS NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" IN ('correction', 'reversal') AND \"xp_ledger_entries\".\"amount\" <> 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NULL AND \"xp_ledger_entries\".\"reason_code\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_code\")) > 0 AND \"xp_ledger_entries\".\"reason_text\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_text\")) > 0 AND \"xp_ledger_entries\".\"source_entry_id\" IS NOT NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NOT NULL)\n      )"
+          "value": "(\n        (\"xp_ledger_entries\".\"entry_type\" = 'award' AND \"xp_ledger_entries\".\"amount\" > 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NOT NULL AND \"xp_ledger_entries\".\"reason_code\" IS NULL AND \"xp_ledger_entries\".\"reason_text\" IS NULL AND \"xp_ledger_entries\".\"source_entry_id\" IS NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" = 'capped_award' AND \"xp_ledger_entries\".\"amount\" = 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NOT NULL AND \"xp_ledger_entries\".\"reason_code\" IS NULL AND \"xp_ledger_entries\".\"reason_text\" IS NULL AND \"xp_ledger_entries\".\"source_entry_id\" IS NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" = 'correction' AND \"xp_ledger_entries\".\"amount\" > 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NULL AND \"xp_ledger_entries\".\"reason_code\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_code\")) > 0 AND \"xp_ledger_entries\".\"reason_text\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_text\")) > 0 AND \"xp_ledger_entries\".\"source_entry_id\" IS NOT NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NOT NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" = 'reversal' AND \"xp_ledger_entries\".\"amount\" < 0 AND \"xp_ledger_entries\".\"source_claim_id\" IS NULL AND \"xp_ledger_entries\".\"reason_code\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_code\")) > 0 AND \"xp_ledger_entries\".\"reason_text\" IS NOT NULL AND char_length(btrim(\"xp_ledger_entries\".\"reason_text\")) > 0 AND \"xp_ledger_entries\".\"source_entry_id\" IS NOT NULL AND \"xp_ledger_entries\".\"actor_membership_id\" IS NOT NULL)\n      )"
+        },
+        "xp_ledger_entries_adjustment_intent_shape": {
+          "name": "xp_ledger_entries_adjustment_intent_shape",
+          "value": "(\n        (\"xp_ledger_entries\".\"entry_type\" IN ('award', 'capped_award') AND \"xp_ledger_entries\".\"adjustment_intent_id\" IS NULL)\n        OR (\"xp_ledger_entries\".\"entry_type\" IN ('correction', 'reversal') AND \"xp_ledger_entries\".\"adjustment_intent_id\" IS NOT NULL)\n      )"
         },
         "xp_ledger_entries_rule_shape": {
           "name": "xp_ledger_entries_rule_shape",
@@ -2177,6 +2222,7 @@
             "canonical_ledger_entry_id",
             "expected_entry_type",
             "rule_id",
+            "rule_version",
             "source_kind",
             "source_reference_id",
             "source_occurrence"

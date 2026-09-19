@@ -132,6 +132,22 @@ async function createGraph(options: Readonly<{
   return { tenantId, campusId, membershipId, identitySubjectId, eventId };
 }
 
+async function createAdditionalMembership(tenantId: string, campusId: string): Promise<string> {
+  const rows = await getDatabase().insert(memberships).values({
+    tenantId,
+    identitySubjectId: nextSlug("secondary-identity"),
+    assuranceLevel: "L1",
+    lifecycle: "verified",
+    campusId,
+    campusProvenance: "institution_verified",
+    residenceState: "non_resident",
+    residenceProvenance: "institution_verified",
+  }).returning({ id: memberships.id });
+  const membershipId = rows[0]?.id;
+  if (membershipId === undefined) throw new Error("Secondary Membership fixture insert returned no row.");
+  return membershipId;
+}
+
 async function createEventForGraph(graph: Graph, label: string): Promise<string> {
   const rows = await getDatabase().insert(events).values({
     tenantId: graph.tenantId,
@@ -206,7 +222,7 @@ function postgresErrorCode(error: unknown): string | undefined {
 }
 
 async function expectCommitFailure(
-  operation: (client: PoolClient) => Promise<void>,
+  operation: (client: PoolClient) => Promise<unknown>,
 ): Promise<string> {
   const client = await getPool().connect();
   try {
@@ -246,9 +262,9 @@ async function insertGenericClaim(client: PoolClient, pair: GenericPair, canonic
       (id, tenant_id, membership_id, rule_id, rule_version, source_kind,
        source_reference_id, source_occurrence, expected_entry_type,
        canonical_ledger_entry_id)
-     values ($1, $2, $3, 'profile.field', 1, 'profile_field_completion',
-             $4, 'a10-test-source', 'award', $5)`,
-    [pair.claimId, pair.tenantId, pair.membershipId, pair.sourceReferenceId, canonicalLedgerId],
+     values ($1, $2, $3, 'profile.field', $4, 'profile_field_completion',
+             $5, 'a10-test-source', 'award', $6)`,
+    [pair.claimId, pair.tenantId, pair.membershipId, 1, pair.sourceReferenceId, canonicalLedgerId],
   );
 }
 
@@ -261,12 +277,14 @@ async function insertGenericLedger(
     membershipId?: string;
     entryType?: "award" | "capped_award" | "correction" | "reversal";
     amount?: number;
+    ruleVersion?: number;
     sourceClaimId?: string | null;
     sourceReferenceId?: string;
     reasonCode?: string | null;
     reasonText?: string | null;
     sourceEntryId?: string | null;
     actorMembershipId?: string | null;
+    adjustmentIntentId?: string | null;
   }> = {},
 ): Promise<void> {
   const entryType = options.entryType ?? "award";
@@ -277,10 +295,11 @@ async function insertGenericLedger(
       (id, tenant_id, membership_id, entry_type, amount, rule_id, rule_version,
        source_kind, source_reference_id, source_occurrence, source_claim_id,
        reason_code, reason_text, source_entry_id, actor_membership_id,
+       adjustment_intent_id,
        tenant_day, occurred_at)
-     values ($1, $2, $3, $4::public.xp_ledger_entry_type, $5, 'profile.field', 1,
-             'profile_field_completion'::public.xp_source_kind, $6,
-             'a10-test-source', $7, $8, $9, $10, $11, current_date,
+     values ($1, $2, $3, $4::public.xp_ledger_entry_type, $5, 'profile.field', $6,
+             'profile_field_completion'::public.xp_source_kind, $7,
+             'a10-test-source', $8, $9, $10, $11, $12, $13, current_date,
              clock_timestamp())`,
     [
       options.ledgerId ?? pair.ledgerId,
@@ -288,14 +307,93 @@ async function insertGenericLedger(
       options.membershipId ?? pair.membershipId,
       entryType,
       amount,
+      options.ruleVersion ?? 1,
       options.sourceReferenceId ?? pair.sourceReferenceId,
       sourceClaimId,
       options.reasonCode ?? null,
       options.reasonText ?? null,
       options.sourceEntryId ?? null,
       options.actorMembershipId ?? null,
+      options.adjustmentIntentId ?? null,
     ],
   );
+}
+
+async function seedGenericAward(graph: Graph): Promise<GenericPair> {
+  const pair = genericPair(graph);
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    await insertGenericClaim(client, pair);
+    await insertGenericLedger(client, pair);
+    await client.query("commit");
+    return pair;
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+type CorrectiveLedgerInput = Readonly<{
+  ledgerId?: string;
+  tenantId: string;
+  membershipId: string;
+  sourceReferenceId: string;
+  sourceEntryId: string;
+  actorMembershipId: string;
+  adjustmentIntentId: string;
+  entryType: "correction" | "reversal";
+  amount: number;
+  ruleVersion?: number;
+  reasonCode?: string;
+  reasonText?: string;
+}>;
+
+async function insertCorrectiveLedger(client: PoolClient | Pool, input: CorrectiveLedgerInput): Promise<string> {
+  const ledgerId = input.ledgerId ?? randomUUID();
+  await client.query(
+    `insert into public."xp_ledger_entries"
+      (id, tenant_id, membership_id, entry_type, amount, rule_id, rule_version,
+       source_kind, source_reference_id, source_occurrence, source_claim_id,
+       reason_code, reason_text, source_entry_id, actor_membership_id,
+       adjustment_intent_id, tenant_day, occurred_at)
+     values ($1, $2, $3, $4::public.xp_ledger_entry_type, $5, 'profile.field', $6,
+             'profile_field_completion'::public.xp_source_kind, $7,
+             'a10-test-source', null, $8, $9, $10, $11, $12,
+             current_date, clock_timestamp())`,
+    [
+      ledgerId,
+      input.tenantId,
+      input.membershipId,
+      input.entryType,
+      input.amount,
+      input.ruleVersion ?? 1,
+      input.sourceReferenceId,
+      input.reasonCode ?? "A10_TEST_CORRECTION",
+      input.reasonText ?? "A10 corrective fixture",
+      input.sourceEntryId,
+      input.actorMembershipId,
+      input.adjustmentIntentId,
+    ],
+  );
+  return ledgerId;
+}
+
+async function committedCorrectiveLedger(input: CorrectiveLedgerInput): Promise<string> {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const ledgerId = await insertCorrectiveLedger(client, input);
+    await client.query("commit");
+    return ledgerId;
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function deferred<T>() {
@@ -481,10 +579,10 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
       await adminPool.query(`grant "campushub_runtime" to ${quotedRole}`);
     }
     await adminPool.query(
-      `grant select, update, references on "tenants", "memberships", "events" to ${quotedRole}`,
+      `grant select, update on "tenants", "memberships", "events" to ${quotedRole}`,
     );
     await adminPool.query(
-      `grant select, references on "event_audience_criteria" to ${quotedRole}`,
+      `grant select on "event_audience_criteria" to ${quotedRole}`,
     );
     await adminPool.query(
       `grant select on "tenant_module_states" to ${quotedRole}`,
@@ -496,7 +594,7 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
       `grant select, insert, update on "event_rsvps", "event_rsvp_idempotency" to ${quotedRole}`,
     );
     await adminPool.query(
-      `grant select, insert, references on "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" to ${quotedRole}`,
+      `grant select, insert on "xp_ledger_entries", "xp_source_claims", "xp_event_rsvp_source_claims" to ${quotedRole}`,
     );
     const connectionUrl = new URL(configuredDatabaseUrl);
     connectionUrl.username = roleName;
@@ -628,7 +726,13 @@ describe("real PostgreSQL Event RSVP Core", () => {
          module_scope_update: boolean;
          module_enabled_update: boolean;
          module_version_update: boolean;
-         module_updated_at_update: boolean;
+          module_updated_at_update: boolean;
+          xp_ledger_references: boolean;
+          xp_source_claims_references: boolean;
+          xp_event_source_references: boolean;
+          tenants_references: boolean;
+          memberships_references: boolean;
+          events_references: boolean;
       }>(`
         select
           has_table_privilege('campushub_runtime', 'public.tenant_module_states', 'SELECT') as module_select,
@@ -642,7 +746,13 @@ describe("real PostgreSQL Event RSVP Core", () => {
            has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'module', 'UPDATE') as module_scope_update,
            has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'enabled', 'UPDATE') as module_enabled_update,
            has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'version', 'UPDATE') as module_version_update,
-           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update
+           has_column_privilege('campushub_runtime', 'public.tenant_module_states', 'updated_at', 'UPDATE') as module_updated_at_update,
+           has_table_privilege('campushub_runtime', 'public.xp_ledger_entries', 'REFERENCES') as xp_ledger_references,
+           has_table_privilege('campushub_runtime', 'public.xp_source_claims', 'REFERENCES') as xp_source_claims_references,
+           has_table_privilege('campushub_runtime', 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_references,
+           has_table_privilege('campushub_runtime', 'public.tenants', 'REFERENCES') as tenants_references,
+           has_table_privilege('campushub_runtime', 'public.memberships', 'REFERENCES') as memberships_references,
+           has_table_privilege('campushub_runtime', 'public.events', 'REFERENCES') as events_references
       `);
       expect(privilegeRows.rows[0]).toEqual({
         module_select: true,
@@ -654,9 +764,15 @@ describe("real PostgreSQL Event RSVP Core", () => {
         idempotency_delete: false,
         module_tenant_id_update: false,
         module_scope_update: false,
-        module_enabled_update: false,
-        module_version_update: false,
-        module_updated_at_update: true,
+         module_enabled_update: false,
+         module_version_update: false,
+         module_updated_at_update: true,
+         xp_ledger_references: false,
+         xp_source_claims_references: false,
+         xp_event_source_references: false,
+         tenants_references: false,
+         memberships_references: false,
+         events_references: false,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
       await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
@@ -1429,7 +1545,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
     expect(ledgerRows.filter((row) => row.entryType === "capped_award" && row.amount === 0)).toHaveLength(0);
   });
 
-  it("XP-PG-08 rejects an incomplete reciprocal pair and denies runtime mutation of immutable facts", async () => {
+  it("XP-PG-STRUCT-01 rejects an incomplete reciprocal pair and denies runtime mutation of immutable facts", async () => {
     const graph = await createGraph();
     await expect(change(graph, "going", 0, "xp-immutable-seed")).resolves.toMatchObject({ ok: true });
     const existing = (await getDatabase().select().from(xpLedgerEntries).where(and(
@@ -1471,6 +1587,207 @@ describe("real PostgreSQL Event RSVP Core", () => {
     } finally {
       await client.query("rollback").catch(() => undefined);
       client.release();
+    }
+  });
+
+  it("XP-PG-08 proves one concurrent corrective intent and preserves the original award", async () => {
+    const graph = await createGraph();
+    const source = await seedGenericAward(graph);
+    const originalRows = await getDatabase().select().from(xpLedgerEntries).where(eq(
+      xpLedgerEntries.id,
+      source.ledgerId,
+    ));
+    const original = originalRows[0];
+    if (original === undefined) throw new Error("Corrective source fixture was unavailable.");
+
+    const adjustmentIntentId = randomUUID();
+    const firstClient = await getPool().connect();
+    const secondClient = await getPool().connect();
+    let secondAttempt: Promise<string> | undefined;
+    try {
+      await firstClient.query("begin");
+      const firstPid = await backendPid(firstClient);
+      await insertCorrectiveLedger(firstClient, {
+        tenantId: graph.tenantId,
+        membershipId: graph.membershipId,
+        sourceReferenceId: source.sourceReferenceId,
+        sourceEntryId: source.ledgerId,
+        actorMembershipId: graph.membershipId,
+        adjustmentIntentId,
+        entryType: "correction",
+        amount: 2,
+      });
+
+      await secondClient.query("begin");
+      const secondPid = await backendPid(secondClient);
+      secondAttempt = (async () => {
+        try {
+          await insertCorrectiveLedger(secondClient, {
+            tenantId: graph.tenantId,
+            membershipId: graph.membershipId,
+            sourceReferenceId: source.sourceReferenceId,
+            sourceEntryId: source.ledgerId,
+            actorMembershipId: graph.membershipId,
+            adjustmentIntentId,
+            entryType: "correction",
+            amount: 2,
+          });
+          await secondClient.query("commit");
+          return "COMMITTED";
+        } catch (error) {
+          await secondClient.query("rollback").catch(() => undefined);
+          return postgresErrorCode(error) ?? "UNKNOWN";
+        }
+      })();
+
+      const blockers = await waitForBlockedBy(secondPid, firstPid, "xp_ledger_entries");
+      expect(blockers).toContain(firstPid);
+      await firstClient.query("commit");
+      expect(await secondAttempt).toBe("23505");
+    } finally {
+      await firstClient.query("rollback").catch(() => undefined);
+      await secondClient.query("rollback").catch(() => undefined);
+      firstClient.release();
+      secondClient.release();
+      await secondAttempt?.catch(() => undefined);
+    }
+
+    const sequentialDuplicate = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: source.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId,
+      entryType: "correction",
+      amount: 2,
+    }));
+    expect(sequentialDuplicate).toBe("23505");
+
+    const corrections = await getDatabase().select().from(xpLedgerEntries).where(and(
+      eq(xpLedgerEntries.tenantId, graph.tenantId),
+      eq(xpLedgerEntries.membershipId, graph.membershipId),
+      eq(xpLedgerEntries.entryType, "correction"),
+    ));
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({ amount: 2, adjustmentIntentId });
+    const afterRows = await getDatabase().select().from(xpLedgerEntries).where(eq(
+      xpLedgerEntries.id,
+      source.ledgerId,
+    ));
+    expect(afterRows).toEqual([original]);
+  });
+
+  it("enforces corrective signs, source ownership/type, intent shape, and runtime denial", async () => {
+    const graph = await createGraph();
+    const source = await seedGenericAward(graph);
+
+    await expect(committedCorrectiveLedger({
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: source.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    })).resolves.toEqual(expect.any(String));
+    const validReversalId = await committedCorrectiveLedger({
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: source.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "reversal",
+      amount: -1,
+    });
+
+    for (const [entryType, amount] of [
+      ["correction", -1],
+      ["correction", 0],
+      ["reversal", 1],
+      ["reversal", 0],
+    ] as const) {
+      const code = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+        tenantId: graph.tenantId,
+        membershipId: graph.membershipId,
+        sourceReferenceId: source.sourceReferenceId,
+        sourceEntryId: source.ledgerId,
+        actorMembershipId: graph.membershipId,
+        adjustmentIntentId: randomUUID(),
+        entryType,
+        amount,
+      }));
+      expect(code).toBe("23514");
+    }
+
+    const nonexistentSource = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: randomUUID(),
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    }));
+    expect(nonexistentSource).not.toBe("NO_ERROR");
+
+    const otherGraph = await createGraph();
+    const otherSource = await seedGenericAward(otherGraph);
+    const crossTenantSource = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: otherSource.sourceReferenceId,
+      sourceEntryId: otherSource.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    }));
+    expect(crossTenantSource).not.toBe("NO_ERROR");
+
+    const secondaryMembershipId = await createAdditionalMembership(graph.tenantId, graph.campusId);
+    const secondarySource = await seedGenericAward({ ...graph, membershipId: secondaryMembershipId });
+    const wrongMembershipSource = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: secondarySource.sourceReferenceId,
+      sourceEntryId: secondarySource.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    }));
+    expect(wrongMembershipSource).not.toBe("NO_ERROR");
+
+    const correctionSource = await expectCommitFailure((client) => insertCorrectiveLedger(client, {
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: validReversalId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    }));
+    expect(correctionSource).not.toBe("NO_ERROR");
+
+    const runtime = await createRestrictedRuntime();
+    try {
+      await expect(insertCorrectiveLedger(runtime.pool, {
+        tenantId: graph.tenantId,
+        membershipId: graph.membershipId,
+        sourceReferenceId: source.sourceReferenceId,
+        sourceEntryId: source.ledgerId,
+        actorMembershipId: graph.membershipId,
+        adjustmentIntentId: randomUUID(),
+        entryType: "correction",
+        amount: 1,
+      })).rejects.toThrow();
+    } finally {
+      await destroyRestrictedRuntime(runtime);
     }
   });
 
@@ -1608,18 +1925,29 @@ describe("real PostgreSQL Event RSVP Core", () => {
 
   it("XP-PG-16 rejects a claim whose canonical entry is a correction or reversal", async () => {
     const graph = await createGraph();
+    const source = await seedGenericAward(graph);
+    const correctionId = await committedCorrectiveLedger({
+      tenantId: graph.tenantId,
+      membershipId: graph.membershipId,
+      sourceReferenceId: source.sourceReferenceId,
+      sourceEntryId: source.ledgerId,
+      actorMembershipId: graph.membershipId,
+      adjustmentIntentId: randomUUID(),
+      entryType: "correction",
+      amount: 1,
+    });
     const pair = genericPair(graph);
     const code = await expectCommitFailure(async (client) => {
+      await insertGenericClaim(client, pair, correctionId);
+    });
+    expect(code).toBe("23503");
+  });
+
+  it("XP-PG-RECIPROCAL-17 rejects a claim and ledger rule-version mismatch at commit", async () => {
+    const pair = genericPair(await createGraph());
+    const code = await expectCommitFailure(async (client) => {
       await insertGenericClaim(client, pair);
-      await insertGenericLedger(client, pair, {
-        entryType: "correction",
-        amount: -1,
-        sourceClaimId: null,
-        reasonCode: "A10_TEST",
-        reasonText: "Structural correction fixture",
-        sourceEntryId: randomUUID(),
-        actorMembershipId: graph.membershipId,
-      });
+      await insertGenericLedger(client, pair, { ruleVersion: 2 });
     });
     expect(code).toBe("23503");
   });
