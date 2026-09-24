@@ -18,6 +18,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/integration/**/*.test.ts"],
+    // Integration files share PostgreSQL catalog ACL fixtures; avoid concurrent GRANT/REVOKE updates.
+    fileParallelism: false,
     testTimeout: 30000,
     hookTimeout: 30000,
   },
