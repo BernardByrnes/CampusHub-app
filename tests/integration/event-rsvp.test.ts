@@ -1340,9 +1340,10 @@ describe("real PostgreSQL Event RSVP Core", () => {
         ]);
         await expectRuntimeAuthorityDenied(runtime, graph, `column-reference-two-hop-${table}`);
 
-        await destroyAuthorityRoleChain(runtime, chain);
+        const cleanedChain = chain;
+        await destroyAuthorityRoleChain(runtime, cleanedChain);
         chain = undefined;
-        await expectFixtureRolesAbsent([runtime.roleName]);
+        await expectFixtureRolesAbsent([cleanedChain.intermediaryRole, cleanedChain.dangerousRole]);
         for (const protectedTable of PROTECTED_REFERENCE_TABLES) {
           await expect(readReferencePrivilegeState(runtime.roleName, protectedTable)).resolves.toEqual({
             tableLevel: false,
