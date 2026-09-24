@@ -1,40 +1,44 @@
 # OD-12 — XP Daily Cap, Allocation and Initial Rule Numeric Policy
 
-- Status: **OD-12 XP NUMERIC POLICY — PROPOSED / AWAITING PRODUCT OWNER & SENIOR REVIEW**
-- Decision type: Product/governance documentation proposal only
+- Status: **OD-12 XP NUMERIC POLICY — APPROVED FOR CAMPUSHUB PILOT**
+- Decision type: Product/governance decision and approval record
 - Repository: `BernardByrnes/CampusHub-app`
 - Foundation branch: `codex/8v-b-next-foundation`
-- Foundation SHA: `ab9ba34d171d992d0601ef095a3688840ca77fb0`
+- Foundation SHA when the proposal was prepared: `ab9ba34d171d992d0601ef095a3688840ca77fb0`
 - Approved A10 source branch: `codex/a10-xp-ledger-idempotency-gate`
 - Approved A10 source SHA: `52d4d4edd4db1c793b5a6bc2458285283b99e0fe`
 - Checkpoint branch: `codex/od12-xp-numeric-policy-gate`
-- Runtime/schema/migration status: not implemented or authorized by this checkpoint
+- Product Owner approval: **APPROVED — 25 September 2026; OD-12 as written; CampusHub Pilot only**
+- Senior review of OD-12 policy: **APPROVED**
+- A10 runtime technical acceptance: **PASSED** at `d6a1a49bbae2918b4ae5abcefe07dde3817c23dc`
+- Approval boundary: no unrelated XP source, notification work, deployment, or future rule-management functionality is authorized
 
 ## 1. Purpose and non-authority
 
-This document proposes the remaining numeric Product policy needed for a
-bounded first XP runtime slice: the Pilot daily cap, the cap-boundary
-allocation rule, the authoritative day boundary, and the initial Event RSVP
-rule amount and platform range.
+This document records the approved numeric Product policy for the bounded
+first XP runtime slice: the Pilot daily cap, the cap-boundary allocation rule,
+the authoritative day boundary, and the initial Event RSVP rule amount and
+platform range.
 
-It is not an approval, Product Specification amendment, runtime design,
-schema authorization, migration authorization, or implementation checkpoint.
-The proposed values become Product authority only after the existing authority
-order has accepted them through Product Owner and independent senior review.
+The policy was approved by the Product Owner for the CampusHub Pilot on
+25 September 2026 and had already received senior review approval. This record
+does not amend the frozen Product Specification or independently authorize
+runtime, schema, or migration work. The bounded A10 runtime has separately
+passed senior technical acceptance; canonical promotion and its exact-SHA CI
+remain separate gates.
 
-This checkpoint does not modify the frozen Product Specification, the frozen
-Implementation Blueprint, the A10 architecture checkpoint, Event RSVP, or any
-runtime, schema, migration, test, CI, notification, job, reconciliation, Poll,
-Quiz, Streak, Level, Auth, or deployment surface.
+This approval is for OD-12 as written and for the CampusHub Pilot only. It does
+not authorize another XP source, Poll/Quiz/Streak/Level amounts, notification
+or job work, broader rule-management functionality, or deployment. Student
+Voice remains zero XP and is not an XP source.
 
-If this proposal is approved, it is sufficient numeric authority for the
-bounded first runtime slice `A10 XP Ledger Core + Event RSVP award producer`
-only. It does not authorize that runtime; implementation still requires an
-approved A10 checkpoint and the normal implementation gates.
+The approved values provide numeric authority for the bounded runtime slice
+`A10 XP Ledger Core + Event RSVP award producer` only. They do not complete
+broader CH-XP-002 or close OD-08, A1/OD-11, or CH-XP-004.
 
 ## 2. Authority and inspected baseline
 
-The proposal is subordinate to applicable external authority, the frozen
+This approval is subordinate to applicable external authority, the frozen
 Product Specification v1.3, approved Product Owner decisions and controlled
 supersessions, approved architecture/security ADRs, approved checkpoint
 contracts, and the frozen Implementation Blueprint in the repository's stated
@@ -59,7 +63,7 @@ attempts remain explainable; corrections and fraud reversals are outside the
 normal-positive cap; rule changes are forward-only; and Student Voice,
 saves, follows, supports, and reads are not XP sources.
 
-The approved A10 proposal supplies the separate request-idempotency,
+The approved A10 architecture checkpoint supplies the separate request-idempotency,
 conceptual-source, and immutable-ledger concepts, including the ordinary
 outcomes `award` and `capped_award`, one canonical ordinary ledger fact per
 source claim, Tenant + Membership ownership, and no historical recalculation.
@@ -81,16 +85,13 @@ production authority:
 | prototype level thresholds `0–99`, `100–199`, `200–299`, `300–499`, `500–799` | prototype demo data | **HISTORICAL / PLACEHOLDER — NOT SELECTED** |
 | prototype Event RSVP test/demo increments of `5 XP` | static prototype XP ledger fixtures | **HISTORICAL / PLACEHOLDER — NOT SELECTED** |
 
-The v1.3 governing documents and repository history do not supply an approved
-numeric daily cap, Event RSVP default, or Event RSVP platform range. No real
-CampusHub user or Pilot measurement exists yet. The proposed values below are
-Product judgment for a restrained Pilot and are not claimed to be measured
-evidence or a continuation of prototype configuration.
+No real CampusHub user or Pilot measurement exists yet. The approved values
+below are Product judgment for a restrained Pilot; they are not claimed to be
+measured evidence or a continuation of prototype configuration.
 
-## 4. Proposed numeric policy
+## 4. Approved numeric policy
 
-Subject to Product Owner and senior approval, the single proposed Pilot
-numeric policy is:
+The single approved Pilot numeric policy is:
 
 ```text
 PILOT_DAILY_XP_CAP = 50
@@ -100,15 +101,15 @@ EVENT_RSVP_XP_MAX = 10
 ```
 
 All four values are positive integers. The Event RSVP default lies within the
-platform range, and the maximum Event RSVP award is one fifth of the proposed
+platform range, and the maximum Event RSVP award is one fifth of the approved
 daily cap. The values are deliberately small enough to be explainable as
 participation recognition rather than a score, while leaving room for several
 legitimate activities before the cap is reached.
 
-### 4.1 Why the proposed daily cap is 50
+### 4.1 Why the approved daily cap is 50
 
-The proposal treats `50 XP` as a restrained daily ceiling, not a target. It
-has these Product reasons:
+The policy treats `50 XP` as a restrained daily ceiling, not a target. Its
+Product rationale is:
 
 - it permits ordinary same-day participation such as one Event RSVP, a poll,
   and a Daily Quiz without making the first legitimate actions constantly
@@ -157,8 +158,8 @@ separately reviewed if it affects future awards.
 
 ### 4.3 Cap allocation: whole-award capping
 
-The proposal selects **whole-award capping**. Partial awards do not exist in
-this Pilot policy.
+The approved policy selects **whole-award capping**. Partial awards do not
+exist in this Pilot policy.
 
 If:
 
@@ -215,7 +216,7 @@ cap calculation.
 
 ### 4.5 Concurrent cap invariant
 
-The eventual award transaction must evaluate the cap against authoritative
+The A10 award transaction evaluates the cap against authoritative
 ledger state inside the same transaction that claims the conceptual source.
 The implementation must serialize the logical key:
 
@@ -238,7 +239,7 @@ sum and do not become a way to bypass the source-claim or append-only rules.
 
 ## 5. Event RSVP numeric contract
 
-The first planned XP producer is `event.rsvp`.
+The bounded Pilot XP producer authorized here is `event.rsvp`.
 
 ```text
 EVENT_RSVP_XP_DEFAULT = 5
@@ -246,11 +247,11 @@ EVENT_RSVP_XP_MIN     = 1
 EVENT_RSVP_XP_MAX     = 10
 ```
 
-The proposed amount is intentionally a small integer: it recognizes a
+The approved amount is intentionally a small integer: it recognizes a
 successful participation action without making one RSVP materially dominate
-the Play layer. The range is narrow and platform-owned. The proposed default
-is a Product proposal, not authority imported from the prototype's historical
-`+5` demo value.
+the Play layer. The range is narrow and platform-owned. The approved default
+is a Product Owner decision for this Pilot, not authority imported from the
+prototype's historical `+5` demo value.
 
 The Event RSVP rule requires:
 
@@ -327,7 +328,7 @@ does not claim that all CH-XP-002 rules are complete.
 
 ## 8. Compact abuse analysis
 
-| Abuse or pressure | Controls supplied by this proposal | Remaining boundary |
+| Abuse or pressure | Controls supplied by this approved policy | Remaining boundary |
 | --- | --- | --- |
 | Student farms many trivial Events | One source claim per Membership/Event, whole-award daily cap, Event authority/lifecycle rules | The cap does not solve malicious Event creation by privileged staff. Event governance and abuse review remain required. |
 | Repeated RSVP state changes | Source identity ignores request key/state changes; withdrawal/reactivation do not re-award | Existing RSVP state/concurrency rules still apply. |
@@ -344,11 +345,14 @@ authority invalidation, audit, or future operational monitoring.
 
 ## 9. First runtime dependency status
 
-**Numeric readiness answer: YES, conditionally.** If Product Owner and senior
-authority approve this proposal, and the A10 architecture checkpoint is also
-accepted through its required process, the following numeric facts are present
-for the bounded first runtime slice `A10 XP Ledger Core + Event RSVP award
-producer`:
+**Numeric readiness answer: YES for the bounded A10 Ledger Core + Event RSVP
+producer.** The OD-12 policy has Product Owner approval for the CampusHub Pilot
+and senior review approval. The A10 runtime implementing this bounded producer
+subsequently passed senior technical acceptance at
+`d6a1a49bbae2918b4ae5abcefe07dde3817c23dc`. Canonical promotion and exact-SHA
+CI remain separate gates; this record does not claim they have occurred.
+
+The approved numeric facts for the bounded runtime slice are:
 
 - Event RSVP amount: default 5, platform range 1–10;
 - daily cap: 50 normal-positive XP;
@@ -358,7 +362,7 @@ producer`:
   transaction;
 - source consumption: one award or capped award, never a later retry award.
 
-This conditional YES does not mean:
+This bounded approval does not mean:
 
 - Poll XP is ready;
 - Daily Quiz XP is ready;
@@ -371,31 +375,38 @@ This conditional YES does not mean:
 
 ## 10. Required decision register
 
-Every item below is a proposal or an explicit preserved non-selection, not an
-approval. The numeric/Product decisions require Product Owner and senior
-approval.
+The register records the approved OD-12 decisions. D09 is an approved
+non-selection only; it does not authorize other XP sources. D10 closes numeric
+readiness only for the bounded A10 Ledger Core + Event RSVP slice.
 
-| ID | Decision | Status | Proposed contract / closure evidence |
+| ID | Decision | Status | Approved contract / closure record |
 | --- | --- | --- | --- |
-| OD12-D01 | Pilot daily XP cap | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Select `PILOT_DAILY_XP_CAP = 50` for normal-positive XP per Tenant + Membership + Tenant-local day; corrections/reversals remain outside the cap. |
-| OD12-D02 | Tenant-timezone day boundary | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Use Tenant IANA timezone, local midnight inclusive to next local midnight exclusive, with UTC persistence and ordinary DST-calendar semantics. |
-| OD12-D03 | Cap allocation semantics | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Select whole-award capping; no partial awards exist; an over-cap source yields `capped_award` amount 0 while the underlying action succeeds. |
-| OD12-D04 | Capped-award source consumption | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | A capped conceptual source is consumed exactly once and cannot become an award through tomorrow, retries, state changes, withdrawal/reactivation, or a later rule version. |
-| OD12-D05 | Concurrent cap invariant | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Cap evaluation and source claim occur in one transaction with serialization on Tenant + Membership + Tenant-local day; committed normal-positive XP cannot exceed 50. |
-| OD12-D06 | Event RSVP default XP amount | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Select `EVENT_RSVP_XP_DEFAULT = 5`, identical for `going` and `interested`, once per Event. |
-| OD12-D07 | Event RSVP platform min/max range | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Select `EVENT_RSVP_XP_MIN = 1` and `EVENT_RSVP_XP_MAX = 10`; positive integer Tenant choice only. |
-| OD12-D08 | Forward-only Tenant rule versioning | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Initial runtime rule is version 1; later changes create new versions, preserve snapshots, and never alter source uniqueness or historical ledger facts. |
-| OD12-D09 | Unresolved numeric rules for other source kinds | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Keep verification, profile, Poll, Quiz, Streak, and Level amounts unselected; each requires its own authority/dependency closure. |
-| OD12-D10 | First XP runtime readiness | **PROPOSED — PRODUCT OWNER / SENIOR APPROVAL REQUIRED** | Conditional YES for A10 Ledger Core + Event RSVP only after this proposal and A10 are approved; no broader XP readiness is claimed. |
+| OD12-D01 | Pilot daily XP cap | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | `PILOT_DAILY_XP_CAP = 50` for normal-positive XP per Tenant + Membership + Tenant-local day; corrections/reversals remain outside the cap. |
+| OD12-D02 | Tenant-timezone day boundary | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | Tenant IANA timezone, local midnight inclusive to next local midnight exclusive, with UTC persistence and ordinary DST-calendar semantics. |
+| OD12-D03 | Cap allocation semantics | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | Whole-award capping; no partial awards; an over-cap source yields `capped_award` amount 0 while the underlying action succeeds. |
+| OD12-D04 | Capped-award source consumption | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | A capped conceptual source is consumed exactly once and cannot become an award through tomorrow, retries, state changes, withdrawal/reactivation, or a later rule version. |
+| OD12-D05 | Concurrent cap invariant | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | Cap evaluation and source claim occur in one transaction with serialization on Tenant + Membership + Tenant-local day; committed normal-positive XP cannot exceed 50. |
+| OD12-D06 | Event RSVP default XP amount | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | `EVENT_RSVP_XP_DEFAULT = 5`, identical for `going` and `interested`, once per Event. |
+| OD12-D07 | Event RSVP platform min/max range | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | `EVENT_RSVP_XP_MIN = 1` and `EVENT_RSVP_XP_MAX = 10`; positive integer Tenant choice only. |
+| OD12-D08 | Forward-only Tenant rule versioning | **APPROVED — PRODUCT OWNER + SENIOR REVIEW; PILOT ONLY** | Initial runtime rule is version 1; later changes create new versions, preserve snapshots, and never alter source uniqueness or historical ledger facts. |
+| OD12-D09 | Unresolved numeric rules for other source kinds | **APPROVED — NON-SELECTION; OTHER SOURCES NOT AUTHORIZED** | Verification, profile, Poll, Quiz, Streak, and Level amounts remain unselected; each requires its own authority/dependency closure. |
+| OD12-D10 | First XP runtime readiness | **APPROVED — BOUNDED A10 LEDGER CORE + EVENT RSVP ONLY** | Numeric readiness is approved only for A10 Ledger Core + Event RSVP; the implementation passed senior technical acceptance, with canonical promotion/CI still pending. No broader XP readiness is claimed. |
 
 OD-08, A1/OD-11, CH-XP-004 Platform Operator authority, Poll, Quiz, Streak,
 Levels, notifications, and reconciliation jobs remain open or separately
 gated. This register does not close them by implication.
 
-## 11. Required future implementation evidence
+## 11. A10 implementation acceptance and continuing constraints
 
-After approval, the bounded runtime checkpoint must still prove, without
-changing this Product policy silently:
+The bounded A10 runtime implementing the Event RSVP producer subsequently
+passed senior technical acceptance at
+`d6a1a49bbae2918b4ae5abcefe07dde3817c23dc`. Its exact-SHA CI and technical
+review belong to that runtime checkpoint. This approval-record commit does not
+itself promote the runtime or authorize deployment.
+
+The accepted runtime evidence covers these policy and governance boundaries;
+future changes must preserve them and must not silently change this Product
+policy:
 
 - source claim and ordinary ledger atomicity under the A10 reciprocal
   constraints;
@@ -410,13 +421,24 @@ changing this Product policy silently:
 - no Poll ballot linkage, Student Voice XP, leaderboard, job, notification, or
   Platform Operator behavior outside the approved scope.
 
-No schema, migration, reconciliation worker, or persistent database change is
-authorized by this documentation checkpoint.
+This OD-12 approval-record change authorizes no additional schema, migration,
+reconciliation worker, persistent database change, notification, or deployment
+beyond separately approved implementation checkpoints.
 
 ## 12. Preserved Event qualifiers
 
+Before canonical A10 promotion and its exact-SHA CI succeed, the current
+qualifier remains:
+
 **FULL CH-EVT-003 STORY COMPLETION NOT CLAIMED — XP AND NOTIFICATION
 DEPENDENCIES REMAIN**
+
+Upon successful canonical promotion of the accepted A10 runtime and successful
+exact-SHA CI on the foundation branch, the CH-EVT-003 XP dependency is closed
+and its remaining qualifier becomes:
+
+**FULL CH-EVT-003 STORY COMPLETION NOT CLAIMED — NOTIFICATION DEPENDENCY
+REMAINS**
 
 **FULL CH-EVT-004 STORY COMPLETION NOT CLAIMED — CANCELLATION NOTIFICATION
 DEPENDENCY REMAINS**
@@ -426,4 +448,4 @@ OPTIONAL LOGO REMAIN GATED**
 
 **FULL CH-EVT-001 STORY COMPLETION NOT CLAIMED — EVENT MEDIA DEPENDENCY REMAINS**
 
-**OD-12 XP NUMERIC POLICY — AWAITING SENIOR / PRODUCT OWNER VERIFICATION**
+**OD-12 XP NUMERIC POLICY — APPROVED FOR CAMPUSHUB PILOT**
