@@ -631,6 +631,17 @@ type AuthorityPrivilege = Readonly<{
   privilege: "UPDATE" | "DELETE" | "TRUNCATE" | "TRIGGER";
 }>;
 
+const PROTECTED_REFERENCE_TABLES = [
+  "tenants",
+  "memberships",
+  "events",
+  "xp_ledger_entries",
+  "xp_source_claims",
+  "xp_event_rsvp_source_claims",
+] as const;
+
+type ProtectedReferenceTable = (typeof PROTECTED_REFERENCE_TABLES)[number];
+
 async function grantAuthorityPrivilege(roleName: string, authority: AuthorityPrivilege): Promise<void> {
   await getPool().query(
     `grant ${authority.privilege} on table public.${sqlIdentifier(authority.table)} to ${sqlIdentifier(roleName)}`,
@@ -641,6 +652,32 @@ async function revokeAuthorityPrivilege(roleName: string, authority: AuthorityPr
   await getPool().query(
     `revoke ${authority.privilege} on table public.${sqlIdentifier(authority.table)} from ${sqlIdentifier(roleName)}`,
   );
+}
+
+async function grantColumnReferencePrivilege(roleName: string, table: ProtectedReferenceTable): Promise<void> {
+  await getPool().query(
+    `grant references (id) on table public.${sqlIdentifier(table)} to ${sqlIdentifier(roleName)}`,
+  );
+}
+
+async function revokeColumnReferencePrivilege(roleName: string, table: ProtectedReferenceTable): Promise<void> {
+  await getPool().query(
+    `revoke references (id) on table public.${sqlIdentifier(table)} from ${sqlIdentifier(roleName)}`,
+  );
+}
+
+async function readReferencePrivilegeState(
+  roleName: string,
+  table: ProtectedReferenceTable,
+): Promise<Readonly<{ tableLevel: boolean; anyColumn: boolean }>> {
+  const result = await getPool().query<{ tableLevel: boolean; anyColumn: boolean }>(`
+    select
+      has_table_privilege($1::name, $2::text, 'REFERENCES') as "tableLevel",
+      has_any_column_privilege($1::name, $2::text, 'REFERENCES') as "anyColumn"
+  `, [roleName, `public.${table}`]);
+  const row = result.rows[0];
+  if (row === undefined) throw new Error("PostgreSQL REFERENCES privilege evidence was unavailable.");
+  return row;
 }
 
 async function expectRuntimeAuthorityDenied(runtime: RestrictedRuntime, graph: Graph, idempotencyKey: string): Promise<void> {
@@ -682,6 +719,9 @@ async function destroyAuthorityRoleChain(runtime: RestrictedRuntime, chain: Auth
   const quotedDangerous = sqlIdentifier(chain.dangerousRole);
   const quotedLogin = sqlIdentifier(runtime.roleName);
   await getPool().query(`revoke "campushub_data_owner" from ${quotedDangerous}`).catch(() => undefined);
+  for (const table of PROTECTED_REFERENCE_TABLES) {
+    await revokeColumnReferencePrivilege(chain.dangerousRole, table).catch(() => undefined);
+  }
   await getPool().query(`revoke ${quotedDangerous} from ${quotedIntermediary}`).catch(() => undefined);
   await getPool().query(`revoke ${quotedIntermediary} from ${quotedLogin}`).catch(() => undefined);
   await getPool().query(`drop role ${quotedIntermediary}`).catch(() => undefined);
@@ -796,16 +836,19 @@ describe("real PostgreSQL Event RSVP Core", () => {
         tenants_truncate: boolean;
         tenants_trigger: boolean;
         tenants_references: boolean;
+        tenants_any_column_references: boolean;
         memberships_update: boolean;
         memberships_delete: boolean;
         memberships_truncate: boolean;
         memberships_trigger: boolean;
         memberships_references: boolean;
+        memberships_any_column_references: boolean;
         events_update: boolean;
         events_delete: boolean;
         events_truncate: boolean;
         events_trigger: boolean;
         events_references: boolean;
+        events_any_column_references: boolean;
         xp_ledger_select: boolean;
         xp_ledger_insert: boolean;
         xp_ledger_update: boolean;
@@ -813,6 +856,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_ledger_truncate: boolean;
         xp_ledger_trigger: boolean;
         xp_ledger_references: boolean;
+        xp_ledger_any_column_references: boolean;
         xp_source_select: boolean;
         xp_source_insert: boolean;
         xp_source_update: boolean;
@@ -820,6 +864,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_source_truncate: boolean;
         xp_source_trigger: boolean;
         xp_source_references: boolean;
+        xp_source_any_column_references: boolean;
         xp_event_source_select: boolean;
         xp_event_source_insert: boolean;
         xp_event_source_update: boolean;
@@ -827,6 +872,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_event_source_truncate: boolean;
         xp_event_source_trigger: boolean;
         xp_event_source_references: boolean;
+        xp_event_source_any_column_references: boolean;
       }>(`
         select
           has_table_privilege($1::name, 'public.tenant_module_states', 'SELECT') as module_select,
@@ -848,16 +894,19 @@ describe("real PostgreSQL Event RSVP Core", () => {
           has_table_privilege($1::name, 'public.tenants', 'TRUNCATE') as tenants_truncate,
           has_table_privilege($1::name, 'public.tenants', 'TRIGGER') as tenants_trigger,
           has_table_privilege($1::name, 'public.tenants', 'REFERENCES') as tenants_references,
+          has_any_column_privilege($1::name, 'public.tenants', 'REFERENCES') as tenants_any_column_references,
           has_table_privilege($1::name, 'public.memberships', 'UPDATE') as memberships_update,
           has_table_privilege($1::name, 'public.memberships', 'DELETE') as memberships_delete,
           has_table_privilege($1::name, 'public.memberships', 'TRUNCATE') as memberships_truncate,
           has_table_privilege($1::name, 'public.memberships', 'TRIGGER') as memberships_trigger,
           has_table_privilege($1::name, 'public.memberships', 'REFERENCES') as memberships_references,
+          has_any_column_privilege($1::name, 'public.memberships', 'REFERENCES') as memberships_any_column_references,
           has_table_privilege($1::name, 'public.events', 'UPDATE') as events_update,
           has_table_privilege($1::name, 'public.events', 'DELETE') as events_delete,
           has_table_privilege($1::name, 'public.events', 'TRUNCATE') as events_truncate,
           has_table_privilege($1::name, 'public.events', 'TRIGGER') as events_trigger,
           has_table_privilege($1::name, 'public.events', 'REFERENCES') as events_references,
+          has_any_column_privilege($1::name, 'public.events', 'REFERENCES') as events_any_column_references,
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'SELECT') as xp_ledger_select,
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'INSERT') as xp_ledger_insert,
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'UPDATE') as xp_ledger_update,
@@ -865,6 +914,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'TRUNCATE') as xp_ledger_truncate,
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'TRIGGER') as xp_ledger_trigger,
           has_table_privilege($1::name, 'public.xp_ledger_entries', 'REFERENCES') as xp_ledger_references,
+          has_any_column_privilege($1::name, 'public.xp_ledger_entries', 'REFERENCES') as xp_ledger_any_column_references,
           has_table_privilege($1::name, 'public.xp_source_claims', 'SELECT') as xp_source_select,
           has_table_privilege($1::name, 'public.xp_source_claims', 'INSERT') as xp_source_insert,
           has_table_privilege($1::name, 'public.xp_source_claims', 'UPDATE') as xp_source_update,
@@ -872,13 +922,15 @@ describe("real PostgreSQL Event RSVP Core", () => {
           has_table_privilege($1::name, 'public.xp_source_claims', 'TRUNCATE') as xp_source_truncate,
           has_table_privilege($1::name, 'public.xp_source_claims', 'TRIGGER') as xp_source_trigger,
           has_table_privilege($1::name, 'public.xp_source_claims', 'REFERENCES') as xp_source_references,
+          has_any_column_privilege($1::name, 'public.xp_source_claims', 'REFERENCES') as xp_source_any_column_references,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'SELECT') as xp_event_source_select,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'INSERT') as xp_event_source_insert,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'UPDATE') as xp_event_source_update,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'DELETE') as xp_event_source_delete,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'TRUNCATE') as xp_event_source_truncate,
           has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'TRIGGER') as xp_event_source_trigger,
-          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_references
+          has_table_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_references,
+          has_any_column_privilege($1::name, 'public.xp_event_rsvp_source_claims', 'REFERENCES') as xp_event_source_any_column_references
       `, [runtime.roleName]);
       expect(privilegeRows.rows[0]).toEqual({
         module_select: true,
@@ -900,16 +952,19 @@ describe("real PostgreSQL Event RSVP Core", () => {
         tenants_truncate: false,
         tenants_trigger: false,
         tenants_references: false,
+        tenants_any_column_references: false,
         memberships_update: false,
         memberships_delete: false,
         memberships_truncate: false,
         memberships_trigger: false,
         memberships_references: false,
+        memberships_any_column_references: false,
         events_update: false,
         events_delete: false,
         events_truncate: false,
         events_trigger: false,
         events_references: false,
+        events_any_column_references: false,
         xp_ledger_select: true,
         xp_ledger_insert: true,
         xp_ledger_update: false,
@@ -917,6 +972,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_ledger_truncate: false,
         xp_ledger_trigger: false,
         xp_ledger_references: false,
+        xp_ledger_any_column_references: false,
         xp_source_select: true,
         xp_source_insert: true,
         xp_source_update: false,
@@ -924,6 +980,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_source_truncate: false,
         xp_source_trigger: false,
         xp_source_references: false,
+        xp_source_any_column_references: false,
         xp_event_source_select: true,
         xp_event_source_insert: true,
         xp_event_source_update: false,
@@ -931,6 +988,7 @@ describe("real PostgreSQL Event RSVP Core", () => {
         xp_event_source_truncate: false,
         xp_event_source_trigger: false,
         xp_event_source_references: false,
+        xp_event_source_any_column_references: false,
       });
       const runtimeRepository = new DrizzleEventRsvpRepository(runtime.database, {});
       await expect(change(graph, "going", 0, "restricted-runtime", runtime.database, runtimeRepository)).resolves.toEqual({
@@ -1052,6 +1110,63 @@ describe("real PostgreSQL Event RSVP Core", () => {
         await destroyAuthorityRoleChain(runtime, chain);
         await destroyRestrictedRuntime(runtime);
       }
+    }
+  });
+
+  it("RSVP-PG-AUTH-04 rejects direct column-level REFERENCES on every protected table", async () => {
+    const graph = await createGraph();
+    const runtime = await createRestrictedRuntime();
+    try {
+      for (const table of PROTECTED_REFERENCE_TABLES) {
+        await grantColumnReferencePrivilege(runtime.roleName, table);
+        try {
+          await expect(readReferencePrivilegeState(runtime.roleName, table)).resolves.toEqual({
+            tableLevel: false,
+            anyColumn: true,
+          });
+          await expectRuntimeAuthorityDenied(runtime, graph, `column-reference-direct-${table}`);
+        } finally {
+          await revokeColumnReferencePrivilege(runtime.roleName, table);
+        }
+      }
+      await expect(change(graph, "going", 0, "column-reference-direct-clean-positive", runtime.database, repository(runtime.database))).resolves.toMatchObject({
+        ok: true,
+        value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+      });
+    } finally {
+      await destroyRestrictedRuntime(runtime);
+    }
+  });
+
+  it("RSVP-PG-AUTH-05 rejects two-hop column-level REFERENCES on every protected table", async () => {
+    const graph = await createGraph();
+    const runtime = await createRestrictedRuntime();
+    let chain: AuthorityRoleChain | undefined;
+    try {
+      chain = await createAuthorityRoleChain(runtime);
+      for (const table of PROTECTED_REFERENCE_TABLES) {
+        await grantColumnReferencePrivilege(chain.dangerousRole, table);
+        try {
+          await expect(readReferencePrivilegeState(chain.dangerousRole, table)).resolves.toEqual({
+            tableLevel: false,
+            anyColumn: true,
+          });
+          await expect(readReferencePrivilegeState(runtime.roleName, table)).resolves.toEqual({
+            tableLevel: false,
+            anyColumn: true,
+          });
+          await expectRuntimeAuthorityDenied(runtime, graph, `column-reference-two-hop-${table}`);
+        } finally {
+          await revokeColumnReferencePrivilege(chain.dangerousRole, table);
+        }
+      }
+      await expect(change(graph, "going", 0, "column-reference-two-hop-clean-positive", runtime.database, repository(runtime.database))).resolves.toMatchObject({
+        ok: true,
+        value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+      });
+    } finally {
+      if (chain !== undefined) await destroyAuthorityRoleChain(runtime, chain);
+      await destroyRestrictedRuntime(runtime);
     }
   });
 
