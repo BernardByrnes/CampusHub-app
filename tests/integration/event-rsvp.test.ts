@@ -572,6 +572,7 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
   const password = randomUUID().replaceAll("-", "");
   const quotedRole = `"${roleName}"`;
   await adminPool.query(`create role ${quotedRole} login inherit password '${password}'`);
+  let poolForCleanup: Pool | undefined;
   try {
     await adminPool.query(`grant usage on schema public to ${quotedRole}`);
     await adminPool.query(`revoke create on schema public from ${quotedRole}`);
@@ -600,6 +601,7 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
     connectionUrl.username = roleName;
     connectionUrl.password = password;
     const restrictedPool = new Pool({ connectionString: connectionUrl.toString(), max: 1 });
+    poolForCleanup = restrictedPool;
     await restrictedPool.query("select 1");
     return {
       database: drizzle({ client: restrictedPool, schema: tables }) as CampusHubDatabase,
@@ -607,10 +609,11 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
       roleName,
     };
   } catch (error) {
-    await adminPool.query(`revoke "campushub_runtime" from ${quotedRole}`).catch(() => undefined);
-    await adminPool.query(`revoke all privileges on schema public from ${quotedRole}`).catch(() => undefined);
-    await adminPool.query(`revoke all privileges on all tables in schema public from ${quotedRole}`).catch(() => undefined);
-    await adminPool.query(`drop role ${quotedRole}`).catch(() => undefined);
+    await poolForCleanup?.end();
+    await adminPool.query(`revoke "campushub_runtime" from ${quotedRole}`);
+    await adminPool.query(`drop owned by ${quotedRole}`);
+    await adminPool.query(`drop role ${quotedRole}`);
+    await expectFixtureRolesAbsent([roleName]);
     throw error;
   }
 }
@@ -618,12 +621,13 @@ async function createRestrictedRuntime(options: Readonly<{ withApprovedRuntimeRo
 async function destroyRestrictedRuntime(runtime: RestrictedRuntime): Promise<void> {
   await runtime.pool.end();
   const quotedRole = `"${runtime.roleName}"`;
-  await getPool().query(`revoke "campushub_runtime" from ${quotedRole}`).catch(() => undefined);
-  await getPool().query(`revoke all privileges on schema public from ${quotedRole}`).catch(() => undefined);
-  await getPool().query(`revoke all privileges on all tables in schema public from ${quotedRole}`).catch(() => undefined);
-  await getPool().query(`revoke update ("updated_at") on "tenant_module_states" from ${quotedRole}`).catch(() => undefined);
+  await getPool().query(`revoke "campushub_runtime" from ${quotedRole}`);
+  await getPool().query(`revoke all privileges on schema public from ${quotedRole}`);
+  await getPool().query(`revoke all privileges on all tables in schema public from ${quotedRole}`);
+  await getPool().query(`revoke update ("updated_at") on "tenant_module_states" from ${quotedRole}`);
   await getPool().query(`drop owned by ${quotedRole}`);
   await getPool().query(`drop role ${quotedRole}`);
+  await expectFixtureRolesAbsent([runtime.roleName]);
 }
 
 type AuthorityPrivilege = Readonly<{
@@ -688,28 +692,130 @@ async function expectRuntimeAuthorityDenied(runtime: RestrictedRuntime, graph: G
   });
 }
 
+function realRuntimeRepository(runtime: RestrictedRuntime): DrizzleEventRsvpRepository {
+  return new DrizzleEventRsvpRepository(runtime.database);
+}
+
+async function expectRealRuntimePositivePath(
+  runtime: RestrictedRuntime,
+  graph: Graph,
+  idempotencyKey: string,
+): Promise<void> {
+  await expect(change(
+    graph,
+    "going",
+    0,
+    idempotencyKey,
+    runtime.database,
+    realRuntimeRepository(runtime),
+  )).resolves.toMatchObject({
+    ok: true,
+    value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
+  });
+
+  const rsvpRows = await getDatabase().select().from(eventRsvps).where(and(
+    eq(eventRsvps.tenantId, graph.tenantId),
+    eq(eventRsvps.eventId, graph.eventId),
+    eq(eventRsvps.membershipId, graph.membershipId),
+  ));
+  const requestRows = await getDatabase().select().from(eventRsvpIdempotency).where(and(
+    eq(eventRsvpIdempotency.tenantId, graph.tenantId),
+    eq(eventRsvpIdempotency.idempotencyKey, idempotencyKey),
+  ));
+  const claimRows = await getDatabase().select().from(xpSourceClaims).where(and(
+    eq(xpSourceClaims.tenantId, graph.tenantId),
+    eq(xpSourceClaims.membershipId, graph.membershipId),
+    eq(xpSourceClaims.ruleId, "event.rsvp"),
+    eq(xpSourceClaims.sourceKind, "event_rsvp"),
+    eq(xpSourceClaims.sourceReferenceId, graph.eventId),
+  ));
+  const eventSourceRows = await getDatabase().select().from(xpEventRsvpSourceClaims).where(and(
+    eq(xpEventRsvpSourceClaims.tenantId, graph.tenantId),
+    eq(xpEventRsvpSourceClaims.eventId, graph.eventId),
+  ));
+  const ledgerRows = await getDatabase().select().from(xpLedgerEntries).where(and(
+    eq(xpLedgerEntries.tenantId, graph.tenantId),
+    eq(xpLedgerEntries.membershipId, graph.membershipId),
+    eq(xpLedgerEntries.ruleId, "event.rsvp"),
+    eq(xpLedgerEntries.sourceKind, "event_rsvp"),
+    eq(xpLedgerEntries.sourceReferenceId, graph.eventId),
+  ));
+
+  expect(rsvpRows).toHaveLength(1);
+  expect(rsvpRows[0]).toMatchObject({ state: "going", version: 1 });
+  expect(requestRows).toHaveLength(1);
+  expect(requestRows[0]).toMatchObject({
+    completedOutcome: "CHANGED",
+    completedState: "going",
+    completedParticipationVersion: 1,
+    completedChanged: true,
+  });
+  expect(requestRows[0]?.completedAt).toBeInstanceOf(Date);
+  expect(claimRows).toHaveLength(1);
+  expect(claimRows[0]).toMatchObject({
+    ruleId: "event.rsvp",
+    sourceKind: "event_rsvp",
+    sourceReferenceId: graph.eventId,
+    sourceOccurrence: "initial_eligible_rsvp",
+    expectedEntryType: "award",
+  });
+  expect(eventSourceRows).toHaveLength(1);
+  expect(eventSourceRows[0]?.sourceClaimId).toBe(claimRows[0]?.id);
+  expect(ledgerRows).toHaveLength(1);
+  expect(ledgerRows[0]).toMatchObject({
+    ruleId: "event.rsvp",
+    sourceKind: "event_rsvp",
+    sourceReferenceId: graph.eventId,
+    entryType: "award",
+    amount: 5,
+    sourceClaimId: claimRows[0]?.id,
+  });
+  expect(ledgerRows[0]?.id).toBe(claimRows[0]?.canonicalLedgerEntryId);
+}
+
 type AuthorityRoleChain = Readonly<{
   intermediaryRole: string;
   dangerousRole: string;
 }>;
 
-async function createAuthorityRoleChain(runtime: RestrictedRuntime): Promise<AuthorityRoleChain> {
+async function expectFixtureRolesAbsent(roleNames: readonly string[]): Promise<void> {
+  const result = await getPool().query<{ roleName: string }>(
+    "select rolname as \"roleName\" from pg_roles where rolname::text = any($1::text[])",
+    [roleNames],
+  );
+  expect(result.rows).toEqual([]);
+}
+
+type AuthorityRoleChainOptions = Readonly<{
+  closureOnlyMemberships?: boolean;
+}>;
+
+async function createAuthorityRoleChain(
+  runtime: RestrictedRuntime,
+  options: AuthorityRoleChainOptions = {},
+): Promise<AuthorityRoleChain> {
   const suffix = randomUUID().replaceAll("-", "");
   const intermediaryRole = `campushub_evt003_intermediary_${suffix}`;
   const dangerousRole = `campushub_evt003_dangerous_${suffix}`;
   const quotedIntermediary = sqlIdentifier(intermediaryRole);
   const quotedDangerous = sqlIdentifier(dangerousRole);
   const quotedLogin = sqlIdentifier(runtime.roleName);
-  await getPool().query(`create role ${quotedDangerous} nologin`);
+  const chain = { intermediaryRole, dangerousRole } as const;
+  let dangerousCreated = false;
+  let intermediaryCreated = false;
   try {
+    await getPool().query(`create role ${quotedDangerous} nologin`);
+    dangerousCreated = true;
     await getPool().query(`create role ${quotedIntermediary} nologin`);
-    await getPool().query(`grant ${quotedDangerous} to ${quotedIntermediary}`);
-    await getPool().query(`grant ${quotedIntermediary} to ${quotedLogin}`);
-    return { intermediaryRole, dangerousRole };
+    intermediaryCreated = true;
+    const membershipOptions = options.closureOnlyMemberships
+      ? " with admin true, inherit false, set false"
+      : "";
+    await getPool().query(`grant ${quotedDangerous} to ${quotedIntermediary}${membershipOptions}`);
+    await getPool().query(`grant ${quotedIntermediary} to ${quotedLogin}${membershipOptions}`);
+    return chain;
   } catch (error) {
-    await getPool().query(`revoke ${quotedDangerous} from ${quotedIntermediary}`).catch(() => undefined);
-    await getPool().query(`drop role ${quotedIntermediary}`).catch(() => undefined);
-    await getPool().query(`drop role ${quotedDangerous}`).catch(() => undefined);
+    if (dangerousCreated || intermediaryCreated) await destroyAuthorityRoleChain(runtime, chain);
     throw error;
   }
 }
@@ -718,14 +824,68 @@ async function destroyAuthorityRoleChain(runtime: RestrictedRuntime, chain: Auth
   const quotedIntermediary = sqlIdentifier(chain.intermediaryRole);
   const quotedDangerous = sqlIdentifier(chain.dangerousRole);
   const quotedLogin = sqlIdentifier(runtime.roleName);
-  await getPool().query(`revoke "campushub_data_owner" from ${quotedDangerous}`).catch(() => undefined);
-  for (const table of PROTECTED_REFERENCE_TABLES) {
-    await revokeColumnReferencePrivilege(chain.dangerousRole, table).catch(() => undefined);
+  const adminPool = getPool();
+  const existingRoles = await adminPool.query<{ roleName: string }>(
+    "select rolname as \"roleName\" from pg_roles where rolname::text = any($1::text[])",
+    [[runtime.roleName, chain.intermediaryRole, chain.dangerousRole, "campushub_data_owner"]],
+  );
+  const existing = new Set(existingRoles.rows.map((row) => row.roleName));
+
+  if (existing.has(chain.dangerousRole) && existing.has("campushub_data_owner")) {
+    await adminPool.query(`revoke "campushub_data_owner" from ${quotedDangerous}`);
   }
-  await getPool().query(`revoke ${quotedDangerous} from ${quotedIntermediary}`).catch(() => undefined);
-  await getPool().query(`revoke ${quotedIntermediary} from ${quotedLogin}`).catch(() => undefined);
-  await getPool().query(`drop role ${quotedIntermediary}`).catch(() => undefined);
-  await getPool().query(`drop role ${quotedDangerous}`).catch(() => undefined);
+  if (existing.has(chain.intermediaryRole) && existing.has(chain.dangerousRole)) {
+    await adminPool.query(`revoke ${quotedDangerous} from ${quotedIntermediary}`);
+  }
+  if (existing.has(runtime.roleName) && existing.has(chain.intermediaryRole)) {
+    await adminPool.query(`revoke ${quotedIntermediary} from ${quotedLogin}`);
+  }
+  if (existing.has(chain.dangerousRole)) {
+    await adminPool.query(`drop owned by ${quotedDangerous}`);
+  }
+  if (existing.has(chain.intermediaryRole)) {
+    await adminPool.query(`drop owned by ${quotedIntermediary}`);
+  }
+  if (existing.has(chain.intermediaryRole)) {
+    await adminPool.query(`drop role ${quotedIntermediary}`);
+  }
+  if (existing.has(chain.dangerousRole)) {
+    await adminPool.query(`drop role ${quotedDangerous}`);
+  }
+  await expectFixtureRolesAbsent([chain.intermediaryRole, chain.dangerousRole]);
+}
+
+async function readAuthorityRoleMembershipChain(
+  runtime: RestrictedRuntime,
+  chain: AuthorityRoleChain,
+): Promise<Readonly<{
+  memberRole: string;
+  grantedRole: string;
+  adminOption: boolean;
+  inheritOption: boolean;
+  setOption: boolean;
+}[]>> {
+  const result = await getPool().query<{
+    memberRole: string;
+    grantedRole: string;
+    adminOption: boolean;
+    inheritOption: boolean;
+    setOption: boolean;
+  }>(`
+    select
+      member_role.rolname as "memberRole",
+      granted_role.rolname as "grantedRole",
+      membership.admin_option as "adminOption",
+      membership.inherit_option as "inheritOption",
+      membership.set_option as "setOption"
+    from pg_auth_members as membership
+    join pg_roles as member_role on member_role.oid = membership.member
+    join pg_roles as granted_role on granted_role.oid = membership.roleid
+    where (member_role.rolname = $1 and granted_role.rolname = $2)
+       or (member_role.rolname = $2 and granted_role.rolname = $3)
+    order by case when member_role.rolname = $1 then 0 else 1 end
+  `, [runtime.roleName, chain.intermediaryRole, chain.dangerousRole]);
+  return result.rows;
 }
 
 beforeAll(async () => {
@@ -1083,7 +1243,6 @@ describe("real PostgreSQL Event RSVP Core", () => {
     const cases: readonly Readonly<{
       key: string;
       setup: (dangerousRole: string) => Promise<void>;
-      cleanup?: (dangerousRole: string) => Promise<void>;
     }>[] = [
       {
         key: "authority-multihop-parent",
@@ -1101,13 +1260,15 @@ describe("real PostgreSQL Event RSVP Core", () => {
 
     for (const authorityCase of cases) {
       const runtime = await createRestrictedRuntime();
-      const chain = await createAuthorityRoleChain(runtime);
       try {
-        await authorityCase.setup(chain.dangerousRole);
-        await expectRuntimeAuthorityDenied(runtime, graph, authorityCase.key);
+        const chain = await createAuthorityRoleChain(runtime);
+        try {
+          await authorityCase.setup(chain.dangerousRole);
+          await expectRuntimeAuthorityDenied(runtime, graph, authorityCase.key);
+        } finally {
+          await destroyAuthorityRoleChain(runtime, chain);
+        }
       } finally {
-        await authorityCase.cleanup?.(chain.dangerousRole);
-        await destroyAuthorityRoleChain(runtime, chain);
         await destroyRestrictedRuntime(runtime);
       }
     }
@@ -1129,44 +1290,73 @@ describe("real PostgreSQL Event RSVP Core", () => {
           await revokeColumnReferencePrivilege(runtime.roleName, table);
         }
       }
-      await expect(change(graph, "going", 0, "column-reference-direct-clean-positive", runtime.database, repository(runtime.database))).resolves.toMatchObject({
-        ok: true,
-        value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
-      });
+      for (const table of PROTECTED_REFERENCE_TABLES) {
+        await expect(readReferencePrivilegeState(runtime.roleName, table)).resolves.toEqual({
+          tableLevel: false,
+          anyColumn: false,
+        });
+      }
+      await expectRealRuntimePositivePath(runtime, graph, "column-reference-direct-clean-positive");
     } finally {
       await destroyRestrictedRuntime(runtime);
     }
   });
 
   it("RSVP-PG-AUTH-05 rejects two-hop column-level REFERENCES on every protected table", async () => {
-    const graph = await createGraph();
-    const runtime = await createRestrictedRuntime();
-    let chain: AuthorityRoleChain | undefined;
-    try {
-      chain = await createAuthorityRoleChain(runtime);
-      for (const table of PROTECTED_REFERENCE_TABLES) {
+    for (const table of PROTECTED_REFERENCE_TABLES) {
+      const graph = await createGraph();
+      const runtime = await createRestrictedRuntime();
+      let chain: AuthorityRoleChain | undefined;
+      try {
+        chain = await createAuthorityRoleChain(runtime, { closureOnlyMemberships: true });
         await grantColumnReferencePrivilege(chain.dangerousRole, table);
+        await expect(readReferencePrivilegeState(chain.dangerousRole, table)).resolves.toEqual({
+          tableLevel: false,
+          anyColumn: true,
+        });
+        await expect(readReferencePrivilegeState(chain.intermediaryRole, table)).resolves.toEqual({
+          tableLevel: false,
+          anyColumn: false,
+        });
+        await expect(readReferencePrivilegeState(runtime.roleName, table)).resolves.toEqual({
+          tableLevel: false,
+          anyColumn: false,
+        });
+        await expect(readAuthorityRoleMembershipChain(runtime, chain)).resolves.toEqual([
+          {
+            memberRole: runtime.roleName,
+            grantedRole: chain.intermediaryRole,
+            adminOption: true,
+            inheritOption: false,
+            setOption: false,
+          },
+          {
+            memberRole: chain.intermediaryRole,
+            grantedRole: chain.dangerousRole,
+            adminOption: true,
+            inheritOption: false,
+            setOption: false,
+          },
+        ]);
+        await expectRuntimeAuthorityDenied(runtime, graph, `column-reference-two-hop-${table}`);
+
+        await destroyAuthorityRoleChain(runtime, chain);
+        chain = undefined;
+        await expectFixtureRolesAbsent([runtime.roleName]);
+        for (const protectedTable of PROTECTED_REFERENCE_TABLES) {
+          await expect(readReferencePrivilegeState(runtime.roleName, protectedTable)).resolves.toEqual({
+            tableLevel: false,
+            anyColumn: false,
+          });
+        }
+        await expectRealRuntimePositivePath(runtime, graph, `column-reference-two-hop-clean-positive-${table}`);
+      } finally {
         try {
-          await expect(readReferencePrivilegeState(chain.dangerousRole, table)).resolves.toEqual({
-            tableLevel: false,
-            anyColumn: true,
-          });
-          await expect(readReferencePrivilegeState(runtime.roleName, table)).resolves.toEqual({
-            tableLevel: false,
-            anyColumn: true,
-          });
-          await expectRuntimeAuthorityDenied(runtime, graph, `column-reference-two-hop-${table}`);
+          if (chain !== undefined) await destroyAuthorityRoleChain(runtime, chain);
         } finally {
-          await revokeColumnReferencePrivilege(chain.dangerousRole, table);
+          await destroyRestrictedRuntime(runtime);
         }
       }
-      await expect(change(graph, "going", 0, "column-reference-two-hop-clean-positive", runtime.database, repository(runtime.database))).resolves.toMatchObject({
-        ok: true,
-        value: { outcome: "CHANGED", state: "going", participationVersion: 1, changed: true },
-      });
-    } finally {
-      if (chain !== undefined) await destroyAuthorityRoleChain(runtime, chain);
-      await destroyRestrictedRuntime(runtime);
     }
   });
 
