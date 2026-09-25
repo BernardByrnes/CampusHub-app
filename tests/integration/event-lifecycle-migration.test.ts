@@ -38,6 +38,8 @@ if (phase4StatementIndex < 0) {
 let adminPool: Pool | undefined;
 let baseDatabaseName = "";
 let databaseSequence = 0;
+const databaseCloseTimeoutMs = 10_000;
+const databaseClosePollIntervalMs = 100;
 
 function getAdminPool(): Pool {
   if (adminPool === undefined) throw new Error("Migration admin pool is not initialized.");
@@ -93,8 +95,40 @@ async function createDatabase(
 }
 
 async function dropDatabase(databaseName: string): Promise<void> {
+  const deadline = Date.now() + databaseCloseTimeoutMs;
+  let remainingSessions: Array<{
+    pid: number;
+    usename: string | null;
+    application_name: string | null;
+    state: string | null;
+    wait_event_type: string | null;
+  }> = [];
+
+  do {
+    const result = await getAdminPool().query<{
+      pid: number;
+      usename: string | null;
+      application_name: string | null;
+      state: string | null;
+      wait_event_type: string | null;
+    }>(
+      `select pid, usename, application_name, state, wait_event_type
+       from pg_stat_activity
+       where datname = $1 and pid <> pg_backend_pid()`,
+      [databaseName],
+    );
+    remainingSessions = result.rows;
+    if (remainingSessions.length === 0) break;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for sessions to close before dropping ${databaseName}: ${JSON.stringify(remainingSessions)}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, databaseClosePollIntervalMs));
+  } while (true);
+
   await getAdminPool().query(
-    `drop database if exists ${quoteIdentifier(databaseName)} with (force)`,
+    `drop database if exists ${quoteIdentifier(databaseName)}`,
   );
 }
 
@@ -240,8 +274,11 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (baseDatabaseName !== "") await dropDatabase(baseDatabaseName);
-  await adminPool?.end();
+  try {
+    if (baseDatabaseName !== "") await dropDatabase(baseDatabaseName);
+  } finally {
+    await adminPool?.end();
+  }
 });
 
 describe("isolated CH-EVT-004 migration invariants", () => {
