@@ -170,12 +170,17 @@ generation so that a worker whose lease expired cannot overwrite a newer
 claim's result. A lease timeout can make work available again; it cannot
 establish that a prior external call did not succeed.
 
+A claim, lease, or eligibility read is not permission to dispatch. External
+provider calls use the Tenant dispatch-admission and suspension protocol in
+§7.1; workers never call providers directly.
+
 The operation lifecycle must distinguish at least:
 
 | State | Meaning |
 | --- | --- |
 | READY | Durable intent is eligible to be claimed when its approved due time arrives. |
 | CLAIMED | One worker owns the current lease and fencing generation. |
+| DISPATCHING | The trusted adapter has admitted the effect for provider invocation; the Tenant suspension barrier counts it until the adapter returns or is fenced and records an outcome. |
 | RETRY_WAIT | A classified transient failure may be attempted again under the bounded retry policy. |
 | SUCCEEDED | The effect completed or the guarded transition committed. |
 | SUPPRESSED | Current approved state or eligibility rules say no effect is due. |
@@ -244,6 +249,40 @@ current-state checks. An effect is never allowed to bypass Tenant suspension,
 Membership eligibility, audience, preference, source lifecycle, or the
 applicable delivery rules.
 
+### 5.3 Due intent during Tenant suspension
+
+When an intent's approved due time passes while the Tenant dispatch gate is
+closed for suspension, that logical occurrence is missed, not paused for later
+catch-up delivery. Persist one terminal `SUPPRESSED` occurrence, keyed by its
+stable logical occurrence identity, with its `due_at`, observation/recording
+time, Tenant suspension/dispatch generation, source version, and reason
+`TENANT_SUSPENDED_AT_DUE`. Whether a scheduler records it at the due time or a
+recovery sweep records it later, the unique occurrence is recorded exactly
+once. A missed occurrence is never changed back to `READY` or `RETRY_WAIT` on
+reactivation. A new future occurrence requires the operation's separately
+approved scheduling action and a new logical identity.
+
+Before dispatch is reopened after reactivation, a catch-up transaction or
+bounded sweep must terminalize every due occurrence from the closed interval.
+The dispatch gate remains closed until this sweep completes; failure leaves it
+closed. This prevents a delayed worker or an offline scheduler from turning
+elapsed work into a retroactive send.
+
+For a one-shot post-commit effect, including an Event reminder, the recorded
+occurrence remains suppressed after reactivation. For a deferred business
+transition, no stale command is executed. The occurrence is recorded as
+missed/suppressed and needs a fresh authorized command unless an approved,
+operation-specific Product contract supplies a safe fallback. For the
+CH-PUB-002 scheduled Publication proving case, this gate recommends that a
+still-matching `scheduled` Publication return to `draft` when its publish time
+passes during suspension; the missed publish occurrence is still recorded as
+suppressed, the Publisher is told why, and an explicit new schedule is required
+to publish later. That draft fallback is a recommendation for Product Owner
+acceptance, not a frozen Product rule or runtime authorization. If its source
+version changed or the fallback has not been accepted, hold the occurrence,
+leave the Publication unpublished, and require an authorized Publisher
+resolution. No reactivation may publish it retroactively.
+
 ## 6. Duplicate safety and retry contract
 
 Three identities remain distinct:
@@ -294,6 +333,8 @@ are:
 | Worker obtains PMAFB first | The invalidator blocks. The worker performs only the exact authorized transition and commits while holding authority locks. The invalidator proceeds afterward; subsequent work must reauthorize. |
 | Grant or Guild Term expires while waiting for an authority/resource lock | After the wait, the worker rereads authority and uses fresh database time. Expiry before PMAFB fails closed. |
 | Resource transition or version change commits first | The worker observes the new version/state and holds or suppresses the stale intent. It never retargets to the new version automatically. |
+| Tenant suspension closes dispatch admission before the gateway admits a send | The gateway rechecks the current Tenant lifecycle, closed gate, and dispatch generation after any wait; it rejects admission and makes no provider call. The suspension may then commit. |
+| Gateway records dispatch admission before suspension closes the gate | The gateway owns that in-flight invocation; suspension closes new admission and cannot commit the Tenant as suspended until the invocation is terminal or safely reconciled/fenced. The provider handoff is ordered before the suspension commit. |
 | Worker lease expires while the first worker is still running | Fencing generation prevents the stale worker from updating claim state. Stable effect idempotency handles a duplicate provider call; an ambiguous non-idempotent call is held for reconciliation. |
 | Business transaction rolls back | Its outbox intent and success audit roll back with it; no worker can observe a committed intent for that transition. |
 | Business transaction commits, then delivery fails | Business state and audit remain committed. The effect follows the retry, hold, or dead-letter policy without replaying the business mutation. |
@@ -305,6 +346,86 @@ timing, cached authorization, optimistic resource version alone, and
 SERIALIZABLE alone do not prove the contract. The PMAFB lock modes, order,
 post-wait database-clock checks, and resource locking remain the shared
 contract; this gate does not define a second authority algorithm.
+
+### 7.1 Tenant dispatch admission and suspension barrier
+
+The Tenant's final suspension commit is the dispatch cutoff: no worker or
+adapter may begin a provider invocation after that commit. Because PostgreSQL
+cannot atomically commit with an external provider, a final eligibility read
+followed by a direct worker call cannot provide this guarantee. Recommend a
+per-Tenant dispatch barrier serialized with the authoritative Tenant lifecycle
+writer, using the reviewed Tenant/PMAFB lock order. Its open/closed state and
+monotonically increasing generation are execution-control metadata, not a new
+Product lifecycle state or an approved physical schema.
+
+Use this protocol for any Tenant-scoped external effect whose approved policy
+blocks execution during suspension:
+
+1. The suspension path closes the dispatch barrier and advances its generation
+   in a short PostgreSQL transaction, then commits that closure. This prevents
+   new admissions; it is the start of quiescence, not yet the final Tenant
+   `suspended` commit. The suspension path then waits without holding database
+   row locks for already admitted gateway invocations to resolve.
+2. Every provider call passes through a trusted dispatch adapter that alone
+   holds provider credentials and network egress. A worker submits an intent
+   reference and expected generation, never a detachable send permit or
+   provider credential. At admission, the adapter re-reads and validates the
+   current Tenant lifecycle and gate generation, the intent and due time, and
+   the effect's current source/target eligibility. In one short transaction
+   serialized with barrier closure, it records an in-flight dispatch
+   reservation and commits it. An earlier worker eligibility check cannot
+   satisfy this step.
+3. The adapter itself immediately invokes the provider for that reservation;
+   it does not return a reusable permit to a worker. Database locks are
+   released before the network call. The reservation stays in flight until
+   the adapter returns or is hard-fenced and records the attempt outcome with
+   the current fencing generation. A provider-accepted but unacknowledged
+   request is `DELIVERY_UNKNOWN`, not a license to issue another call.
+4. Before a final short transaction locks the barrier/Tenant in the reviewed
+   order, verifies the closed generation, writes Tenant status `suspended`, and
+   commits, prove that no live adapter instance can still start or retry a
+   provider invocation. A still-live reservation must return or its adapter
+   must be hard-fenced; record an ambiguous result as `DELIVERY_UNKNOWN` and
+   prohibit replay. A lease timeout alone is not fencing. A request already
+   handed to the provider before suspension may still be processed externally;
+   CampusHub cannot cancel it without a separately proven provider contract.
+5. Reactivation does not reopen dispatch as part of changing Tenant status.
+   Keep the barrier closed, reconcile and terminalize due occurrences from the
+   closed interval under §5.3, advance the generation, then open admission in a
+   separate guarded transaction. A stale worker or adapter request carrying an
+   older generation is rejected.
+
+The two commit orderings are therefore explicit. If the suspension barrier
+closure wins before gateway admission, the later adapter transaction observes
+the closed generation and produces no provider invocation; the final
+suspension commit may follow. If gateway admission wins first, the final
+suspension commit waits for that invocation to return or for a reviewed
+fencing/recovery result that makes any later invocation impossible, then
+occurs afterward. No dispatch
+permit can remain with a worker that might call after the final commit. If a
+provider or deployment cannot enforce the adapter-only egress and fencing
+boundary, the affected channel remains held and is not enabled.
+
+Here, “send” means the adapter's provider invocation/handoff. A provider may
+deliver an already accepted request to a recipient later; CampusHub cannot
+retract that external delivery unless the provider supports and proves a
+separate cancellation/fencing contract. If Product requires recipient receipt
+to stop at the suspension commit, that provider capability is an additional
+precondition; unresolved or unprovable behavior blocks the channel.
+
+Required PostgreSQL and provider proof covers both orderings with separate
+database connections and deterministic barriers, including the exact gap
+between worker eligibility and provider invocation:
+
+| Ordering | PostgreSQL proof | Provider/adapter proof |
+| --- | --- | --- |
+| Suspension wins | Pause a worker after its eligibility read but before gateway admission. Close the barrier and commit Tenant suspension on another connection; resume the worker and assert the stale generation is rejected and no provider invocation is recorded. | Pause the fake adapter at the same boundary; after suspension commits, resume it and assert the provider call count stays zero, including after worker/gateway retry. |
+| Dispatch wins | Commit the gateway's in-flight reservation first and pause its fake provider invocation. Begin suspension on another connection; prove it cannot commit Tenant status `suspended` until the reservation is terminal or reconciled/fenced. Then assert the provider invocation precedes the suspension commit and a subsequent call is rejected. | Pause at provider acceptance and acknowledgment boundaries. Assert no invocation begins after the final suspension commit. For crash/accepted-unacknowledged cases, prove the old gateway is fenced and no blind retry or late call can occur; otherwise suspension stays quiescing. |
+
+Use database commit/order markers and provider invocation records rather than
+sleep-only timing or wall-clock comparison. Verify the gate's Tenant isolation,
+generation checks, zero-active-invocation condition, missed-occurrence
+terminalization, and that a failed reactivation sweep cannot reopen dispatch.
 
 Post-commit delivery is not itself a privileged Event mutation and does not
 repeat PMAFB for the already committed source action. It still must validate
@@ -358,7 +479,9 @@ schedule/version still matches, the recipient's RSVP and Membership remain
 eligible, the Tenant permits delivery, and current preferences/channel rules
 allow the reminder. A stale reminder is suppressed. This document sets no
 reminder lead time, quiet hours, volume cap, digest timing, or channel
-ownership value.
+ownership value. If its due time passes while the Tenant dispatch gate is
+closed for suspension, record and permanently suppress that reminder
+occurrence under §5.3; reactivation does not send it late.
 
 An ordinary Event edit does not automatically generate another notification.
 Any explicit Publisher re-notification must follow CH-NTF-004's
@@ -416,6 +539,7 @@ changed, or deferred; this document's existence is not that approval.
 | Product transition matrix | Name each allowed asynchronous business transition and effect by story, trigger, required origin/System authority, current-state checks, stale/invalid outcome, and whether a fresh user command is required. Explicitly leave unlisted transitions disabled. |
 | Queued intent | Approve the closed operation envelope, Tenant context, provenance, expected-version, due-time source, and no-authority-lease rule. Preserve every unresolved Product value as open. |
 | Authority and revocation | Approve shared PMAFB reuse, exact origin-authority references, row-lock order, resource order, clock semantics, and both invalidation/worker orderings. |
+| Dispatch admission and suspension | Approve the per-Tenant barrier, gateway-only provider egress, in-flight drain/fencing rule, final suspension commit boundary, provider meaning of send, both commit orderings, and fail-closed recovery. |
 | Transactional handoff | Approve same-transaction outbox insertion with business state and required A6 event, plus rollback and post-commit failure behavior. |
 | Retry and duplicate safety | Approve finite operational retry bounds, observability, dead-letter/recovery procedure, internal logical uniqueness, actual provider idempotency or reconciliation, and ambiguous-result handling. |
 | Tenant, privacy, and audit | Complete operation-specific A2/A4 registration and negative evidence, identifier ownership, A6 actor/event contracts, data minimization, retention, and export/deletion treatment. |
@@ -430,18 +554,24 @@ checkpoint must additionally provide:
 2. separate-connection PostgreSQL proof for every applicable authority
    source in both orderings, including Tenant, Membership, grant, Guild Term,
    module, assurance/MFA where applicable, and expiry while waiting on
-   authority and resource locks;
+   authority and resource locks, plus both dispatch-admission/Tenant-suspension
+   commit orderings and the eligibility-to-provider-call barrier;
 3. expected-version and lifecycle races, stale-intent holds, resource/
    authority rollback, atomic source/audit/outbox handoff, duplicate enqueue,
    duplicate worker, lease expiry/fencing, and idempotency conflict evidence;
 4. crash-point proof before commit, after commit, before provider call, after
    provider acceptance and before acknowledgment, and after retry exhaustion;
+   provider evidence must also prove no invocation begins after final Tenant
+   suspension commit and that unresolved in-flight calls keep suspension
+   quiescing;
 5. cross-Tenant negative tests for durable payload, worker context, repository
    access, recipient resolution, and delivery, plus A6 minimization and
    privacy/retention evidence;
 6. actual provider or adapter evidence for stable idempotency and the
    accepted-but-unacknowledged failure case; otherwise the affected channel
-   stays held and cannot claim duplicate-safe completion; and
+   stays held and cannot claim duplicate-safe completion. Missed due
+   occurrences during suspension must be terminal before reactivation opens
+   dispatch; and
 7. exact-SHA CI, operations alert/recovery evidence, and independent
    read-only review. Deployment remains a separate authorization.
 
