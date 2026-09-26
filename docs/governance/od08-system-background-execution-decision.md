@@ -1,6 +1,6 @@
 # CampusHub OD-08 SYSTEM / Background Execution Decision
 
-Status: **OD-08 CLOSURE PROPOSAL — AWAITING PRODUCT OWNER APPROVAL**
+Status: **OD-08 CLOSED — GENERIC CAMPUSHUB SYSTEM/BACKGROUND EXECUTION ARCHITECTURE**
 
 - Prepared: 2026-09-26
 - Scope: CampusHub Pilot
@@ -8,20 +8,23 @@ Status: **OD-08 CLOSURE PROPOSAL — AWAITING PRODUCT OWNER APPROVAL**
 - Approved source architecture: docs/governance/od08-system-background-execution-gate.md
 - Source architecture SHA: 63ff42835fff058fced175daaaca0e754a82f237
 - Source architecture disposition: APPROVED / NONE
+- Approved proposal SHA: ff3979c341dac44054a105d153f116ee0d9dfb45
 - Runtime disposition: NONE
 - Deployment disposition: NONE
 
 ## 1. Purpose and decision boundary
 
-This record asks the CampusHub Product Owner to adopt the bounded D01–D14
-decisions below as one controlled Product / Architecture / Operations decision.
-It is a proposal, not evidence that Product Owner approval has occurred.
+This record memorializes the CampusHub Product Owner's approval of the bounded
+D01–D14 decisions below as one controlled Product / Architecture / Operations
+decision. Approval is bound to the proposal at SHA
+ff3979c341dac44054a105d153f116ee0d9dfb45. This recording update changes
+approval/status metadata only; it does not change the approved D01–D14
+substance.
 
 The approved OD-08 SYSTEM/background execution architecture gate is the
-technical basis for this proposal. This record adopts that architecture
+technical basis for the D01–D14 decision. This record adopts that architecture
 substantially as written and makes the initial policy selections explicit. No
-concrete contradiction with higher authority was identified in preparing this
-proposal.
+concrete contradiction with higher authority was identified during review.
 
 The governing authority was considered in this order:
 
@@ -32,15 +35,14 @@ The governing authority was considered in this order:
 5. the controlled refreeze and applicable A2, A4, A6, PMAFB, and feature-gate
    records, followed by runtime and test evidence.
 
-Neither frozen governing document is modified by this decision record. Until
-the Product Owner approves this proposal, OD-08 remains open and the existing
-implementation blocks remain in force. If approved, this record will close
-OD-08 only for the generic CampusHub SYSTEM/background execution architecture
-and policies expressly stated here. It will not authorize implementation or
-supersede unrelated Product decisions, feature gates, or checkpoint
-requirements.
+Neither frozen governing document is modified by this decision record. Before
+the approval recorded here, OD-08 remained open and the existing
+implementation blocks remained in force. The approval closes OD-08 only for
+the generic CampusHub SYSTEM/background execution architecture and policies
+expressly stated here. It does not authorize implementation or supersede
+unrelated Product decisions, feature gates, or checkpoint requirements.
 
-Upon approval, this later controlled decision resolves only the generic
+The approval recorded here resolves only the generic
 OD-08-open status and architecture questions that the controlled refreeze,
 Blueprint, and related gates expressly reserved for OD-08. Their statements
 that OD-08 was open remain historically accurate for the state before this
@@ -49,15 +51,15 @@ requirements continue to apply. The approval supplies the previously deferred
 generic execution decision; it does not make an outbox, worker, transition, or
 delivery runtime current or automatically authorized.
 
-## 2. Proposed decisions
+## 2. Approved decisions D01–D14
 
-Each item below is proposed for adoption as part of the single D01–D14 decision.
-None is recorded as approved until the Product Owner approval block is
-completed through a later controlled update.
+The Product Owner approved every item below together as one decision on
+2026-09-26. Their substantive wording is the wording approved at proposal SHA
+ff3979c341dac44054a105d153f116ee0d9dfb45.
 
 ### D01 — Canonical execution mechanism
 
-**Proposed decision:** Adopt a PostgreSQL-backed durable-intent /
+**Approved decision:** Adopt a PostgreSQL-backed durable-intent /
 transactional-outbox mechanism as the canonical CampusHub asynchronous
 execution architecture.
 
@@ -72,7 +74,7 @@ worker, queue provider, or enabled runtime.
 
 ### D02 — Queued intent is not authority
 
-**Proposed decision:** Keep the following concepts distinct:
+**Approved decision:** Keep the following concepts distinct:
 
 - intent identity;
 - originating provenance;
@@ -91,7 +93,7 @@ result as delivery authority.
 
 ### D03 — Transactional handoff
 
-**Proposed decision:** Where a source operation requires durable later work,
+**Approved decision:** Where a source operation requires durable later work,
 commit the source business state, its required A6 source-success event, and its
 durable intent/outbox occurrence atomically in one PostgreSQL transaction.
 If required intent creation fails before commit, the source transaction fails.
@@ -99,12 +101,12 @@ External delivery begins only after that transaction commits. A provider or
 delivery failure after commit cannot roll back the source action.
 
 The operation-specific contract determines whether each item is required;
-this proposal does not make every business action emit an intent or audit
+this decision does not make every business action emit an intent or audit
 event.
 
 ### D04 — Worker claim and fencing model
 
-**Proposed decision:** Use a short PostgreSQL claim transaction with
+**Approved decision:** Use a short PostgreSQL claim transaction with
 row-level claim locking, a monotonically increasing claim/fencing generation,
 and database-clock lease expiry. Commit the claim before slow work; do not hold
 database locks across network calls. Completion, retry, and terminal-state
@@ -116,7 +118,7 @@ requires one; they may not call providers around that admission boundary.
 
 ### D05 — Truthful delivery guarantee
 
-**Proposed decision:** Reject any claim of exactly-once external delivery.
+**Approved decision:** Reject any claim of exactly-once external delivery.
 CampusHub may claim only the guarantees supported by the particular
 operation/provider:
 
@@ -134,7 +136,7 @@ provider deduplication or reconciliation cannot establish that retry is safe.
 
 ### D06 — Automatic retry policy
 
-**Proposed decision:** For external post-commit provider effects, allow at most
+**Approved decision:** For external post-commit provider effects, allow at most
 **six total automatic attempts per delivery identity**, including the initial
 attempt, and no more than **24 hours from the first provider attempt**.
 
@@ -165,7 +167,7 @@ effect identity.
 
 ### D07 — Operator recovery
 
-**Proposed decision:** Permit inspection and redrive only through a governed
+**Approved decision:** Permit inspection and redrive only through a governed
 recovery operation. Redrive preserves the Tenant, logical effect identity,
 original intent and provenance, provider idempotency identity where
 applicable, and complete attempt history. Every redrive revalidates current
@@ -177,7 +179,7 @@ to evade an exhausted or ambiguous result is forbidden.
 
 ### D08 — Tenant suspension dispatch boundary
 
-**Proposed decision:** Adopt the per-Tenant dispatch-admission barrier in the
+**Approved decision:** Adopt the per-Tenant dispatch-admission barrier in the
 approved architecture gate. The final Tenant suspended commit is the
 CampusHub provider-invocation cutoff: no new provider invocation may begin
 after that commit.
@@ -191,7 +193,7 @@ demonstrated, dispatch remains quiescing and fail-closed.
 
 ### D09 — Reactivation and missed work
 
-**Proposed decision:** Reactivation must not blindly replay work that became
+**Approved decision:** Reactivation must not blindly replay work that became
 due while the Tenant dispatch gate was closed. Before dispatch reopens,
 occurrences due during that interval are terminalized under their
 Product-specific contracts.
@@ -221,7 +223,7 @@ established, reconciliation remains held and dispatch stays closed.
 
 ### D10 — Durable reopening cutoff
 
-**Proposed decision:** Adopt the approved architecture gate's
+**Approved decision:** Adopt the approved architecture gate's
 database-backed reopening boundary, using PostgreSQL transaction/commit
 timestamp evidence for the end of the suspension interval. The reopening
 transaction's identity and Tenant gate generation must be recorded, and the
@@ -235,13 +237,13 @@ not reopen, the bounded reconciliation is repeated, and a fresh guarded
 reopening transaction is required. Sweep time, transaction-start time, caller
 time, or an unverified application timestamp is not a substitute.
 
-This is accepted architecture for the proposal. If implementation evidence
+This decision accepts the architecture as stated. If implementation evidence
 demonstrates a concrete PostgreSQL/platform incompatibility, return for
 architecture review rather than silently weakening the boundary.
 
 ### D11 — SYSTEM authority model
 
-**Proposed decision:** SYSTEM has no generic standing capability. SYSTEM work
+**Approved decision:** SYSTEM has no generic standing capability. SYSTEM work
 is permitted only under:
 
 1. an explicitly approved deferred-transition policy; or
@@ -255,20 +257,20 @@ bypass.
 
 ### D12 — Initial transition/effect matrix
 
-**Proposed decision:** The generic mechanism has only the following initial
+**Approved decision:** The generic mechanism has only the following initial
 architecture classes. Every class still requires its own bounded runtime
 authorization.
 
-| Class | Proposed policy | Remaining implementation boundary |
+| Class | Approved policy | Remaining implementation boundary |
 | --- | --- | --- |
 | Scheduled Publication publish | Deferred privileged transition. Revalidate originating publication authority and current Publication lifecycle, version, due time, and other current preconditions. Stale, revoked, or invalid intent does not publish. | This decision does not authorize Publication scheduling or publish runtime. Priority Notice publication remains subject to OD-10 and a separately approved policy; no Priority Notice runtime is authorized here. |
-| Missed scheduled Publication after Tenant suspension | Dedicated narrow SYSTEM safety reconciliation. Only a currently qualifying same-Tenant scheduled Publication may move from scheduled to draft; preserve newer fields; never publish; atomically record the explanation, occurrence outcome, and approved A6 event. | Only this safety-policy direction is proposed here. Runtime remains separately gated and must satisfy CH-SUB-002 and the approved architecture gate. |
+| Missed scheduled Publication after Tenant suspension | Dedicated narrow SYSTEM safety reconciliation. Only a currently qualifying same-Tenant scheduled Publication may move from scheduled to draft; preserve newer fields; never publish; atomically record the explanation, occurrence outcome, and approved A6 event. | This decision adopts only this safety-policy direction. Runtime remains separately gated and must satisfy CH-SUB-002 and the approved architecture gate. |
 | CH-NTF post-commit effects | The generic mechanism may support future separately authorized durable in-app notification materialization and external delivery only where the relevant Product category and contact-channel ownership authority permit it. Potential cases include Event cancellation/change effects and reminders/digests only when their Product timing decisions are closed. | No CH-NTF runtime, delivery channel, open timing value, or notification policy is authorized by this decision. |
 | All other asynchronous transitions/effects | Disabled unless expressly supplied by Product authority and an approved operation-specific policy. | No inferred or blanket SYSTEM authority. |
 
 ### D13 — A6 SYSTEM audit direction
 
-**Proposed decision:** Machine-authored business transitions use an explicit
+**Approved decision:** Machine-authored business transitions use an explicit
 SYSTEM actor discriminator and policy identity. They must not fabricate an
 actorMembershipId.
 
@@ -285,7 +287,7 @@ checkpoint and required A6 approval.
 
 ### D14 — Notification and unrelated Product values remain open
 
-**Proposed decision:** This OD-08 decision does not close or supply:
+**Approved decision:** This OD-08 decision does not close or supply:
 
 - the CH-NTF-003 numeric daily in-app cap;
 - quiet-hour start or end values;
@@ -302,14 +304,10 @@ values.
 
 ## 3. Effect of approval and continuing gates
 
-Before Product Owner approval of this exact decision proposal, OD-08 remains
-open; the proposal itself is not authorization to implement, enable, or deploy
-any asynchronous operation.
-
-After Product Owner approval, **OD-08 is CLOSED only for the generic CampusHub
-SYSTEM/background execution architecture described in D01–D14.** Future
-bounded implementation checkpoints may rely on those generic decisions
-without reopening the generic queued-intent, outbox, retry, and
+With the Product Owner approval recorded above, **OD-08 is CLOSED only for the
+generic CampusHub SYSTEM/background execution architecture described in
+D01–D14.** Future bounded implementation checkpoints may rely on those generic
+decisions without reopening the generic queued-intent, outbox, retry, and
 suspension-boundary decision.
 
 Closure does not mean that all background operations are authorized, that
@@ -327,11 +325,13 @@ enabled merely because it appears in the architecture matrix.
 
 ## 4. Approval record
 
-Product Owner decision: **AWAITING APPROVAL**
+Product Owner decision: **APPROVED**
 
-Decision date: —
+Decision date: 2026-09-26
 
 Scope: CampusHub Pilot
+
+Approved proposal SHA: ff3979c341dac44054a105d153f116ee0d9dfb45
 
 Architecture review: **APPROVED / NONE** at
 63ff42835fff058fced175daaaca0e754a82f237
@@ -340,15 +340,15 @@ Runtime authorization: **NONE**
 
 Deployment authorization: **NONE**
 
-### Copy/paste Product Owner approval statement
+### Product Owner approval statement (recorded)
 
 As CampusHub Product Owner, I approve D01–D14 in
-docs/governance/od08-system-background-execution-decision.md at the
-independently reviewed candidate SHA [insert SHA] as one bounded CampusHub
-Pilot Product / Architecture / Operations decision. Upon this approval,
-OD-08 is closed only for the generic SYSTEM/background execution architecture
-stated in that record; every specific future operation remains separately
-gated by its Product story/policy and bounded implementation checkpoint. This
-approval does not authorize runtime, schema or migration implementation,
-Notification implementation, deployment, or production migration, and does
-not close the open Product decisions listed in D14.
+docs/governance/od08-system-background-execution-decision.md at candidate SHA
+ff3979c341dac44054a105d153f116ee0d9dfb45 as one bounded CampusHub Pilot
+Product / Architecture / Operations decision. Upon this approval, OD-08 is
+closed only for the generic SYSTEM/background execution architecture stated
+in the record; every specific future operation remains separately gated by
+its Product story/policy and bounded implementation checkpoint. This approval
+does not authorize runtime, schema or migration implementation, Notification
+implementation, deployment, or production migration, and does not close the
+open Product decisions listed in D14.
