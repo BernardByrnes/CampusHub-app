@@ -124,12 +124,14 @@ a source action or by an implementation convenience.
 | Account security event | On | An available verified security-capable channel | No |
 | Sponsored | Never sent | None | Not applicable |
 
-Preferences are per type and channel except for the non-disableable set. Pilot
-uses in-app first and essential email only; web push is excluded. Product
-notifications are not bulk SMS. Phone is limited to the low-volume transactional
-security/verification cases stated in Product Specification §11.4, when
-in-app delivery is insufficient. This category matrix does not select a mail
-or SMS provider or resolve the separate contact-channel ownership boundary.
+Preferences are per type and channel except for the non-disableable set. Each
+non-critical email category must provide one-click unsubscribe, while required
+critical notices remain enabled. Pilot uses in-app first and essential email
+only; web push is excluded. Product notifications are not bulk SMS. Phone is
+limited to the low-volume transactional security/verification cases stated in
+Product Specification §11.4, when in-app delivery is insufficient. This
+category matrix does not select a mail or SMS provider or resolve the separate
+contact-channel ownership boundary.
 
 ### 3.4 CH-NTF-004 — integrity contract
 
@@ -203,11 +205,11 @@ claim that a non-durable direct send would meet GSC-10 or FG-05.
 | SYSTEM/background dispatch, queued intent, outbox, workers, scheduler, retries, and retry authority | **OD-08 OPEN**; blocked before background job/outbox execution. | Product Owner, architecture, security, and operations must approve the transition and authority matrix, current-state/revocation race behavior, queued-intent semantics, retry behavior, and outbox behavior, with concurrency and revocation evidence. Do not implement these paths before closure. |
 | Non-critical in-app daily volume cap | **OPEN / HUMAN_REQUIRED.** CH-NTF-003 supplies only “a configured number”; no numeric cap is approved. | Product Owner decision and review. Do not use a prototype, historical recommendation, temporary default, or inferred value. |
 | In-app excess collapse and digest composition | **OPEN where a concrete threshold, grouping, or delivery schedule is needed.** The requirement says excess collapses into one digest entry but selects no digest timing or complete grouping rule. | Product Owner definition before implementing the unresolved behavior. Do not combine unrelated categories or Memberships by inference. |
-| Email digest time; event reminder lead time; streak-at-risk delivery time | **OPEN / HUMAN_REQUIRED** except for the specific 24-hour Poll reminder and Opportunity 7-day/24-hour deadline points already stated in Product. The Event story requires a reminder but does not choose its lead time; digest timing is explicitly deferrable in Product Specification §40.5. | Product Owner must supply any missing timing values. Scheduling those events also remains blocked by OD-08. Do not infer times from the device clock or add a default. |
+| Email digest time; event reminder lead time; streak-at-risk delivery time | **OPEN / HUMAN_REQUIRED** except for the specific 24-hour Poll reminder and Opportunity 7-day/24-hour deadline points already stated in Product. The Event story requires a reminder but does not choose its lead time; digest timing is explicitly deferrable in Product Specification §33. | Product Owner must supply any missing timing values. Scheduling those events also remains blocked by OD-08. Do not infer times from the device clock or add a default. |
 | Quiet-hours interval and exception classification | **OPEN / HUMAN_REQUIRED.** CH-NTF-003 requires configured night-time hours in the Tenant timezone, except critical notices, but gives no start/end values and does not fully map its “critical” exception to the category matrix. | Product Owner decision on values and exact exception scope. Tenant IANA timezone is the authority once a rule exists; it does not supply missing hour values. No email may be scheduled using an invented interval. |
 | Email digest frequency | At most one digest per day plus critical items is fixed; exact send time and digest composition remain open as above. | Preserve the daily maximum; do not interpret it as permission to schedule a digest before OD-08 closure. |
 | Priority Notice numeric creation cap | **OD-10 OPEN.** Priority Notices bypass the CH-NTF-003 delivery-volume cap, and Product says CH-PUB-006 rate-limits their creation, but no numeric cap is approved. | Product Owner, security, and operations decision. Do not invent or copy a historical cap. Delivery-volume bypass does not close OD-10. |
-| Notification retention duration | Product Specification §38 says “a few months” but selects no exact interval or expiry behavior. | Product/privacy decision and data-rights mapping before a retention duration or cleanup job is implemented. Data export/deletion obligations remain in the frozen Product Spec. |
+| Notification retention duration | Product Specification §27.7 says “a few months” but selects no exact interval or expiry behavior. | Product/privacy decision and data-rights mapping before a retention duration or cleanup job is implemented. Data export/deletion obligations remain in the frozen Product Spec. |
 | Identifier format and notification/contact data ownership | A4 marks notification identifiers `FUTURE_REQUIRED` and prescribes no format; OD-03 leaves verified contact-channel provenance open. | A4/Tenant-surface review for identifiers and Product Owner/identity/privacy/security decision for contact ownership. Account security communication must remain Tenant-neutral. |
 | Notification generation for Polls | CH-NTF-002 defines Poll categories, but A1/OD-11 still blocks Poll persistence and implementation. | Do not implement a Poll notification producer or use notification state to bypass A1. Revisit only after the Poll gate permits the source behavior. |
 | Event-change re-notification trigger | CH-NTF-004 prohibits automatic re-notification on every item edit and requires explicit Publisher choice; FG-05/CH-EVT-003 require preference-aware relevant Event-change notices. | Preserve both requirements. The later checkpoint must specify which governed Event changes offer the explicit choice and how the required relevant notices are produced. Escalate any irreconcilable case to the Product Owner; do not silently weaken either criterion. |
