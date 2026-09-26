@@ -227,6 +227,12 @@ fail-closed result with no business mutation and no privileged-success audit.
 Such a result is not made executable by retrying after a later grant or
 re-targeting the intent to a newer resource version.
 
+This is the default for the queued business transition itself, including a
+scheduled `scheduled` → `published` command. The Publication safety
+reconciliation in §5.3 is a distinct proposed SYSTEM transition with its own
+narrow policy; it does not retry, renew, or retarget the publish command and
+does not borrow the original scheduling authority.
+
 ### 5.2 Post-commit effects
 
 A post-commit effect is not a second execution of the source business command.
@@ -286,27 +292,61 @@ acceptance of this proposal. A new schedule requires a fresh authorized
 Publisher command.
 
 The missed publish occurrence and the guarded `scheduled` → `draft` transition
-are resolved together. Re-read and lock the exact same-Tenant Publication,
-confirm it is still `scheduled` for the missed occurrence, and use an
-expected-version predicate. Revalidate the original scheduling authority,
-including its initiating capability, Guild Term, Tenant state, and any other
-mutable authority facts, through the shared PMAFB after all blocking waits;
-use fresh PostgreSQL time and retain the authority/resource locks through
-commit. Record only an A6 outcome covered by a separately approved event
-contract in the same transaction. A stale version never overwrites a newer
-write or silently retargets the queued command: hold it for resolution and
-require a fresh authorized resolution against the current version if it is
-still scheduled and overdue. If the originating authority is no longer valid,
-automatic mutation fails closed; the item cannot publish and requires a fresh
-authorized resolution that still completes the mandatory return-to-draft
-outcome with an explanation. A held occurrence is not considered resolved by
-leaving an elapsed item executable. Until that resolution succeeds, keep the
-Publication non-executable and the missed-schedule reconciliation pending;
-the gate cannot report reactivation reconciliation complete for it. The
-occurrence and draft transition are terminalized together only when the
-versioned, authorized resolution commits. Neither a version conflict nor an
-authority failure makes retroactive publication an available fallback or
-waives the Product-required draft outcome.
+are resolved together. The proposed OD-08 safety authority is a dedicated,
+versioned SYSTEM policy for this one transition. It may authorize only a
+same-Tenant Publication that is still `scheduled`, whose current scheduled
+occurrence is due by both the durable `reopened_at` cutoff and fresh
+`clock_timestamp()`, and whose occurrence belongs to the suspension
+generation being reconciled while the Tenant dispatch barrier remains closed.
+It authorizes no publish, ordinary Publication edit, audience/visibility/
+target change, new schedule, or broader Tenant access. It requires the current
+Tenant, barrier generation, occurrence, and this exact policy to be valid. It
+does not revalidate the original Publisher's capability, Guild Term, or
+Membership as authority for the safety transition: those facts are provenance
+for the queued publish intent, not a lease the worker uses either to publish
+or to block the mandatory cleanup. If the safety policy or required current
+Tenant/barrier facts are absent, revoked, or ambiguous, hold the reconciliation
+and keep the dispatch gate closed; never publish as a fallback.
+
+For each reconciliation attempt, load and lock the exact same-Tenant
+Publication and missed occurrence under a deterministic Tenant-first order,
+then re-read them after every blocking wait and use fresh PostgreSQL time.
+The enqueue-time resource version is provenance, not the reconciliation's
+write version. Serialize against the current row and compare-and-set using the
+current version observed after the lock. If that version changed but the
+current row is still `scheduled` for a current occurrence due within the
+closed interval, transition that current version and preserve all newer title,
+body, audience, visibility, and other unrelated values. Change only the
+lifecycle to `draft`, the required explanation/outcome facts, the version and
+update timestamp, and the terminal status of that exact occurrence. If the
+schedule itself changed, evaluate the current scheduled time and occurrence
+identity: reconcile it only if that current occurrence is also due within the
+closed interval, using its own durable occurrence identity; never use an old
+due time to act on a replacement schedule that is still in the future. A
+competing write that wins the row lock first is re-read; a CAS
+miss or changed state causes rollback and a fresh read, never a write from a
+stale in-memory row. If the current Publication is no longer eligible, do not
+overwrite it; account for the old occurrence under the approved occurrence
+state contract and keep reactivation closed until reconciliation is complete.
+
+The same transaction must commit the `scheduled` → `draft` transition, the
+Publisher-facing explanation that the scheduled time passed during Tenant
+suspension and the item was not published late, terminal `SUPPRESSED` outcome
+with `TENANT_SUSPENDED_AT_DUE`, and a separately approved A6 event contract.
+Proposed A6 closure terms are a new closed event (for example,
+`publication.missed_schedule_returned_to_draft`) with an explicit SYSTEM actor
+discriminator and the policy identity/version, never a synthetic
+`actorMembershipId`. Its minimized facts identify Tenant and Publication,
+current prior/resulting versions, the occurrence, due and reopening times,
+transition, and reason code; it excludes Publication content, recipient data,
+and Global User identity. The occurrence result and A6 event are mandatory:
+failure to append either rolls back the transition and keeps dispatch closed.
+OD-08/A6 owners must approve this actor and event contract before any runtime
+work. The original scheduling authority may have been revoked, and the row
+version may have advanced; neither condition blocks this separate safety
+transition when its narrow policy and current-state guards pass. Neither
+condition permits retroactive publication or a write that overwrites newer
+Publication fields.
 
 The final gate-opening transaction records its own PostgreSQL transaction ID
 and gate generation. Every later claim, deferred transition, and provider
@@ -505,19 +545,46 @@ same-Tenant Event reminder intent. Give both intents the same test-only
    tracking must produce no admission and no provider invocation.
 4. W terminalizes both intents as `SUPPRESSED` with
    `TENANT_SUSPENDED_AT_DUE`; assert the reminder causes zero provider calls.
-   For the Publication, W revalidates its exact same-Tenant row, current
-   version, lifecycle, schedule, original Membership/capability/Guild
-   Term/Tenant authority, and fresh database time through PMAFB. With
-   unchanged version `v` and valid authority, it commits the guarded
-   `scheduled` → `draft` transition, the explanation, the occurrence result,
-   and only the separately approved A6 outcome in one transaction. Assert no
-   publish transition occurred, the Publication version advanced once, and a
-   duplicate W retry cannot repeat either outcome.
-5. Repeat with a concurrent version change and with origin-authority
-   invalidation winning before PMAFB. Assert that W never overwrites the newer
-   version, never bypasses PMAFB, and never publishes. The occurrence remains
-   held until a fresh authorized resolution completes the mandatory
-   return-to-draft outcome; the hold does not count as Product resolution.
+   For the Publication, W checks the dedicated safety policy and current
+   Tenant/barrier generation, then locks and re-reads the same-Tenant
+   Publication and occurrence after all waits. With unchanged version `v`,
+   it compares against the current version and atomically commits
+   `scheduled` → `draft`, the required explanation, the occurrence result,
+   and the proposed A6 event. Assert no publish transition occurred, the
+   Publication version advanced once, and a duplicate W retry cannot repeat
+   either outcome. This path does not use the originating publish grant as
+   authority and does not call PMAFB for that grant.
+5. Prove both required PostgreSQL races with separate connections and explicit
+   barriers:
+
+   - **Originating authority revoked:** Pause W before the guarded cleanup.
+     On connection G, revoke the original `publication.publish` grant under
+     the existing invalidation lock order and commit while the dispatch
+     barrier remains closed. Resume W. Test-side state must confirm the grant
+     is revoked at W's commit. W must not load that grant as execution
+     authority; it passes the independent active safety policy, returns the
+     still-scheduled Publication to draft, writes the explanation and A6
+     outcome, and never publishes or recreates the grant. Also reverse the
+     serialization: let W lock and commit the safety transition first, then
+     let G revoke; assert revocation commits afterward and no stale worker can
+     publish.
+   - **Current row version changed:** Pause W with queued version `v`. On
+     connection E, commit a concurrent authorized current-version write that
+     advances the Publication to `v+1` while its current schedule remains due
+     within `reopened_at`. Resume W. Assert W waits, re-reads `v+1`, preserves E's
+     changed fields, and commits only the guarded draft/explanation outcome
+     against `v+1` (result `v+2`). Reverse the lock order and assert E waits
+     for W, then must re-read/re-authorize against the draft row; a stale E
+     write cannot restore `scheduled` or publish. Add a control where the
+     current state is no longer `scheduled` or its current schedule is after
+     `reopened_at`; W must not mutate that newer state using the old
+     occurrence.
+
+   In both races, assert the occurrence and draft outcome are atomic with the
+   A6 event, no Publication content from a newer write is lost, the gate does
+   not reopen before required reconciliation completes, and no code path
+   publishes the missed occurrence. Use PostgreSQL commit/lock markers and
+   deterministic barriers rather than sleep-only assertions.
 
 Run a second fixture with `due_at > reopened_at` as a boundary control: it is
 not classified as part of the suspension interval and still must pass the
@@ -612,8 +679,11 @@ persisted past/archive transitions, or any new SYSTEM role.
   mutation. A6's present Membership-backed actor model does not invent a
   SYSTEM actor. Any future system-authored business transition or new
   notification audit event needs a closed, separately reviewed A6 actor and
-  event contract. Audit payloads remain minimized and exclude recipients,
-  raw content, and contact data.
+  event contract. The proposed CH-SUB-002 reconciliation event and
+  policy-bound SYSTEM actor are specified in §5.3; they require A6 approval
+  and commit atomically with the draft transition and missed-occurrence
+  result. Audit payloads remain minimized and exclude recipients, raw content,
+  and contact data.
 - **FG-05 and CH-EVT-003/004:** Event ownership, audience, lifecycle,
   expected-version, RSVP, cancellation, and notification dependencies remain
   governed by their approved contracts. No notification dependency is
@@ -639,12 +709,13 @@ changed, or deferred; this document's existence is not that approval.
 | Closure area | Required decision or evidence |
 | --- | --- |
 | Product transition matrix | Name each allowed asynchronous business transition and effect by story, trigger, required origin/System authority, current-state checks, stale/invalid outcome, and whether a fresh user command is required. Preserve the frozen CH-SUB-002 requirement to return an elapsed, still-scheduled Publication to draft with an explanation; explicitly leave unlisted transitions disabled. |
+| Missed Publication safety reconciliation | Accept or change the proposed narrow SYSTEM policy: only current same-Tenant `scheduled` Publications due within the recorded suspension interval may move to `draft`; the original scheduling authority is not reused or required for this cleanup; re-read and serialize against the current row version; preserve newer fields; never publish; keep the dispatch gate closed until complete. Approve the explanation and the atomic occurrence outcome. |
 | Queued intent | Approve the closed operation envelope, Tenant context, provenance, expected-version, due-time source, and no-authority-lease rule. Preserve every unresolved Product value as open. |
-| Authority and revocation | Approve shared PMAFB reuse, exact origin-authority references, row-lock order, resource order, clock semantics, and both invalidation/worker orderings. |
+| Authority and revocation | Approve shared PMAFB reuse for ordinary deferred transitions, exact origin-authority references, row-lock order, resource order, clock semantics, and both invalidation/worker orderings. Separately approve the Publication safety policy's narrow authority and race behavior when the original publish grant is revoked; it must not inherit that grant. |
 | Dispatch admission and suspension | Approve the per-Tenant barrier, gateway-only provider egress, in-flight drain/fencing rule, final suspension commit boundary, provider meaning of send, both commit orderings, the PostgreSQL commit-time reopening cutoff and tracking/retention preconditions, and fail-closed recovery. |
 | Transactional handoff | Approve same-transaction outbox insertion with business state and required A6 event, plus rollback and post-commit failure behavior. |
 | Retry and duplicate safety | Approve finite operational retry bounds, observability, dead-letter/recovery procedure, internal logical uniqueness, actual provider idempotency or reconciliation, and ambiguous-result handling. |
-| Tenant, privacy, and audit | Complete operation-specific A2/A4 registration and negative evidence, identifier ownership, A6 actor/event contracts, data minimization, retention, and export/deletion treatment. |
+| Tenant, privacy, and audit | Complete operation-specific A2/A4 registration and negative evidence, identifier ownership, the explicit A6 SYSTEM actor and closed missed-Publication event contract, data minimization, retention, and export/deletion treatment. |
 | Notification proof | Preserve the CH-NTF category matrix, preference and subscription behavior, Event cancellation audience and RSVP race, explicit-change boundary, and all unresolved reminder, digest, quiet-hour, fatigue, OD-10, retention, and channel-ownership decisions. |
 
 Before any future worker or outbox is enabled, its exact-SHA implementation
@@ -657,8 +728,10 @@ checkpoint must additionally provide:
    source in both orderings, including Tenant, Membership, grant, Guild Term,
    module, assurance/MFA where applicable, and expiry while waiting on
    authority and resource locks, both dispatch-admission/Tenant-suspension
-   commit orderings, the eligibility-to-provider-call barrier, and the
-   sweep-to-gate-opening proof in §7.2 including commit-time cutoff resolution;
+   commit orderings, the eligibility-to-provider-call barrier, the
+   sweep-to-gate-opening proof in §7.2 including commit-time cutoff resolution,
+   and the two separate-connection Publication reconciliation races in §7.2
+   (revoked originating grant and changed current row version);
 3. expected-version and lifecycle races, stale-intent holds, resource/
    authority rollback, atomic source/audit/outbox handoff, duplicate enqueue,
    duplicate worker, lease expiry/fencing, and idempotency conflict evidence;
