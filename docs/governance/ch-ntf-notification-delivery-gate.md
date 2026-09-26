@@ -277,25 +277,3 @@ readiness, it must:
 CH-NTF-003 numeric volume-cap and quiet-hours defaults remain OPEN / HUMAN_REQUIRED.
 The Event/RSVP notification dependencies remain gated. This checkpoint is
 DOCUMENTATION ONLY and authorizes NO notification runtime implementation.**
-
-## 9. Review evidence snapshot
-
-This evidence snapshot records the exact repository state inspected before
-this snapshot correction. The complete cumulative comparison is from the
-work-item scope baseline to the verified input SHA, not from an inferred or
-partial working-tree diff.
-
-- Verified input SHA: `814f0e7efde04db1295641f48c9e7dded1b8c655`
-- Scope baseline SHA: `505389930237b02da6de87a9843afccff5d8473f`
-- Cumulative diff: **1 file changed, 300 insertions(+), 0 deletions(-)**
-- Changed path and status: **A** `docs/governance/ch-ntf-notification-delivery-gate.md`
-- Worktree at the verified input SHA before this correction: **clean**
-- Runtime, schema, migration, test, worker, scheduler, transport, and deployment
-  paths in the cumulative diff: **none**
-
-The snapshot is reproducible with:
-
-```text
-git diff --stat 505389930237b02da6de87a9843afccff5d8473f..814f0e7efde04db1295641f48c9e7dded1b8c655
-git diff --name-status 505389930237b02da6de87a9843afccff5d8473f..814f0e7efde04db1295641f48c9e7dded1b8c655
-```
