@@ -253,35 +253,76 @@ applicable delivery rules.
 
 When an intent's approved due time passes while the Tenant dispatch gate is
 closed for suspension, that logical occurrence is missed, not paused for later
-catch-up delivery. Persist one terminal `SUPPRESSED` occurrence, keyed by its
-stable logical occurrence identity, with its `due_at`, observation/recording
-time, Tenant suspension/dispatch generation, source version, and reason
-`TENANT_SUSPENDED_AT_DUE`. Whether a scheduler records it at the due time or a
-recovery sweep records it later, the unique occurrence is recorded exactly
-once. A missed occurrence is never changed back to `READY` or `RETRY_WAIT` on
-reactivation. A new future occurrence requires the operation's separately
-approved scheduling action and a new logical identity.
+catch-up delivery. Record it under its stable logical occurrence identity,
+with its `due_at`, observation/recording time, Tenant suspension/dispatch
+generation, source version, and reason `TENANT_SUSPENDED_AT_DUE`. For a
+one-shot effect, persist one terminal `SUPPRESSED` occurrence whether the
+scheduler observes it at due time or a recovery sweep records it later. The
+CH-PUB-002 Publication case below couples the suppressed occurrence result to
+its mandatory draft transition; keep it non-executable and pending until that
+guarded result commits. No missed occurrence is changed back to `READY` or
+`RETRY_WAIT` on reactivation. A new future occurrence requires the operation's
+separately approved scheduling action and a new logical identity.
 
 Before dispatch is reopened after reactivation, a catch-up transaction or
-bounded sweep must terminalize every due occurrence from the closed interval.
-The dispatch gate remains closed until this sweep completes; failure leaves it
-closed. This prevents a delayed worker or an offline scheduler from turning
-elapsed work into a retroactive send.
+bounded sweep must terminalize every due occurrence through its recorded
+database-time cutoff. The dispatch gate remains closed until this sweep
+completes; failure leaves it closed. The sweep cutoff is not the end of the
+closed interval: an occurrence can become due after the sweep and before the
+gate-opening commit. The durable reopening cutoff below covers that interval
+as well.
 
 For a one-shot post-commit effect, including an Event reminder, the recorded
 occurrence remains suppressed after reactivation. For a deferred business
 transition, no stale command is executed. The occurrence is recorded as
 missed/suppressed and needs a fresh authorized command unless an approved,
-operation-specific Product contract supplies a safe fallback. For the
-CH-PUB-002 scheduled Publication proving case, this gate recommends that a
-still-matching `scheduled` Publication return to `draft` when its publish time
-passes during suspension; the missed publish occurrence is still recorded as
-suppressed, the Publisher is told why, and an explicit new schedule is required
-to publish later. That draft fallback is a recommendation for Product Owner
-acceptance, not a frozen Product rule or runtime authorization. If its source
-version changed or the fallback has not been accepted, hold the occurrence,
-leave the Publication unpublished, and require an authorized Publisher
-resolution. No reactivation may publish it retroactively.
+operation-specific Product contract supplies a safe fallback. CH-PUB-002
+together with CH-SUB-002 supplies the Publication case: a still-scheduled
+Publication whose publish time passes during Tenant suspension must not
+publish retroactively; it must return to `draft` with an explanation that its
+scheduled time passed while the Tenant was suspended and that it was not
+published late. This is a mandatory frozen Product outcome, not contingent on
+acceptance of this proposal. A new schedule requires a fresh authorized
+Publisher command.
+
+The missed publish occurrence and the guarded `scheduled` → `draft` transition
+are resolved together. Re-read and lock the exact same-Tenant Publication,
+confirm it is still `scheduled` for the missed occurrence, and use an
+expected-version predicate. Revalidate the original scheduling authority,
+including its initiating capability, Guild Term, Tenant state, and any other
+mutable authority facts, through the shared PMAFB after all blocking waits;
+use fresh PostgreSQL time and retain the authority/resource locks through
+commit. Record only an A6 outcome covered by a separately approved event
+contract in the same transaction. A stale version never overwrites a newer
+write or silently retargets the queued command: hold it for resolution and
+require a fresh authorized resolution against the current version if it is
+still scheduled and overdue. If the originating authority is no longer valid,
+automatic mutation fails closed; the item cannot publish and requires a fresh
+authorized resolution that still completes the mandatory return-to-draft
+outcome with an explanation. A held occurrence is not considered resolved by
+leaving an elapsed item executable. Until that resolution succeeds, keep the
+Publication non-executable and the missed-schedule reconciliation pending;
+the gate cannot report reactivation reconciliation complete for it. The
+occurrence and draft transition are terminalized together only when the
+versioned, authorized resolution commits. Neither a version conflict nor an
+authority failure makes retroactive publication an available fallback or
+waives the Product-required draft outcome.
+
+The final gate-opening transaction records its own PostgreSQL transaction ID
+and gate generation. Every later claim, deferred transition, and provider
+admission must resolve and durably persist that transaction's PostgreSQL
+commit timestamp as the closed-interval end before admitting work. Any
+occurrence with `due_at <= reopened_at` belongs to the closed interval even
+when it became due after the sweep cutoff; it is terminalized as suppressed
+and never dispatched. For the CH-PUB-002 case, the corresponding guarded
+return-to-draft resolution is mandatory as specified above. Occurrences due
+after `reopened_at` follow their ordinary current-state and authority checks.
+Commit-timestamp tracking must be enabled for this future contract. If the
+commit timestamp is disabled, unavailable, or has been discarded before it is
+persisted, the gate fails closed: do not admit work, rerun the bounded sweep,
+and use a fresh guarded reopening transaction. Never substitute a sweep time,
+transaction-start timestamp, caller time, or unverified application timestamp
+for this cutoff.
 
 ## 6. Duplicate safety and retry contract
 
@@ -390,10 +431,20 @@ blocks execution during suspension:
    handed to the provider before suspension may still be processed externally;
    CampusHub cannot cancel it without a separately proven provider contract.
 5. Reactivation does not reopen dispatch as part of changing Tenant status.
-   Keep the barrier closed, reconcile and terminalize due occurrences from the
-   closed interval under §5.3, advance the generation, then open admission in a
-   separate guarded transaction. A stale worker or adapter request carrying an
-   older generation is rejected.
+   Keep the barrier closed and reconcile the sweep's due occurrences under
+   §5.3. The final guarded gate-opening transaction locks the Tenant/barrier
+   in the reviewed order, advances the generation, and stores its own
+   `pg_current_xact_id()` with the opening marker. After commit, the first
+   serialized gate reader resolves `pg_xact_commit_timestamp` for that
+   transaction and durably stores `reopened_at` before admitting any claim,
+   deferred transition, or provider invocation. Occurrences with
+   `due_at <= reopened_at` are still inside the closed interval, including
+   intents missed by the pre-open sweep; terminalize them as suppressed under
+   §5.3. For a scheduled Publication, perform the mandatory guarded
+   return-to-draft resolution there. A stale worker or adapter request
+   carrying an older generation is rejected. If the commit timestamp cannot
+   be resolved and persisted, the gate remains effectively closed; rerun the
+   bounded sweep and use a fresh guarded opening transaction.
 
 The two commit orderings are therefore explicit. If the suspension barrier
 closure wins before gateway admission, the later adapter transaction observes
@@ -426,6 +477,57 @@ Use database commit/order markers and provider invocation records rather than
 sleep-only timing or wall-clock comparison. Verify the gate's Tenant isolation,
 generation checks, zero-active-invocation condition, missed-occurrence
 terminalization, and that a failed reactivation sweep cannot reopen dispatch.
+
+### 7.2 Deterministic PostgreSQL proof for the reopening gap
+
+A future implementation checkpoint must prove the sweep-to-open ordering
+against real PostgreSQL using separate connections and explicit test barriers.
+Enable PostgreSQL commit-timestamp tracking in the test cluster. Seed one
+closed Tenant gate generation, a still-scheduled Publication at version `v`,
+its valid originating authority and publish occurrence, plus a committed
+same-Tenant Event reminder intent. Give both intents the same test-only
+`due_at` after the sweep cutoff; it is not a Product timing value.
+
+1. Connection R locks the Tenant/barrier in the production order, records
+   `sweep_cutoff = clock_timestamp()`, and sweeps every occurrence due at or
+   before that value. Assert the seeded occurrence is not in this sweep.
+   Pause R at an explicit test barrier before the opening marker and commit.
+2. The test controller uses PostgreSQL time to wait until
+   `clock_timestamp() >= due_at` while the gate remains locked and closed. It
+   then releases R. R stores `pg_current_xact_id()`, advances the generation,
+   writes the opening marker, and commits. The test records the actual
+   ordering with the sweep marker, due time, and commit marker; it uses no
+   fixed sleep as its correctness assertion.
+3. Connection W attempts admission on the gate and waits for R's commit. Under
+   the gate lock, W resolves `pg_xact_commit_timestamp(opening_xid::xid)`,
+   persists that value as `reopened_at`, and asserts
+   `sweep_cutoff < due_at <= reopened_at`. A missing timestamp or disabled
+   tracking must produce no admission and no provider invocation.
+4. W terminalizes both intents as `SUPPRESSED` with
+   `TENANT_SUSPENDED_AT_DUE`; assert the reminder causes zero provider calls.
+   For the Publication, W revalidates its exact same-Tenant row, current
+   version, lifecycle, schedule, original Membership/capability/Guild
+   Term/Tenant authority, and fresh database time through PMAFB. With
+   unchanged version `v` and valid authority, it commits the guarded
+   `scheduled` → `draft` transition, the explanation, the occurrence result,
+   and only the separately approved A6 outcome in one transaction. Assert no
+   publish transition occurred, the Publication version advanced once, and a
+   duplicate W retry cannot repeat either outcome.
+5. Repeat with a concurrent version change and with origin-authority
+   invalidation winning before PMAFB. Assert that W never overwrites the newer
+   version, never bypasses PMAFB, and never publishes. The occurrence remains
+   held until a fresh authorized resolution completes the mandatory
+   return-to-draft outcome; the hold does not count as Product resolution.
+
+Run a second fixture with `due_at > reopened_at` as a boundary control: it is
+not classified as part of the suspension interval and still must pass the
+ordinary current-state, authority, and due checks. The commit timestamp must
+be resolved and durably copied into the gate record promptly; PostgreSQL
+documents that this information requires `track_commit_timestamp` and is
+routinely removed during vacuum ([committed transaction information
+functions](https://www.postgresql.org/docs/17/functions-info.html#FUNCTIONS-COMMIT-TIMESTAMP)).
+If the timestamp is no longer available, the test and runtime contract fail
+closed and require a fresh sweep/opening generation.
 
 Post-commit delivery is not itself a privileged Event mutation and does not
 repeat PMAFB for the already committed source action. It still must validate
@@ -536,10 +638,10 @@ changed, or deferred; this document's existence is not that approval.
 
 | Closure area | Required decision or evidence |
 | --- | --- |
-| Product transition matrix | Name each allowed asynchronous business transition and effect by story, trigger, required origin/System authority, current-state checks, stale/invalid outcome, and whether a fresh user command is required. Explicitly leave unlisted transitions disabled. |
+| Product transition matrix | Name each allowed asynchronous business transition and effect by story, trigger, required origin/System authority, current-state checks, stale/invalid outcome, and whether a fresh user command is required. Preserve the frozen CH-SUB-002 requirement to return an elapsed, still-scheduled Publication to draft with an explanation; explicitly leave unlisted transitions disabled. |
 | Queued intent | Approve the closed operation envelope, Tenant context, provenance, expected-version, due-time source, and no-authority-lease rule. Preserve every unresolved Product value as open. |
 | Authority and revocation | Approve shared PMAFB reuse, exact origin-authority references, row-lock order, resource order, clock semantics, and both invalidation/worker orderings. |
-| Dispatch admission and suspension | Approve the per-Tenant barrier, gateway-only provider egress, in-flight drain/fencing rule, final suspension commit boundary, provider meaning of send, both commit orderings, and fail-closed recovery. |
+| Dispatch admission and suspension | Approve the per-Tenant barrier, gateway-only provider egress, in-flight drain/fencing rule, final suspension commit boundary, provider meaning of send, both commit orderings, the PostgreSQL commit-time reopening cutoff and tracking/retention preconditions, and fail-closed recovery. |
 | Transactional handoff | Approve same-transaction outbox insertion with business state and required A6 event, plus rollback and post-commit failure behavior. |
 | Retry and duplicate safety | Approve finite operational retry bounds, observability, dead-letter/recovery procedure, internal logical uniqueness, actual provider idempotency or reconciliation, and ambiguous-result handling. |
 | Tenant, privacy, and audit | Complete operation-specific A2/A4 registration and negative evidence, identifier ownership, A6 actor/event contracts, data minimization, retention, and export/deletion treatment. |
@@ -554,8 +656,9 @@ checkpoint must additionally provide:
 2. separate-connection PostgreSQL proof for every applicable authority
    source in both orderings, including Tenant, Membership, grant, Guild Term,
    module, assurance/MFA where applicable, and expiry while waiting on
-   authority and resource locks, plus both dispatch-admission/Tenant-suspension
-   commit orderings and the eligibility-to-provider-call barrier;
+   authority and resource locks, both dispatch-admission/Tenant-suspension
+   commit orderings, the eligibility-to-provider-call barrier, and the
+   sweep-to-gate-opening proof in §7.2 including commit-time cutoff resolution;
 3. expected-version and lifecycle races, stale-intent holds, resource/
    authority rollback, atomic source/audit/outbox handoff, duplicate enqueue,
    duplicate worker, lease expiry/fencing, and idempotency conflict evidence;
